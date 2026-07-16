@@ -239,6 +239,13 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
                  {"match_status": "not_found"},
                  {"conclusion": "需人工确认", "reason": "天眼查未找到同名企业"},
                  "天眼查无匹配，进入人工确认", "uncertain", user_id)
+        _push_progress(progress_queue,
+                       type="supplier_done",
+                       current=idx,
+                       supplier_name=company_name,
+                       conclusion="需人工确认",
+                       total_score=0,
+                       veto_triggered=False)
         return
 
     # ==================== 任务4b：提取规则评估所需的标准化字段 ====================
