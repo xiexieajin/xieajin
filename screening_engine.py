@@ -16,7 +16,7 @@
 import json
 import pymysql
 import traceback
-from db import now_str
+from db import now_str, recalc_requirement_status
 from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 from screening_rules import get_active_rules, evaluate_condition, parse_condition, get_rule_template
 from screening_data import (
@@ -63,6 +63,10 @@ def _get_thresholds():
         review_rule = get_rule_template("threshold_manual_review")
         pass_threshold = pass_rule.get("max_score", 75) if pass_rule else 75
         manual_review_threshold = review_rule.get("max_score", 60) if review_rule else 60
+        # 防止配置错误：用户把人工确认线设成0表示"不要人工确认"
+        # 0会导致 total_score>=0 永远成立，所有供应商变成"需人工确认"，必须截断为正常值
+        if manual_review_threshold <= 0:
+            manual_review_threshold = 1
         # 防止配置错误（通过线必须≥人工确认线）
         # 小白讲解：允许两线相等——相等时相当于取消人工确认环节，低于此分一律未通过
         if pass_threshold < manual_review_threshold:
@@ -186,6 +190,17 @@ def run_screening(requirement_id, user_id, progress_queue=None):
                    message=f"初筛完成！共处理{total_suppliers}家，"
                            f"通过{passed}家，异常{len(report['anomalies'])}处",
                    report=report)
+
+    # 初筛完成后，供应商阶段已变化（已通过/未通过初筛），重新推断所属需求的状态
+    # 小白讲解：初筛会让需求从"寻源中"自动推进到"初筛中"
+    try:
+        _conn = _get_db_connection()
+        _cur = _conn.cursor()
+        recalc_requirement_status(_cur, requirement_id)
+        _conn.commit()
+        _conn.close()
+    except Exception:
+        pass
 
     return report
 
@@ -385,7 +400,7 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
     elif total_score >= pass_threshold:
         conclusion = "已通过初筛"
         reason = f"总分{total_score}≥{pass_threshold}，通过初筛"
-    elif total_score >= manual_review_threshold:
+    elif manual_review_threshold > 0 and total_score >= manual_review_threshold:
         conclusion = "需人工确认"
         reason = f"总分{total_score}在{manual_review_threshold}-{pass_threshold-1}区间，需人工确认"
     else:
