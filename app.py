@@ -36,11 +36,16 @@ app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(os.path.abspath(__fil
 app.secret_key = "f3a9c7e2b1d84f6a0e5c3b9d7a2f8e4c1b6a9d3f7e2c8b5a1d4f9e6c3b7a2e8f5"
 
 
-# ==================== 全局任务存储（AI搜索从SSE长连接改为轮询模式）====================
-# 小白讲解：Railway代理会切断30分钟+的SSE长连接，导致搜索中断。改为轮询模式：
+# ==================== 全局任务存储（轮询模式 + 断线恢复）====================
+# 小白讲解：Railway代理会切断30分钟+的长连接，导致搜索中断。改为轮询模式：
 # 浏览器提交搜索任务 → 拿到task_id（瞬间返回）→ 每3秒轮询进度 → 搜索完成后拿到结果。
-# 结构：{task_id: {"queue": queue.Queue(), "status": "running"|"done"|"error", "result": {...}}}
+# 断线恢复：所有进度消息保留在messages列表里（不再消费式读取），用户刷新页面后
+# 可以通过 status 接口找到正在运行的任务，用全部历史消息重建进度界面。
+# 结构：{task_id: {"messages": [...], "status": "running"|"done"|"error", "result": {...}, "req_id": 123}}
 task_store = {}
+# 小白讲解：线程锁，保护task_store的读写（后台线程写messages，轮询接口读messages，需要加锁避免冲突）
+import threading as _threading
+_task_store_lock = _threading.Lock()
 
 # 注册自定义Jinja2过滤器：把JSON字符串解析成Python对象（用于展示P0-P3关键词）
 @app.template_filter("from_json")
@@ -1393,17 +1398,24 @@ def ai_search_suppliers(req_id):
         return render_template("ai/search_suppliers.html", requirement=requirement)
 
     # POST请求：提交搜索任务（返回task_id，由前端轮询进度）
-    # 改为轮询模式：Railway代理会切断30分钟+的SSE长连接，导致搜索中断
+    # 小白讲解：改为"消息列表"模式——所有进度消息都保留在messages列表里，
+    # 用户刷新页面后可以通过status接口拿到全部历史消息，恢复进度界面。
     import uuid
     task_id = str(uuid.uuid4())
 
-    # 创建任务记录，放入全局task_store
-    q = queue.Queue()
-    task_store[task_id] = {"queue": q, "status": "running", "result": None}
+    # 创建任务记录，放入全局task_store（messages列表保留全部进度，req_id用于刷新恢复）
+    task_store[task_id] = {
+        "messages": [],          # 所有进度消息列表（不再消费式读取，全部保留）
+        "status": "running",     # 任务状态：running/done/error
+        "result": None,          # 最终结果（done时存搜索结果，error时存错误信息）
+        "req_id": req_id,        # 关联的需求ID（用户刷新页面后通过它找到正在运行的任务）
+    }
 
     def progress_callback(step, total, desc):
-        """进度回调：把进度消息塞进队列，由轮询接口读出返回给前端"""
-        q.put({"type": "progress", "step": step, "total": total, "desc": desc})
+        """进度回调：把进度消息追加到messages列表（加锁保护，避免并发写入冲突）"""
+        msg = {"type": "progress", "step": step, "total": total, "desc": desc}
+        with _task_store_lock:
+            task_store[task_id]["messages"].append(msg)
 
     def run_search_thread():
         conn = db.get_db()
@@ -1448,19 +1460,24 @@ def ai_search_suppliers(req_id):
                 "total_found": len(suppliers),
                 "req_id": req_id,
             }
-            q.put(result)
-            task_store[task_id]["status"] = "done"
-            task_store[task_id]["result"] = result
+            with _task_store_lock:
+                task_store[task_id]["messages"].append(result)
+                task_store[task_id]["status"] = "done"
+                task_store[task_id]["result"] = result
         except Exception as e:
             error_msg = {"type": "error", "message": f"AI搜索失败：{str(e)}"}
-            q.put(error_msg)
-            task_store[task_id]["status"] = "error"
-            task_store[task_id]["result"] = error_msg
+            with _task_store_lock:
+                task_store[task_id]["messages"].append(error_msg)
+                task_store[task_id]["status"] = "error"
+                task_store[task_id]["result"] = error_msg
         finally:
             conn.close()
 
     # 先放启动消息
-    q.put({"type": "progress", "step": 0, "total": 3, "desc": "正在启动搜索..."})
+    with _task_store_lock:
+        task_store[task_id]["messages"].append(
+            {"type": "progress", "step": 0, "total": 3, "desc": "正在启动搜索..."}
+        )
 
     # 启动后台搜索线程
     thread = threading.Thread(target=run_search_thread)
@@ -1474,33 +1491,57 @@ def ai_search_suppliers(req_id):
 def poll_ai_search(req_id, task_id):
     """
     轮询搜索任务进度（每3秒调用一次）
-    返回自上次轮询以来所有新消息 + 任务状态
+
+    小白讲解：游标模式——前端传 cursor 参数表示"上次读到第N条消息"，
+    后端返回第N条之后的所有新消息 + 新的cursor位置。
+    这样即使前端断线重连，也不会丢失中间的进度消息。
     """
     task = task_store.get(task_id)
     if not task:
         return jsonify({"status": "not_found", "error": "任务不存在或已过期"}), 404
 
-    # 非阻塞地取出队列中所有新消息
-    messages = []
-    while True:
-        try:
-            msg = task["queue"].get_nowait()
-            messages.append(msg)
-        except queue.Empty:
-            break
+    # 获取前端传来的游标位置（默认0，表示从头读）
+    cursor = request.args.get("cursor", 0, type=int)
 
-    current_status = task["status"]
-    result = task.get("result")
-
-    # 任务已完成，清理存储（前端收到done/error后会停止轮询）
-    if current_status in ("done", "error"):
-        del task_store[task_id]
+    # 加锁读取增量消息（从cursor位置开始的所有新消息）
+    with _task_store_lock:
+        all_messages = task["messages"]
+        new_messages = all_messages[cursor:]
+        new_cursor = len(all_messages)
+        current_status = task["status"]
+        result = task.get("result")
 
     return jsonify({
         "status": current_status,
-        "messages": messages,
+        "messages": new_messages,
+        "cursor": new_cursor,
         "result": result
     })
+
+
+@app.route("/ai/search-suppliers/<int:req_id>/status", methods=["GET"])
+def ai_search_status(req_id):
+    """
+    查询需求是否有正在运行或已完成的搜索任务（用于页面刷新后恢复进度）
+
+    小白讲解：用户刷新页面后，前端的task_id丢了，不知道之前搜索到哪了。
+    这个接口根据需求ID(req_id)在task_store里查找对应的任务：
+    - 找到running状态 → 返回task_id和全部历史消息，前端恢复进度界面继续轮询
+    - 找到done/error状态 → 返回task_id和结果，前端直接显示完成/错误
+    - 没找到 → 返回not_found，前端正常显示搜索表单
+    """
+    with _task_store_lock:
+        for task_id, task in task_store.items():
+            if task.get("req_id") == req_id:
+                return jsonify({
+                    "task_id": task_id,
+                    "status": task["status"],
+                    "messages": task["messages"],
+                    "cursor": len(task["messages"]),
+                    "result": task.get("result")
+                })
+
+    return jsonify({"status": "not_found"})
 
 
 @app.route("/ai/auto-screening/<int:req_id>", methods=["GET", "POST"])
