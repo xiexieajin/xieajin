@@ -14,8 +14,10 @@
     <i class="bi bi-info-circle"></i>
     <strong>使用说明：</strong>输入需求描述、上传文件（或两者结合），AI会自动提取产品信息、采购要求、认证要求和搜索关键词。
     <br>
-    <i class="bi bi-link-45deg"></i>
-    <strong>支持网页链接：</strong>如需求描述中包含网页链接（如产品页、规格说明页），AI会自动访问并分析网页内容，无需额外操作。
+    <i class="bi bi-amazon"></i>
+    <strong>支持亚马逊链接：</strong>如需求描述中包含<strong>亚马逊产品链接</strong>，AI会自动访问并提取产品标题、材质、尺寸、品牌、特性等寻源关键信息，无需额外操作。
+    <br>
+    <span class="text-muted"><i class="bi bi-exclamation-circle"></i> 仅支持亚马逊链接（amazon.com等各区域站点），其他网站链接无法抓取。</span>
 </div>
 
 {% if not vision_configured %}
@@ -51,7 +53,7 @@
         <div class="card-body">
             <label class="form-label">请描述你的采购需求（可以只上传文件不填文字，也可以两者结合）：</label>
             <textarea class="form-control" name="input_text" rows="6"
-                      placeholder="例如：&#10;我们需要采购一批蓝牙音箱，主要用于亚马逊美国站销售。&#10;产品要求：防水IPX7，续航10小时以上，首批采购500台，需要CE和FCC认证。&#10;&#10;也可贴网页链接，AI会自动访问分析：&#10;https://www.1688.com/product/xxx.html"></textarea>
+                      placeholder="例如：&#10;我们需要采购一批蓝牙音箱，主要用于亚马逊美国站销售。&#10;产品要求：防水IPX7，续航10小时以上，首批采购500台，需要CE和FCC认证。&#10;&#10;也可贴亚马逊产品链接，AI会自动提取产品信息：&#10;https://www.amazon.com/dp/B0XXXXXXXX"></textarea>
         </div>
     </div>
 

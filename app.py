@@ -1234,6 +1234,9 @@ def ai_supplement_requirement():
         "min_ship_qty": request.form.get("min_ship_qty", "").strip(),
         "target_market": request.form.get("target_market", "").strip(),
         "required_certs": request.form.get("required_certs", "").strip(),
+        "acceptable_lead_time": request.form.get("acceptable_lead_time", "").strip(),
+        "product_aliases": request.form.get("product_aliases", "").strip(),
+        "other_requirements": request.form.get("other_requirements", "").strip(),
     }
 
     # 原始输入文本（第一轮的文字描述，保留下来继续给AI）

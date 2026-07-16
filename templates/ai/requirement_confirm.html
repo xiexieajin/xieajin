@@ -259,6 +259,27 @@
                            value="{{ parsed.required_certs if parsed.required_certs else '无要求' }}">
                 </div>
             </div>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">可接受生产交期</label>
+                    <input type="text" class="form-control" name="acceptable_lead_time"
+                           value="{{ parsed.acceptable_lead_time if parsed.acceptable_lead_time else '不限制' }}">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">行业通用别名</label>
+                    <input type="text" class="form-control" name="product_aliases"
+                           value="{{ parsed.product_aliases if parsed.product_aliases else '' }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-card-text"></i> 其他要求（选填）</div>
+        <div class="card-body">
+            <label class="form-label text-muted">对找供应商有价值的信息：包装方式、贴牌OEM要求、特殊工艺、使用场景、配色要求、质保年限等</label>
+            <textarea class="form-control" name="other_requirements" rows="3"
+                      placeholder="例如：独立包装每箱10件、需要贴牌OEM印logo、表面磨砂工艺防滑、3年质保等">{{ parsed.other_requirements if parsed.other_requirements else '' }}</textarea>
         </div>
     </div>
 

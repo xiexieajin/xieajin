@@ -17,6 +17,8 @@ import json
 import base64
 import requests
 import re
+import subprocess
+import shutil
 from bs4 import BeautifulSoup
 from model_config import get_model_config, get_provider
 
@@ -72,16 +74,14 @@ def extract_urls(text):
 
 def fetch_url_content(url):
     """
-    抓取单个网页的正文内容（专门针对亚马逊产品页优化）
+    抓取单个网页的正文内容（专门针对亚马逊产品页优化，用curl绕过反爬）
 
     小白讲解：访问用户给的亚马逊链接，把网页下载下来，重点提取产品采购寻源需要的信息：
     产品标题、品牌、材质、尺寸规格、产品特性（About this item）、技术参数等。
-    去掉导航栏、广告、脚本等无关内容，让AI拿到干净的产品信息。
 
-    针对亚马逊反爬机制，做了以下处理：
-    1. 用完整的浏览器请求头伪装，Accept-Language用英文优先（调研证实英文请求头更稳定）
-    2. 优先提取亚马逊专用元素（productTitle、feature-bullets、productDetails等）
-    3. 如果被反爬拦截（正文太短），从URL路径提取产品关键词作为兜底线索
+    关键技术点：亚马逊会通过TLS指纹识别requests库的请求并返回反爬页面（只有3900字符无产品信息）。
+    而curl的TLS指纹和真实浏览器更接近，能稳定拿到完整产品页（100万+字符）。
+    所以这里优先用curl抓取，curl不可用时回退到requests。
 
     参数：
         url: 要抓取的亚马逊产品页链接
@@ -89,31 +89,21 @@ def fetch_url_content(url):
     返回：网页正文文字（字符串）。抓取失败时返回带失败说明的短文本，不抛异常，避免中断主流程。
     """
     try:
-        # 完整的浏览器请求头伪装
-        # 关键：Accept-Language用en-US英文优先，亚马逊对中文请求头反爬更严格
-        headers = {
-            "User-Agent": _USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",  # 英文优先，亚马逊反爬更宽松
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-        }
-        resp = requests.get(
-            url,
-            headers=headers,
-            timeout=_FETCH_TIMEOUT,
-            allow_redirects=True,
-        )
-        # 检查是否下载成功（非2xx状态码视为失败）
-        resp.raise_for_status()
+        # 优先用curl抓取（能绕过亚马逊TLS指纹反爬）
+        html = _fetch_with_curl(url)
+        used_curl = True
+        if not html:
+            # curl不可用或抓取失败，回退到requests
+            html = _fetch_with_requests(url)
+            used_curl = False
+
+        if not html:
+            # 两种方式都失败，走URL线索兜底
+            url_hint = _extract_product_hint_from_url(url)
+            return f"（该网站有反爬机制，无法直接抓取正文）\n参考URL: {url}\nURL产品线索: {url_hint}"
 
         # 用BeautifulSoup解析HTML
-        soup = BeautifulSoup(resp.content, "html.parser", from_encoding=resp.apparent_encoding)
+        soup = BeautifulSoup(html, "html.parser", from_encoding="utf-8")
 
         # 删除所有非正文标签（脚本、样式、导航、页脚、头部、侧边栏等）
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe", "form"]):
@@ -123,7 +113,6 @@ def fetch_url_content(url):
         title = soup.title.get_text(strip=True) if soup.title else ""
 
         # 亚马逊专用信息提取：优先抓取产品采购寻源需要的关键区域
-        # 这些是亚马逊产品页的标准元素ID/class，包含最有价值的产品信息
         product_info = _extract_amazon_product_info(soup)
 
         if product_info:
@@ -133,13 +122,11 @@ def fetch_url_content(url):
             # 通用提取：优先用<main>或<article>标签，没有就取<body>
             main = soup.find("main") or soup.find("article") or soup.body or soup
             text = main.get_text(separator="\n", strip=True)
-            # 兜底清理残留的<style>/<script>文本
             text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"\n{3,}", "\n\n", text)
 
         # 反爬兜底：如果正文太短（少于200字），很可能是被反爬拦截了
-        # 此时从URL路径本身提取产品关键词线索，至少让AI知道用户参考的是什么产品
         if len(text.strip()) < 200:
             url_hint = _extract_product_hint_from_url(url)
             text = f"（该网站有反爬机制，无法直接抓取正文）\n参考URL: {url}\nURL产品线索: {url_hint}"
@@ -155,9 +142,76 @@ def fetch_url_content(url):
         return text
 
     except Exception as e:
-        # 抓取失败不中断主流程，返回带失败说明的短文本，并附上URL产品线索
         url_hint = _extract_product_hint_from_url(url)
         return f"【抓取失败】{url} - 原因: {str(e)[:100]}\nURL产品线索: {url_hint}"
+
+
+def _fetch_with_curl(url):
+    """
+    用curl命令抓取网页HTML（能绕过亚马逊TLS指纹反爬）
+
+    小白讲解：requests库发请求时，它的"指纹"和真实浏览器不一样，亚马逊能识别出来并拦截。
+    curl是系统自带的命令行工具，它的网络指纹更接近真实浏览器，亚马逊拦截不了。
+    所以这里用subprocess调用curl来下载网页，比requests更稳定。
+
+    参数：
+        url: 要抓取的网页链接
+
+    返回：网页HTML字符串。curl不可用或抓取失败返回空字符串。
+    """
+    # 检查系统是否有curl（Windows 10+自带curl.exe）
+    curl_path = shutil.which("curl")
+    if not curl_path:
+        return ""
+
+    try:
+        # 构造curl命令
+        # -s 静默模式 -L 跟随跳转 -A 设置UA --max-time 超时
+        cmd = [
+            curl_path, "-s", "-L",
+            "-A", _USER_AGENT,
+            "-H", "Accept-Language: en-US,en;q=0.9",
+            "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "--max-time", str(_FETCH_TIMEOUT + 10),  # curl给宽裕点时间
+            "-b", "",  # 不发送cookie，避免本地cookie干扰
+            url,
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=_FETCH_TIMEOUT + 15)
+        html = result.stdout.decode("utf-8", errors="ignore")
+        # 亚马逊完整产品页至少应该有5万字符，太小说明被拦截了
+        if len(html) < 10000:
+            return ""
+        return html
+    except Exception:
+        return ""
+
+
+def _fetch_with_requests(url):
+    """
+    用requests库抓取网页HTML（curl不可用时的回退方案）
+
+    小白讲解：这是备用方案。当系统没有curl时用requests抓取。
+    注意：requests可能被亚马逊反爬拦截（拿不到完整产品页），但在某些情况下仍可用。
+
+    参数：
+        url: 要抓取的网页链接
+
+    返回：网页HTML字符串。抓取失败返回空字符串。
+    """
+    try:
+        headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        resp = requests.get(url, headers=headers, timeout=_FETCH_TIMEOUT, allow_redirects=True)
+        resp.raise_for_status()
+        return resp.text
+    except Exception:
+        return ""
 
 
 def _extract_amazon_product_info(soup):
@@ -611,7 +665,7 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 - product_name 产品名称（必须用完整概括性名称，包含尺寸/材质/特殊特征等，例如"180mm ABS蓝牙5.0防水便携音箱"而非简单的"蓝牙音箱"）
 - product_aliases 行业通用别名
 - acceptable_lead_time 可接受生产交期
-- other_requirements 其他要求（无法归类到上述字段的额外要求，如包装方式、特殊工艺、售后服务等）
+- other_requirements 其他要求（重要：必须主动提取对找供应商有价值但无法归类到上述字段的信息，不要留空。需提取的信息包括但不限于：包装方式如独立包装/每箱N件、贴牌OEM/ODM要求、特殊工艺要求如防水/防锈/抛光、使用场景如家用/医用/户外、配色/外观要求、售后服务要求如质保年限、其他对寻源有参考价值的信息。注意：品牌、价格、评分、销量等对找供应商无价值的信息不要填入。没有额外要求时才留空）
 
 请返回JSON格式（只返回JSON，不要其他文字）：
 {{
@@ -626,7 +680,7 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
     "acceptable_lead_time": "可接受生产交期",
     "target_market": "目标市场",
     "required_certs": "认证要求",
-    "other_requirements": "其他要求（选填，无则空）",
+    "other_requirements": "其他要求（对寻源有价值的信息：包装方式/OEM要求/特殊工艺/使用场景/配色/质保等，无则空）",
     "missing_required": ["缺失的必须确认项字段名，如core_functions/material/spec_size"],
     "missing_optional": ["未确认的需确认项字段名（用户没明确回复不限制/无要求的）"],
     "confirmed": true或false（必须项全有且需确认项都已确认才为true）
