@@ -25,6 +25,9 @@ import model_config
 app = Flask(__name__)
 # 自动加载模板修改（开发时方便，不用每次重启）
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+# 小白讲解：让Jinja2的tojson过滤器保留中文，不转成\uXXXX编码
+# 默认ensure_ascii=True会把中文转成Unicode转义序列，导致存库后编辑页显示乱码
+app.config["JSON_AS_ASCII"] = False
 # 文件上传相关配置
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 最大上传16MB
 app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
@@ -1289,8 +1292,16 @@ def ai_save_requirement():
         "customization_req": request.form.get("other_requirements", "").strip(),
     }
 
-    # keywords 是JSON字符串（从前端隐藏域传过来），直接存
-    keywords_json = request.form.get("keywords", "").strip()
+    # keywords 是JSON字符串（从前端隐藏域传过来）
+    # 小白讲解：前端tojson可能把中文转成了\uXXXX编码，这里做兜底转换还原成中文
+    # 先json.loads把字符串解析成字典，再用ensure_ascii=False重新序列化，确保存库的是中文
+    keywords_raw = request.form.get("keywords", "").strip()
+    try:
+        keywords_obj = json.loads(keywords_raw)
+        keywords_json = json.dumps(keywords_obj, ensure_ascii=False)
+    except (json.JSONDecodeError, TypeError):
+        # 解析失败说明不是JSON格式（如手动输入的逗号分隔关键词），保持原样
+        keywords_json = keywords_raw
 
     if not data["product_name"]:
         flash("产品名称不能为空", "danger")

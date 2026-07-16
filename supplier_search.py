@@ -1966,10 +1966,10 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
     def _enrich_one_supplier(supplier, tyc_client):
         """单个供应商的天眼查补全任务
 
-        MIC（中国制造网）来源的供应商特殊处理：
-        - 直接用英文公司名搜索天眼查
-        - 找到 → 取天眼查返回的中文名替换英文名，补全工商信息
-        - 找不到 → 标记 _tyc_not_found=True，后续统一丢弃
+        不分来源平台，统一处理：
+        - 直接用公司名搜索天眼查（MIC英文名也直接搜）
+        - 找到 → 补全工商信息。MIC来源额外用天眼查中文名替换英文名
+        - 找不到 → 保留该公司，标记"工商数据未匹配"（不丢弃）
         """
         name = supplier.get("name", "").strip()
         source_platform = supplier.get("source_platform", "")
@@ -2059,11 +2059,8 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                 except Exception as e:
                     print(f"天眼查详情查询失败({name}): {e}")
             else:
-                # MIC来源且天眼查未匹配：标记丢弃（英文名搜不到中国企业的，不保留）
-                if source_platform == "Made-in-China":
-                    supplier["_tyc_not_found"] = True
-                    return
-                # 非MIC来源：标记经营状态未知，不编造工商数据
+                # 天眼查未匹配：保留该公司，标记经营状态未知，不编造工商数据
+                # （含MIC来源，用户希望直接用英文名搜索，能找到就补全，找不到也保留）
                 supplier["operating_status"] = "工商数据未匹配"
 
             # 计算联系方式状态
@@ -2101,12 +2098,6 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                     print(f"天眼查补全任务异常: {e}")
     except Exception as e:
         print(f"天眼查补全初始化失败: {e}")
-
-    # 过滤掉天眼查未匹配的MIC供应商（英文名查不到国内企业的，直接丢弃）
-    tyc_dropped = sum(1 for c in companies if c.get("_tyc_not_found"))
-    if tyc_dropped > 0:
-        companies = [c for c in companies if not c.get("_tyc_not_found")]
-        print(f"天眼查补全完成：丢弃{tyc_dropped}家MIC未匹配供应商，剩余{len(companies)}家")
 
     # 第四步：用DeepSeek基于完整工商数据做精细过滤
     # 小白讲解：此时 companies 已带工商信息（注册资本/经营状态/成立年限等），
