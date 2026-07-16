@@ -2203,8 +2203,11 @@ if __name__ == "__main__":
     # waitress 的 send_bytes=1 让每个字节立即发送，不被缓冲
     # threads=8 支持多线程，让 SSE 长连接不会阻塞其他请求
     from waitress import serve
-    # 云端部署（Railway等）用0.0.0.0+PORT环境变量，本地开发用127.0.0.1:5000
-    import os
-    host = os.environ.get("RAILWAY_ENVIRONMENT") and "0.0.0.0" or "127.0.0.1"
-    port = int(os.environ.get("PORT", "5000"))
+    # 云端部署检测：有PORT环境变量（Railway自动注入）→ 监听0.0.0.0供外部访问
+    # 本地开发：没有PORT → 用127.0.0.1:5000
+    import os as _os
+    port = int(_os.environ.get("PORT", "5000"))
+    # Railway/Koyeb/Render 等云平台会自动注入PORT变量，本地开发没有
+    host = "0.0.0.0" if _os.environ.get("PORT") else "127.0.0.1"
+    print(f"[启动] 监听地址: {host}:{port}")
     serve(app, host=host, port=port, threads=8, send_bytes=1)
