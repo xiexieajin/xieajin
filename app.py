@@ -9,7 +9,7 @@
 然后在浏览器打开 http://localhost:5000
 """
 
-from flask import Flask, render_template, request, redirect, url_for, g, flash, Response, stream_with_context, session
+from flask import Flask, render_template, request, redirect, url_for, g, flash, Response, stream_with_context, session, jsonify
 import os
 import json
 import queue
