@@ -144,13 +144,12 @@
 
 <script>
 /**
- * AI搜索进度展示脚本
+ * AI搜索进度展示脚本（轮询模式）
  *
- * 实现原理：
- * 1. 拦截表单提交，改用 fetch 发起 POST 请求
- * 2. 后端用SSE（Server-Sent Events）流式推送进度消息
- * 3. 用 ReadableStream 读取响应体，实时解析每条SSE消息
- * 4. 收到 done 消息后显示完成提示并自动跳转
+ * 实现原理（从SSE长连接改为轮询，解决Railway代理切断30分钟连接的问题）：
+ * 1. POST提交搜索任务 → 拿到 task_id（瞬间返回）
+ * 2. 每3秒 GET 轮询进度 → 取出所有新消息，更新UI
+ * 3. 收到 done/error 状态后停止轮询
  */
 document.getElementById('searchForm').addEventListener('submit', async function(e) {
     e.preventDefault();  // 阻止表单默认提交
@@ -293,76 +292,65 @@ document.getElementById('searchForm').addEventListener('submit', async function(
     }
 
     try {
-        // 用fetch发起POST请求，获取SSE流式响应
-        const response = await fetch(form.action, {
+        // 阶段1：提交搜索任务，拿到task_id（瞬间返回，不再阻塞30分钟）
+        const postResponse = await fetch(form.action, {
             method: 'POST',
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest',
-            },
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
             body: new FormData(form),
         });
 
-        if (!response.ok) {
-            throw new Error('HTTP ' + response.status);
+        if (!postResponse.ok) {
+            throw new Error('HTTP ' + postResponse.status);
         }
 
-        // 用ReadableStream读取响应体（SSE是文本流）
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        const startData = await postResponse.json();
+        const taskId = startData.task_id;
+        addLog('搜索任务已提交，正在启动...', 'info');
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        // 阶段2：每3秒轮询进度（不依赖长连接，Railway代理不会切断）
+        const pollUrl = form.action + '/poll/' + taskId;
+        let pollFailCount = 0;
 
-            // 把二进制解码成文本，加到缓冲区
-            buffer += decoder.decode(value, { stream: true });
-
-            // SSE消息以 \n\n 分隔，逐条解析
-            let idx;
-            while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                const rawMsg = buffer.slice(0, idx);
-                buffer = buffer.slice(idx + 2);
-
-                // 跳过注释（心跳）和非data行
-                if (!rawMsg.startsWith('data: ')) continue;
-
-                // 提取JSON部分
-                const jsonStr = rawMsg.slice(6).trim();
-                if (!jsonStr) continue;
-
-                let msg;
-                try {
-                    msg = JSON.parse(jsonStr);
-                } catch (err) {
-                    console.error('消息解析失败:', jsonStr);
-                    continue;
+        const pollInterval = setInterval(async () => {
+            try {
+                const res = await fetch(pollUrl);
+                if (!res.ok) {
+                    if (res.status === 404) {
+                        clearInterval(pollInterval);
+                        return;
+                    }
+                    throw new Error('HTTP ' + res.status);
                 }
 
-                // 根据消息类型处理
-                if (msg.type === 'progress') {
-                    updateProgress(msg.step, msg.total, msg.desc);
-                    // 小白讲解：关键词相关的进度消息（带[x/14]标记）只更新表格，不进详细日志
-                    // 这样详细日志只剩重要节点（AI过滤、天眼查等），不会被14×2=28条关键词消息淹没
-                    const parsed = parseKeywordMsg(msg.desc);
-                    if (parsed) {
-                        updateKeywordRow(parsed);
-                    } else {
-                        addLog(msg.desc);
-                    }
-                } else if (msg.type === 'done') {
-                    // 搜索完成
-                    stopTimer();
-                    updateProgress(msg.total || 1, msg.total || 1, '搜索完成');
-                    addLog('搜索完成！共找到 ' + msg.total_found + ' 家供应商，保存 ' + msg.saved_count + ' 家', 'success');
+                const pollData = await res.json();
+                pollFailCount = 0;  // 重置失败计数
 
-                    // 显示完成提示
+                // 处理所有新消息（格式和原来SSE完全一样）
+                for (const msg of pollData.messages) {
+                    if (msg.type === 'progress') {
+                        updateProgress(msg.step, msg.total, msg.desc);
+                        const parsed = parseKeywordMsg(msg.desc);
+                        if (parsed) {
+                            updateKeywordRow(parsed);
+                        } else {
+                            addLog(msg.desc);
+                        }
+                    }
+                }
+
+                // 搜索完成
+                if (pollData.status === 'done' && pollData.result) {
+                    clearInterval(pollInterval);
+                    stopTimer();
+                    const d = pollData.result;
+                    updateProgress(d.total || 1, d.total || 1, '搜索完成');
+                    addLog('搜索完成！共找到 ' + d.total_found + ' 家供应商，保存 ' + d.saved_count + ' 家', 'success');
+
                     document.getElementById('progressArea').style.display = 'none';
                     document.getElementById('doneArea').style.display = 'block';
                     document.getElementById('doneDesc').textContent =
-                        '共找到 ' + msg.total_found + ' 家供应商，已保存 ' + msg.saved_count + ' 家到数据库。';
+                        '共找到 ' + d.total_found + ' 家供应商，已保存 ' + d.saved_count + ' 家到数据库。';
 
-                    // 3秒后自动跳转
                     let countdown = 3;
                     const countdownEl = document.getElementById('countdown');
                     const timer = setInterval(() => {
@@ -373,17 +361,30 @@ document.getElementById('searchForm').addEventListener('submit', async function(
                             window.location.href = '{{ url_for("requirement_detail", id=requirement.id) }}';
                         }
                     }, 1000);
-                    return;
-                } else if (msg.type === 'error') {
-                    // 出错了
+                }
+
+                // 搜索出错
+                if (pollData.status === 'error') {
+                    clearInterval(pollInterval);
                     stopTimer();
                     document.getElementById('progressArea').style.display = 'none';
                     document.getElementById('errorArea').style.display = 'block';
-                    document.getElementById('errorMsg').textContent = msg.message;
-                    return;
+                    document.getElementById('errorMsg').textContent =
+                        pollData.result ? pollData.result.message : '搜索失败';
+                }
+            } catch (pollErr) {
+                pollFailCount++;
+                // 连续3次轮询失败才报网络错误（容忍偶尔的网络波动）
+                if (pollFailCount >= 3) {
+                    clearInterval(pollInterval);
+                    stopTimer();
+                    document.getElementById('progressArea').style.display = 'none';
+                    document.getElementById('errorArea').style.display = 'block';
+                    document.getElementById('errorMsg').textContent =
+                        '请求失败：' + pollErr.message + '（可能是网络问题或服务器超时）';
                 }
             }
-        }
+        }, 3000);  // 每3秒轮询一次
     } catch (err) {
         stopTimer();
         document.getElementById('progressArea').style.display = 'none';

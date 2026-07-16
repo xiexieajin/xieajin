@@ -36,6 +36,12 @@ app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(os.path.abspath(__fil
 app.secret_key = "f3a9c7e2b1d84f6a0e5c3b9d7a2f8e4c1b6a9d3f7e2c8b5a1d4f9e6c3b7a2e8f5"
 
 
+# ==================== 全局任务存储（AI搜索从SSE长连接改为轮询模式）====================
+# 小白讲解：Railway代理会切断30分钟+的SSE长连接，导致搜索中断。改为轮询模式：
+# 浏览器提交搜索任务 → 拿到task_id（瞬间返回）→ 每3秒轮询进度 → 搜索完成后拿到结果。
+# 结构：{task_id: {"queue": queue.Queue(), "status": "running"|"done"|"error", "result": {...}}}
+task_store = {}
+
 # 注册自定义Jinja2过滤器：把JSON字符串解析成Python对象（用于展示P0-P3关键词）
 @app.template_filter("from_json")
 def from_json_filter(value):
@@ -1386,31 +1392,27 @@ def ai_search_suppliers(req_id):
             return redirect(url_for("ai_index"))
         return render_template("ai/search_suppliers.html", requirement=requirement)
 
-    # POST请求：执行AI搜索（用SSE流式返回进度）
-    # 用队列在线程间传递进度消息（搜索线程 -> 主响应generator）
-    progress_queue = queue.Queue()
+    # POST请求：提交搜索任务（返回task_id，由前端轮询进度）
+    # 改为轮询模式：Railway代理会切断30分钟+的SSE长连接，导致搜索中断
+    import uuid
+    task_id = str(uuid.uuid4())
+
+    # 创建任务记录，放入全局task_store
+    q = queue.Queue()
+    task_store[task_id] = {"queue": q, "status": "running", "result": None}
 
     def progress_callback(step, total, desc):
-        """进度回调：把进度消息塞进队列，由generator读出推送给前端"""
-        progress_queue.put({"type": "progress", "step": step, "total": total, "desc": desc})
+        """进度回调：把进度消息塞进队列，由轮询接口读出返回给前端"""
+        q.put({"type": "progress", "step": step, "total": total, "desc": desc})
 
     def run_search_thread():
-        """
-        后台线程：执行实际搜索并保存到数据库
-
-        注意：SQLite连接默认不能跨线程使用，所以在线程内独立创建连接。
-        主请求的 g.db 是在请求线程中创建的，不能在这里用。
-        """
-        # 在线程内创建独立的数据库连接
         conn = db.get_db()
         cur = conn.cursor()
         try:
-            # 调用新的搜索模块（智谱web_search + DeepSeek过滤 + 天眼查MCP补全）
             from supplier_search import search_suppliers
             keywords = requirement["keywords"] or requirement["product_name"]
             suppliers = search_suppliers(keywords, requirement["product_name"], progress_callback)
 
-            # 批量写入数据库（字段对齐供应商寻源SKILL文档）
             saved_count = 0
             for s in suppliers:
                 if not s.get("name"):
@@ -1440,64 +1442,65 @@ def ai_search_suppliers(req_id):
                 saved_count += 1
             conn.commit()
 
-            # 通知前端完成
-            progress_queue.put({
+            result = {
                 "type": "done",
                 "saved_count": saved_count,
                 "total_found": len(suppliers),
                 "req_id": req_id,
-            })
+            }
+            q.put(result)
+            task_store[task_id]["status"] = "done"
+            task_store[task_id]["result"] = result
         except Exception as e:
-            # 通知前端出错
-            progress_queue.put({"type": "error", "message": f"AI搜索失败：{str(e)}"})
+            error_msg = {"type": "error", "message": f"AI搜索失败：{str(e)}"}
+            q.put(error_msg)
+            task_store[task_id]["status"] = "error"
+            task_store[task_id]["result"] = error_msg
         finally:
             conn.close()
 
-    # 先放一条"正在启动"消息，让前端立即收到响应（不等30秒的MCP连接+翻译）
-    # 否则前端会一直显示"正在初始化..."，用户以为卡死了
-    # 小白讲解：启动消息里不再提具体平台名，只告诉用户"正在启动搜索"
-    progress_queue.put({"type": "progress", "step": 0, "total": 3, "desc": "正在启动搜索..."})
+    # 先放启动消息
+    q.put({"type": "progress", "step": 0, "total": 3, "desc": "正在启动搜索..."})
 
-    # 启动搜索线程
+    # 启动后台搜索线程
     thread = threading.Thread(target=run_search_thread)
     thread.start()
 
-    # generator：从队列读消息，以SSE格式推送给浏览器
-    def generate():
-        """SSE事件生成器：把队列里的消息实时推送给前端"""
-        # 立即 yield 一个心跳，强制 Flask/Werkzeug 立刻发送响应头给客户端
-        yield b": connected\n\n"
+    # 返回task_id（瞬间完成，前端拿到后开始轮询）
+    return jsonify({"task_id": task_id, "status": "started"})
 
-        while True:
-            try:
-                # 队列读取超时设1秒：每秒至少 yield 一次，让 waitress 有机会发送缓冲数据
-                # 之前 timeout=300 导致 generate() 长时间阻塞，waitress 不发送已 yield 的数据
-                item = progress_queue.get(timeout=1)
-            except queue.Empty:
-                # 超时了，推送一个心跳保持连接（同时让 waitress 刷新缓冲区）
-                yield b": heartbeat\n\n"
-                continue
 
-            # 把消息序列化成SSE格式：data: <json>\n\n
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n".encode("utf-8")
+@app.route("/ai/search-suppliers/<int:req_id>/poll/<task_id>", methods=["GET"])
+def poll_ai_search(req_id, task_id):
+    """
+    轮询搜索任务进度（每3秒调用一次）
+    返回自上次轮询以来所有新消息 + 任务状态
+    """
+    task = task_store.get(task_id)
+    if not task:
+        return jsonify({"status": "not_found", "error": "任务不存在或已过期"}), 404
 
-            # 收到完成或错误消息，结束流
-            if item.get("type") in ("done", "error"):
-                break
+    # 非阻塞地取出队列中所有新消息
+    messages = []
+    while True:
+        try:
+            msg = task["queue"].get_nowait()
+            messages.append(msg)
+        except queue.Empty:
+            break
 
-    # 返回SSE流式响应
-    # direct_passthrough=True：告诉 Flask/Werkzeug 不要迭代生成器来计算 Content-Length
-    #   否则 Werkzeug 会把整个生成器的数据缓冲到内存中计算 Content-Length，导致 SSE 消息无法实时推送
-    # 注意：不能设置 Connection 头（hop-by-hop 头，由 WSGI 服务器管理）
-    return Response(
-        generate(),
-        mimetype="text/event-stream",
-        direct_passthrough=True,
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # 禁用nginx缓冲（如果有反向代理）
-        },
-    )
+    current_status = task["status"]
+    result = task.get("result")
+
+    # 任务已完成，清理存储（前端收到done/error后会停止轮询）
+    if current_status in ("done", "error"):
+        del task_store[task_id]
+
+    return jsonify({
+        "status": current_status,
+        "messages": messages,
+        "result": result
+    })
 
 
 @app.route("/ai/auto-screening/<int:req_id>", methods=["GET", "POST"])
