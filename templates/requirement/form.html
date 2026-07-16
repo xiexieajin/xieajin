@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}{{ '编辑需求' if edit else '创建需求' }} - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title">
+        <i class="bi bi-{{ 'pencil' if edit else 'plus-circle' }}"></i>
+        {{ '编辑需求' if edit else '创建采购需求' }}
+    </h1>
+    <a href="{{ url_for('requirement_list') }}" class="back-link">
+        <i class="bi bi-arrow-left"></i> 返回列表
+    </a>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<form method="POST" action="{{ url_for('requirement_edit', id=data.id) if edit else url_for('requirement_create') }}">
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-box"></i> 产品基本信息</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label required">产品名称</label>
+                    <input type="text" class="form-control" name="product_name"
+                           value="{{ data.product_name if data else '' }}" required>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">行业通用别名</label>
+                    <input type="text" class="form-control" name="product_aliases"
+                           value="{{ data.product_aliases if data else '' }}"
+                           placeholder="如有多个用逗号分隔">
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">核心功能</label>
+                    <input type="text" class="form-control" name="core_functions"
+                           value="{{ data.core_functions if data else '' }}">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">材质</label>
+                    <input type="text" class="form-control" name="material"
+                           value="{{ data.material if data else '' }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-calculator"></i> 采购数量要求</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">首批采购量</label>
+                    <input type="text" class="form-control" name="first_purchase_qty"
+                           value="{{ data.first_purchase_qty if data else '' }}"
+                           placeholder="如：500台">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">日常补货量</label>
+                    <input type="text" class="form-control" name="daily_replenish_qty"
+                           value="{{ data.daily_replenish_qty if data else '' }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">最大备货量</label>
+                    <input type="text" class="form-control" name="max_stock_qty"
+                           value="{{ data.max_stock_qty if data else '' }}">
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">可接受最小起订量(MOQ)</label>
+                    <input type="text" class="form-control" name="acceptable_moq"
+                           value="{{ data.acceptable_moq if data else '' }}"
+                           placeholder="如：100">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">可接受生产交期（天）</label>
+                    <input type="text" class="form-control" name="acceptable_lead_time"
+                           value="{{ data.acceptable_lead_time if data else '' }}"
+                           placeholder="如：30">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-globe"></i> 市场与认证要求</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">目标市场</label>
+                    <select class="form-select" name="target_market">
+                        <option value="">请选择</option>
+                        {% set current_market = data.target_market if data else '' %}
+                        <option value="欧美" {{ 'selected' if current_market == '欧美' }}>欧美</option>
+                        <option value="东南亚" {{ 'selected' if current_market == '东南亚' }}>东南亚</option>
+                        <option value="中东" {{ 'selected' if current_market == '中东' }}>中东</option>
+                        <option value="日韩" {{ 'selected' if current_market == '日韩' }}>日韩</option>
+                        <option value="全球" {{ 'selected' if current_market == '全球' }}>全球</option>
+                    </select>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">必须的产品认证</label>
+                    <input type="text" class="form-control" name="required_certs"
+                           value="{{ data.required_certs if data else '' }}"
+                           placeholder="如：CE, FCC, RoHS（逗号分隔）">
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">定制化要求</label>
+                <textarea class="form-control" name="customization_req" rows="2">{{ data.customization_req if data else '' }}</textarea>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-key"></i> 需求总结与关键词</div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label">需求总结</label>
+                <textarea class="form-control" name="requirement_summary" rows="3"
+                          placeholder="完整的需求描述，用于后续供应商搜索">{{ data.requirement_summary if data else '' }}</textarea>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">需求关键词</label>
+                <input type="text" class="form-control" name="keywords"
+                       value="{{ data.keywords if data else '' }}"
+                       placeholder="用于搜索供应商的关键词，逗号分隔。如：蓝牙音箱,防水,便携">
+            </div>
+            {% if edit %}
+            <div class="mb-3">
+                <label class="form-label">需求状态</label>
+                <select class="form-select" name="status">
+                    {% set current_status = data.status if data else '需求确认中' %}
+                    <option value="需求确认中" {{ 'selected' if current_status == '需求确认中' }}>需求确认中</option>
+                    <option value="寻源中" {{ 'selected' if current_status == '寻源中' }}>寻源中</option>
+                    <option value="已完成" {{ 'selected' if current_status == '已完成' }}>已完成</option>
+                </select>
+                <small class="text-muted">标记"已完成"时，未初筛的供应商将自动设为"未通过初筛"</small>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="text-end mt-4">
+        <button type="submit" class="btn btn-primary btn-lg">
+            <i class="bi bi-check-circle"></i> {{ '保存修改' if edit else '创建需求' }}
+        </button>
+        <a href="{{ url_for('requirement_list') }}" class="btn btn-outline-secondary btn-lg">取消</a>
+    </div>
+</form>
+{% endblock %}

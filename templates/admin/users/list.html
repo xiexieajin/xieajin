@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}用户管理 - 供应商寻源系统{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-people"></i> 用户管理</h1>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('admin_user_create') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-person-plus"></i> 新增用户
+        </a>
+        <a href="{{ url_for('admin_index') }}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> 返回
+        </a>
+    </div>
+</div>
+
+<!-- 筛选区 -->
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label small">角色</label>
+                <select class="form-select form-select-sm" name="role">
+                    <option value="">全部角色</option>
+                    <option value="admin" {{ 'selected' if current_role == 'admin' }}>管理员</option>
+                    <option value="user" {{ 'selected' if current_role == 'user' }}>普通用户</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small">状态</label>
+                <select class="form-select form-select-sm" name="is_active">
+                    <option value="">全部状态</option>
+                    <option value="1" {{ 'selected' if current_is_active == '1' }}>启用</option>
+                    <option value="0" {{ 'selected' if current_is_active == '0' }}>停用</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small">用户名搜索</label>
+                <input type="text" class="form-control form-control-sm" name="name_search"
+                       value="{{ current_name_search }}" placeholder="输入用户名关键词">
+            </div>
+            <div class="col-md-2 d-flex gap-1">
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="bi bi-search"></i>
+                </button>
+                {% if current_role or current_is_active or current_name_search %}
+                <a href="{{ url_for('admin_user_list') }}" class="btn btn-outline-secondary btn-sm">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </a>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 用户列表表格 -->
+<div class="card">
+    <div class="card-body">
+        {% if users %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th width="50">ID</th>
+                        <th>用户名</th>
+                        <th>显示名</th>
+                        <th width="100">角色</th>
+                        <th width="80">状态</th>
+                        <th width="160">创建时间</th>
+                        <th width="280">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    <tr>
+                        <td>{{ u.id }}</td>
+                        <td><strong>{{ u.username }}</strong></td>
+                        <td>{{ u.display_name }}</td>
+                        <td>
+                            {% if u.role == 'admin' %}
+                            <span class="badge bg-danger">管理员</span>
+                            {% else %}
+                            <span class="badge bg-secondary">普通用户</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if u.is_active %}
+                            <span class="badge bg-success">启用</span>
+                            {% else %}
+                            <span class="badge bg-warning text-dark">停用</span>
+                            {% endif %}
+                        </td>
+                        <td><small>{{ u.created_at }}</small></td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <a href="{{ url_for('admin_user_edit', id=u.id) }}"
+                                   class="btn btn-outline-primary" title="编辑">
+                                    <i class="bi bi-pencil"></i>
+                                </a>
+                                <a href="{{ url_for('admin_user_reset_password', id=u.id) }}"
+                                   class="btn btn-outline-warning" title="重置密码">
+                                    <i class="bi bi-key"></i>
+                                </a>
+                                {% if u.id != g.user_id %}
+                                <form method="POST" action="{{ url_for('admin_user_toggle_status', id=u.id) }}"
+                                      class="d-inline" onsubmit="return confirm('确定{{ '停用' if u.is_active else '启用' }}该用户？')">
+                                    <button type="submit" class="btn btn-outline-secondary" title="{{ '停用' if u.is_active else '启用' }}">
+                                        <i class="bi bi-{{ 'person-x' if u.is_active else 'person-check' }}"></i>
+                                    </button>
+                                </form>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-4">
+            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+            暂无用户数据
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

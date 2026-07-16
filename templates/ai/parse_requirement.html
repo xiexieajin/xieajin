@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}AI解析需求 - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-1-circle"></i> AI解析需求</h1>
+    <a href="{{ url_for('ai_index') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> 返回AI首页
+    </a>
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    <strong>使用说明：</strong>输入需求描述、上传文件（或两者结合），AI会自动提取产品信息、采购要求、认证要求和搜索关键词。
+</div>
+
+{% if not vision_configured %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    智谱 API Key 未配置，<strong>图片识别功能暂不可用</strong>（PDF/Excel/Word等文档可正常使用）。
+    如需识别图片，请在 <code>config.py</code> 中配置 <code>ZHIPU_API_KEY</code>。
+    （获取地址：<a href="https://open.bigmodel.cn/" target="_blank">智谱开放平台</a>，有免费额度）
+</div>
+{% endif %}
+
+<div id="loadingOverlay" style="
+    display: none;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;">
+    <div class="spinner-border text-light" role="status" style="width: 4rem; height: 4rem;">
+        <span class="visually-hidden">加载中...</span>
+    </div>
+    <p class="text-light mt-3" style="font-size: 1.25rem;">
+        <i class="bi bi-robot"></i> AI正在解析中，请耐心等待...
+    </p>
+</div>
+
+<form method="POST" enctype="multipart/form-data" id="parseForm">
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-chat-text"></i> 需求描述（文本，可选）</div>
+        <div class="card-body">
+            <label class="form-label">请描述你的采购需求（可以只上传文件不填文字，也可以两者结合）：</label>
+            <textarea class="form-control" name="input_text" rows="6"
+                      placeholder="例如：&#10;我们需要采购一批蓝牙音箱，主要用于亚马逊美国站销售。&#10;产品要求：防水IPX7，续航10小时以上，首批采购500台，需要CE和FCC认证。"></textarea>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header">
+            <i class="bi bi-file-earmark-arrow-up"></i> 上传文件（可选）
+        </div>
+        <div class="card-body">
+            <label class="form-label">上传需求文件，系统会自动识别文件类型并解析：</label>
+            <input type="file" class="form-control" name="file" id="fileInput"
+                   accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.pdf,.xlsx,.xls,.docx,.txt,.md,.csv,.json">
+            <small class="text-muted">
+                支持格式：
+                <span class="badge bg-info">图片 jpg/png/gif/webp</span>
+                <span class="badge bg-primary">PDF</span>
+                <span class="badge bg-success">Excel xlsx/xls</span>
+                <span class="badge bg-warning text-dark">Word docx</span>
+                <span class="badge bg-secondary">txt/md/csv</span>
+            </small>
+            <div class="alert alert-light border mt-2 mb-0">
+                <small>
+                    <strong>处理方式：</strong>
+                    图片 → 智谱GLM-4V识别内容；PDF/Excel/Word/txt → 提取文字内容。
+                    扫描版PDF提取不出文字时，建议截图后按图片上传。
+                </small>
+            </div>
+
+            <div id="filePreview" class="mt-2" style="display:none;">
+                <img id="previewImg" src="" class="img-thumbnail" style="max-height:200px;">
+            </div>
+        </div>
+    </div>
+
+    <div class="alert alert-light border">
+        <small>
+            <i class="bi bi-lightbulb"></i>
+            <strong>提示：</strong>文字描述和文件可以同时提供，AI会综合分析。
+            图片/PDF解析需要 10-20 秒，请耐心等待，不要重复点击。
+        </small>
+    </div>
+
+    <div class="text-end">
+        <button type="submit" class="btn btn-primary btn-lg">
+            <i class="bi bi-magic"></i> AI解析需求
+        </button>
+        <a href="{{ url_for('ai_index') }}" class="btn btn-outline-secondary btn-lg">取消</a>
+    </div>
+</form>
+
+<script>
+// 文件上传后显示预览（仅图片）
+document.getElementById('fileInput').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    const preview = document.getElementById('filePreview');
+    const previewImg = document.getElementById('previewImg');
+
+    if (file && file.type.startsWith('image/')) {
+        // 图片文件显示预览
+        previewImg.src = URL.createObjectURL(file);
+        preview.style.display = 'block';
+    } else {
+        // 非图片文件不显示预览
+        preview.style.display = 'none';
+    }
+});
+
+// 监听表单提交：显示全屏loading遮罩层，隐藏表单，提示用户耐心等待
+document.getElementById('parseForm').addEventListener('submit', function() {
+    var overlay = document.getElementById('loadingOverlay');
+    var form = document.getElementById('parseForm');
+    // 显示遮罩层（用flex布局让内容居中）
+    overlay.style.display = 'flex';
+    // 隐藏表单（避免用户重复操作）
+    form.style.display = 'none';
+    // 滚动到页面顶部，确保用户能看到loading提示
+    window.scrollTo(0, 0);
+});
+</script>
+{% endblock %}

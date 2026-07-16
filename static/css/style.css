@@ -1,0 +1,863 @@
+/* ============================================================
+ * 供应商寻源系统 - 现代简约风设计系统
+ *
+ * 小白讲解：这个文件是整个系统"长什么样"的总控制台。
+ * 里面分三大块：
+ *   1. CSS 变量（:root 里面）—— 定义颜色、圆角、阴影等"设计标准"
+ *   2. Bootstrap 组件覆盖 —— 用我们的标准替换 Bootstrap 默认样式
+ *   3. 自定义工具类 —— 方便在 HTML 里直接使用的样式快捷方式
+ *
+ * 主色：Teal 翠绿 #0d9488（专业、现代、区别于 Bootstrap 默认蓝）
+ * 字体：Inter + Noto Sans SC
+ * ============================================================ */
+
+/* ============================================================
+ * 第一部分：CSS 变量（设计标准定义）
+ * 小白讲解：就像装修前先选好油漆色卡，后面所有地方都从这里取色
+ * ============================================================ */
+:root {
+  /* === 品牌主色：Teal 翠绿色系（从浅到深 10 个等级）=== */
+  --color-primary-50: #f0fdfa;
+  --color-primary-100: #ccfbf1;
+  --color-primary-200: #99f6e4;
+  --color-primary-300: #5eead4;
+  --color-primary-400: #2dd4bf;
+  --color-primary-500: #14b8a6;
+  --color-primary-600: #0d9488;  /* 主色，按钮、链接、高亮都用这个 */
+  --color-primary-700: #0f766e;
+  --color-primary-800: #115e59;
+  --color-primary-900: #134e4a;
+
+  /* === 中性色阶：Slate（用于文字、背景、边框）=== */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+
+  /* === 语义状态色（成功/警告/错误/信息）=== */
+  --state-success: #10b981;
+  --state-success-bg: #ecfdf5;
+  --state-warning: #f59e0b;
+  --state-warning-bg: #fffbeb;
+  --state-error: #ef4444;
+  --state-error-bg: #fef2f2;
+  --state-info: #3b82f6;
+  --state-info-bg: #eff6ff;
+
+  /* === 语义变量映射（方便统一修改）=== */
+  --color-bg: var(--color-neutral-50);          /* 页面背景 */
+  --color-surface: var(--color-neutral-0);       /* 卡片背景 */
+  --color-surface-hover: var(--color-neutral-50); /* 悬浮背景 */
+  --color-border: var(--color-neutral-200);      /* 普通边框 */
+  --color-border-light: var(--color-neutral-100);/* 浅色边框 */
+  --color-text-primary: var(--color-neutral-900);/* 主文字 */
+  --color-text-secondary: var(--color-neutral-600);/* 次要文字 */
+  --color-text-muted: var(--color-neutral-400);  /* 弱化文字 */
+  --color-brand: var(--color-primary-600);       /* 品牌色 */
+  --color-brand-hover: var(--color-primary-700); /* 品牌悬浮色 */
+  --color-brand-light: var(--color-primary-50);  /* 品牌浅色背景 */
+
+  /* === 圆角规范 === */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* === 阴影规范（静态表面用极浅阴影，悬浮层用稍深阴影）=== */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
+
+  /* === 字体系统 === */
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* === 字号层级 === */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+
+  /* === 覆盖 Bootstrap 主色变量（让 Bootstrap 组件自动使用我们的主色）=== */
+  --bs-primary: var(--color-primary-600);
+  --bs-primary-rgb: 13, 148, 136;
+  --bs-body-bg: var(--color-bg);
+  --bs-body-color: var(--color-text-primary);
+  --bs-body-font-family: var(--font-sans);
+  --bs-border-color: var(--color-border);
+  --bs-link-color: var(--color-brand);
+  --bs-link-hover-color: var(--color-brand-hover);
+}
+
+/* ============================================================
+ * 第二部分：全局基础样式
+ * ============================================================ */
+
+/* 小白讲解：body 是整个页面的"底板"，设置好背景色和字体 */
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 小白讲解：让所有链接用品牌色，悬浮时变深 */
+a {
+  color: var(--color-brand);
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+a:hover {
+  color: var(--color-brand-hover);
+}
+
+/* ============================================================
+ * 第三部分：Bootstrap 组件覆盖
+ * 小白讲解：下面这些代码会把 Bootstrap 默认的"蓝不拉叽"样式
+ *           替换成我们的现代简约风格
+ * ============================================================ */
+
+/* === 导航栏（Navbar）覆盖 === */
+/* 小白讲解：把 Bootstrap 导航栏改成白色背景 + 底部细线的现代风格 */
+.navbar {
+  background-color: var(--color-surface) !important;
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: none;
+  padding: 0;
+  min-height: 64px;
+}
+.navbar > .container {
+  max-width: 1200px;
+  padding: 0 1.5rem;
+  height: 64px;
+}
+/* Logo 文字样式 */
+.navbar-brand {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-text-primary) !important;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.navbar-brand i {
+  color: var(--color-brand);
+  font-size: 1.5rem;
+}
+/* 导航链接样式 */
+.navbar .nav-link {
+  color: var(--color-text-secondary) !important;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 1.25rem 1rem !important;
+  position: relative;
+  transition: color 150ms ease;
+}
+.navbar .nav-link:hover {
+  color: var(--color-text-primary) !important;
+}
+/* 当前页面高亮：Teal 文字 + 底部指示线 */
+.navbar .nav-link.active {
+  color: var(--color-brand) !important;
+}
+.navbar .nav-link.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 1rem;
+  right: 1rem;
+  height: 2px;
+  background-color: var(--color-brand);
+  border-radius: var(--radius-sm);
+}
+
+/* === 按钮覆盖 === */
+/* 小白讲解：把按钮圆角变小、去掉默认阴影，变成现代扁平风格 */
+.btn {
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  padding: 0.5rem 1rem;
+  font-size: var(--text-sm);
+  transition: all 150ms ease;
+  border: 1px solid transparent;
+}
+.btn-sm {
+  padding: 0.25rem 0.625rem;
+  font-size: var(--text-xs);
+}
+.btn-lg {
+  padding: 0.625rem 1.5rem;
+  font-size: var(--text-base);
+}
+/* 主按钮：Teal 实心 */
+.btn-primary {
+  background-color: var(--color-brand);
+  border-color: var(--color-brand);
+  color: #fff;
+}
+.btn-primary:hover,
+.btn-primary:focus {
+  background-color: var(--color-brand-hover);
+  border-color: var(--color-brand-hover);
+  color: #fff;
+}
+/* 成功按钮：绿色实心 */
+.btn-success {
+  background-color: var(--state-success);
+  border-color: var(--state-success);
+}
+.btn-success:hover,
+.btn-success:focus {
+  background-color: #059669;
+  border-color: #059669;
+}
+/* 轮廓按钮：去掉 Bootstrap 默认蓝色，改成中性灰边框 */
+.btn-outline-secondary {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+  background-color: var(--color-surface);
+}
+.btn-outline-secondary:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-neutral-300);
+  background-color: var(--color-neutral-50);
+}
+/* 轮廓主色按钮 */
+.btn-outline-primary {
+  color: var(--color-brand);
+  border-color: var(--color-primary-200);
+  background-color: var(--color-surface);
+}
+.btn-outline-primary:hover {
+  color: #fff;
+  background-color: var(--color-brand);
+  border-color: var(--color-brand);
+}
+/* 危险按钮 */
+.btn-danger {
+  background-color: var(--state-error);
+  border-color: var(--state-error);
+}
+
+/* === 卡片覆盖 === */
+/* 小白讲解：卡片是页面的主要内容容器，用细线边框代替阴影，更清爽 */
+.card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: none;
+  margin-bottom: 1.5rem;
+}
+.card-header {
+  background-color: var(--color-neutral-50);
+  border-bottom: 1px solid var(--color-border);
+  padding: 1rem 1.25rem;
+  font-weight: 600;
+  font-size: var(--text-base);
+  color: var(--color-text-primary);
+}
+.card-header i {
+  color: var(--color-brand);
+  margin-right: 0.5rem;
+}
+/* 覆盖 card-header 里的 bg-primary/bg-success 等彩色头部 */
+.card-header.bg-primary {
+  background-color: var(--color-brand) !important;
+  color: #fff !important;
+}
+.card-header.bg-primary i {
+  color: #fff;
+}
+.card-header.bg-success {
+  background-color: var(--state-success) !important;
+  color: #fff !important;
+}
+.card-header.bg-success i {
+  color: #fff;
+}
+.card-header.bg-warning {
+  background-color: var(--state-warning) !important;
+  color: var(--color-neutral-900) !important;
+}
+.card-body {
+  padding: 1.25rem;
+}
+
+/* === 表格覆盖 === */
+/* 小白讲解：表格是列表页的核心，把间距拉开、边框变细、行悬浮变色 */
+.table {
+  margin-bottom: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+.table thead th {
+  background-color: var(--color-neutral-50);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.75rem 1rem;
+  white-space: nowrap;
+}
+.table tbody td {
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--color-border-light);
+  vertical-align: middle;
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+/* 行悬浮效果 */
+.table-hover tbody tr:hover {
+  background-color: var(--color-neutral-50);
+}
+/* table-light 覆盖 */
+.table-light th {
+  background-color: var(--color-neutral-100);
+  color: var(--color-text-secondary);
+}
+
+/* === 徽章/标签覆盖 === */
+/* 小白讲解：把 Bootstrap 圆角徽章改成现代药丸风格 */
+.badge {
+  font-weight: 500;
+  font-size: var(--text-xs);
+  padding: 0.25rem 0.625rem;
+  border-radius: var(--radius-sm);
+  line-height: 1.4;
+}
+/* 阶段标签颜色统一 */
+.badge.bg-secondary {
+  background-color: var(--color-neutral-100) !important;
+  color: var(--color-neutral-600) !important;
+}
+.badge.bg-primary {
+  background-color: var(--color-primary-50) !important;
+  color: var(--color-primary-700) !important;
+}
+.badge.bg-success {
+  background-color: var(--state-success-bg) !important;
+  color: var(--state-success) !important;
+}
+.badge.bg-warning {
+  background-color: var(--state-warning-bg) !important;
+  color: var(--state-warning) !important;
+}
+.badge.bg-danger {
+  background-color: var(--state-error-bg) !important;
+  color: var(--state-error) !important;
+}
+.badge.bg-info {
+  background-color: var(--state-info-bg) !important;
+  color: var(--state-info) !important;
+}
+
+/* === 表单覆盖 === */
+/* 小白讲解：把输入框边框变细、圆角变小、聚焦时边框变成品牌色 */
+.form-control,
+.form-select {
+  border-color: var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  background-color: var(--color-surface);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.1);
+}
+.form-label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.375rem;
+}
+.form-label.required::after {
+  content: ' *';
+  color: var(--state-error);
+}
+.form-text {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* === 提示框（Alert）覆盖 === */
+.alert {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  padding: 0.875rem 1rem;
+  font-size: var(--text-sm);
+  margin-bottom: 1rem;
+}
+.alert-success {
+  background-color: var(--state-success-bg);
+  border-color: #d1fae5;
+  color: #065f46;
+}
+.alert-warning {
+  background-color: var(--state-warning-bg);
+  border-color: #fef3c7;
+  color: #92400e;
+}
+.alert-danger {
+  background-color: var(--state-error-bg);
+  border-color: #fee2e2;
+  color: #991b1b;
+}
+.alert-info {
+  background-color: var(--state-info-bg);
+  border-color: #dbeafe;
+  color: #1e40af;
+}
+
+/* === 分页覆盖 === */
+.pagination {
+  gap: 0.25rem;
+}
+.page-link {
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm) !important;
+  padding: 0.375rem 0.75rem;
+  font-size: var(--text-sm);
+}
+.page-link:hover {
+  background-color: var(--color-neutral-50);
+  border-color: var(--color-neutral-300);
+  color: var(--color-text-primary);
+}
+.page-item.active .page-link {
+  background-color: var(--color-brand);
+  border-color: var(--color-brand);
+  color: #fff;
+}
+.page-item.disabled .page-link {
+  color: var(--color-text-muted);
+  background-color: var(--color-neutral-50);
+}
+
+/* === 进度条覆盖 === */
+.progress {
+  background-color: var(--color-neutral-100);
+  border-radius: var(--radius-sm);
+}
+.progress-bar {
+  background-color: var(--color-brand);
+}
+
+/* === 列表组覆盖 === */
+.list-group-item {
+  border-color: var(--color-border-light);
+  padding: 0.75rem 1rem;
+  font-size: var(--text-sm);
+}
+.list-group-item-light {
+  background-color: var(--color-neutral-50);
+}
+.list-group-item-success {
+  background-color: var(--state-success-bg);
+}
+
+/* === 模态框覆盖 === */
+.modal-content {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+.modal-header {
+  border-bottom: 1px solid var(--color-border);
+  padding: 1rem 1.25rem;
+}
+.modal-footer {
+  border-top: 1px solid var(--color-border);
+  padding: 0.875rem 1.25rem;
+}
+
+/* ============================================================
+ * 第四部分：自定义工具类
+ * 小白讲解：这些是方便在 HTML 里直接用的样式类
+ * ============================================================ */
+
+/* 文字颜色 */
+.text-brand { color: var(--color-brand) !important; }
+.text-secondary-custom { color: var(--color-text-secondary) !important; }
+.text-muted-custom { color: var(--color-text-muted) !important; }
+
+/* 页面标题样式 */
+.page-title {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 1.5rem;
+}
+
+/* 统计卡片 */
+.stat-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  transition: border-color 150ms ease;
+}
+.stat-card:hover {
+  border-color: var(--color-primary-200);
+}
+.stat-card__icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  background-color: var(--color-brand-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.stat-card__icon i {
+  font-size: 1.25rem;
+  color: var(--color-brand);
+}
+.stat-card__number {
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1;
+}
+.stat-card__label {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin-top: 0.25rem;
+}
+
+/* 阶段分布条 */
+.stage-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.stage-bar-row__label {
+  width: 80px;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+.stage-bar-row__track {
+  flex: 1;
+  height: 8px;
+  background-color: var(--color-neutral-100);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.stage-bar-row__fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 300ms ease;
+}
+.stage-bar-row__count {
+  width: 32px;
+  text-align: right;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+
+/* 评分进度条 */
+.score-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.score-row__label {
+  width: 120px;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+.score-row__track {
+  flex: 1;
+  height: 6px;
+  background-color: var(--color-neutral-100);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.score-row__fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary-400), var(--color-primary-600));
+  border-radius: var(--radius-full);
+}
+.score-row__value {
+  min-width: 56px;
+  text-align: right;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 时间线（沟通记录） */
+.timeline {
+  list-style: none;
+  padding-left: 0;
+  margin-bottom: 0;
+}
+.timeline-item {
+  position: relative;
+  padding-left: 1.75rem;
+  padding-bottom: 1.25rem;
+}
+.timeline-item:last-child {
+  padding-bottom: 0;
+}
+.timeline-item::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: -8px;
+  width: 2px;
+  background-color: var(--color-border);
+}
+.timeline-item:last-child::before {
+  display: none;
+}
+.timeline-item::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-neutral-300);
+  border: 2px solid var(--color-surface);
+}
+.timeline-item:first-child::after {
+  background-color: var(--color-brand);
+}
+.timeline-item__title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-bottom: 0.125rem;
+}
+.timeline-item__date {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin-bottom: 0.25rem;
+}
+.timeline-item__desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+/* 工作流步骤卡片 */
+.step-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  text-align: center;
+  height: 100%;
+  transition: border-color 150ms ease, transform 150ms ease;
+}
+.step-card:hover {
+  border-color: var(--color-primary-200);
+  transform: translateY(-2px);
+}
+.step-card__number {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--color-primary-400), var(--color-primary-600));
+  color: #fff;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 1rem;
+}
+.step-card__icon {
+  font-size: 1.5rem;
+  color: var(--color-brand);
+  margin-bottom: 0.5rem;
+}
+.step-card__title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 0.5rem;
+}
+.step-card__desc {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* 操作按钮组（表格里的查看/编辑等） */
+.action-link {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  padding: 0 0.375rem;
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+.action-link:hover {
+  color: var(--color-brand);
+}
+.action-link-brand {
+  color: var(--color-brand);
+}
+.action-link-brand:hover {
+  color: var(--color-brand-hover);
+}
+
+/* 返回链接 */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  margin-bottom: 1rem;
+  transition: color 150ms ease;
+}
+.back-link:hover {
+  color: var(--color-brand);
+}
+
+/* 空状态 */
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+}
+.empty-state__icon {
+  font-size: 3rem;
+  color: var(--color-text-muted);
+  margin-bottom: 1rem;
+}
+.empty-state__title {
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-bottom: 0.5rem;
+}
+.empty-state__desc {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+/* 关键词标签药丸 */
+.keyword-tag {
+  display: inline-block;
+  font-size: var(--text-xs);
+  background-color: var(--color-neutral-100);
+  color: var(--color-neutral-600);
+  border-radius: var(--radius-sm);
+  padding: 0.125rem 0.375rem;
+  margin: 0.125rem;
+}
+
+/* 信息键值对网格 */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem 2rem;
+  margin-bottom: 0;
+}
+.info-grid__label {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+.info-grid__value {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-primary);
+  /* 小白讲解：长文字自动换行，防止撑破布局 */
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* 长文字处理工具类 */
+/* 小白讲解：text-break 让长文字在容器内自动换行，不会撑破布局 */
+.text-break {
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+}
+/* 小白讲解：text-truncate-2 限制最多显示 2 行，超出部分用省略号 */
+.text-truncate-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+/* 页面标题自动换行（防止超长产品名撑破布局） */
+.page-title {
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* 表格单元格长文字处理 */
+.table td {
+  max-width: 320px;
+  overflow-wrap: break-word;
+}
+
+/* 内容容器（主内容区） */
+.main-content {
+  max-width: 1200px;
+  padding: 2rem 1.5rem;
+}
+
+/* ============================================================
+ * 第五部分：响应式适配
+ * 小白讲解：当屏幕变小时（比如手机），自动调整布局
+ * ============================================================ */
+@media (max-width: 768px) {
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+  .stat-card {
+    padding: 1rem;
+  }
+  .main-content {
+    padding: 1rem;
+  }
+}
+
+/* ============================================================
+ * 第六部分：无障碍 - 尊重"减弱动画"偏好
+ * 小白讲解：有些用户晕动症，系统设置里开了"减弱动画"，我们就关掉过渡效果
+ * ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

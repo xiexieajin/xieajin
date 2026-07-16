@@ -1,0 +1,339 @@
+<!--
+  ============================================================
+  供应商寻源系统 — 共享项目外壳 (project-shell)
+  ============================================================
+  本文件是一个 HTML 片段(partial)，不是完整的 HTML 页面。
+  所有 5 个叶子页面均继承此外壳。
+
+  叶子页面通过替换以下 3 个 SLOT 注释来定制内容：
+  1. SLOT: activeNavItem  — 设置当前激活的导航项
+  2. SLOT: pageTitle      — 注入页面标题 <h1>
+  3. SLOT: pageContent    — 注入页面专属内容
+  ============================================================
+-->
+
+<!-- 引入品牌色彩与字体样式表 -->
+<link rel="stylesheet" href="../colors_and_type.css">
+<!-- 引入 Bootstrap Icons 图标库 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+
+<style>
+  /* ============================================================
+   * 顶部导航栏样式
+   * 设计要点：通栏宽度、吸顶定位、白色背景 + 底部细线
+   * ============================================================ */
+
+  /* 导航栏外层容器：全宽 + 吸顶 */
+  .shell-navbar {
+    position: sticky;                          /* 吸顶：滚动时固定在顶部 */
+    top: 0;
+    z-index: 50;                               /* 层级高于页面内容 */
+    width: 100%;
+    background-color: var(--color-surface);    /* 白色背景 */
+    border-bottom: 1px solid var(--color-border); /* 底部细线分隔 */
+  }
+
+  /* 导航栏内部容器：最大宽度 1200px，水平居中 */
+  .shell-navbar__inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    height: 64px;                              /* 导航栏高度 64px（符合 64-72px 规范） */
+    padding: 0 var(--space-8);                 /* 左右内边距 2rem */
+    display: flex;
+    align-items: center;                       /* 垂直居中对齐所有子元素 */
+    gap: var(--space-6);                       /* 各区块间距 1.5rem */
+  }
+
+  /* ---- 左侧 Logo 区域 ---- */
+  .shell-logo {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);                       /* 图标与文字间距 0.5rem */
+    text-decoration: none;
+    flex-shrink: 0;                            /* 不被压缩 */
+  }
+  .shell-logo i {
+    font-size: 24px;                           /* 图标尺寸 24px */
+    color: var(--color-brand);                 /* Teal 主色图标 */
+    line-height: 1;
+  }
+  .shell-logo span {
+    font-size: var(--text-lg);                 /* 1.125rem */
+    font-weight: var(--font-semibold);         /* 600 字重 */
+    color: var(--color-text-primary);          /* 深色文字 */
+    white-space: nowrap;                       /* 不换行 */
+  }
+
+  /* ---- 中间导航链接组 ---- */
+  .shell-nav {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);                       /* 链接间距 0.25rem */
+    flex: 1;                                   /* 占据中间剩余空间 */
+    justify-content: center;                   /* 链接居中排列 */
+  }
+
+  /* 单个导航链接：高度与导航栏一致，便于底部指示线定位 */
+  .shell-nav__link {
+    position: relative;                        /* 为底部指示线 ::after 提供定位基准 */
+    height: 64px;                              /* 与导航栏等高 */
+    padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+    display: inline-flex;
+    align-items: center;                       /* 文字垂直居中 */
+    font-size: var(--text-sm);                 /* 0.875rem */
+    font-weight: var(--font-medium);           /* 500 字重 */
+    color: var(--color-text-secondary);        /* 默认次要文字色 */
+    text-decoration: none;
+    white-space: nowrap;                       /* 不换行 */
+    transition: color 150ms cubic-bezier(.2,.8,.2,1); /* 仅过渡颜色属性 */
+  }
+  /* 悬停：文字变深 */
+  .shell-nav__link:hover {
+    color: var(--color-text-primary);
+  }
+  /* 键盘聚焦：Teal 描边 */
+  .shell-nav__link:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -4px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* 激活态：Teal 文字（与底部指示线同色，视觉统一） */
+  .shell-nav__link[data-active="true"] {
+    color: var(--color-brand);
+  }
+  /* 激活态底部指示线：2px Teal 横线，覆盖在导航栏底边上 */
+  .shell-nav__link[data-active="true"]::after {
+    content: '';
+    position: absolute;
+    bottom: 0;                                 /* 紧贴导航栏底部 */
+    left: var(--space-4);                      /* 与文字左右对齐 */
+    right: var(--space-4);
+    height: 2px;
+    background-color: var(--color-brand);
+    border-radius: var(--radius-sm);
+  }
+
+  /* ---- 右侧操作区 ---- */
+  .shell-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);                       /* 按钮与头像间距 0.75rem */
+    flex-shrink: 0;
+  }
+
+  /* 主操作按钮："新建需求" */
+  .shell-btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);                       /* 图标与文字间距 */
+    height: 36px;                              /* 按钮高度 36px */
+    padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+    font-size: var(--text-sm);                 /* 0.875rem */
+    font-weight: var(--font-medium);
+    font-family: var(--font-sans);
+    color: var(--color-text-on-primary);       /* 白色文字 */
+    background-color: var(--color-brand);      /* Teal 主色背景 */
+    border: none;
+    border-radius: var(--radius-md);           /* 8px 圆角 */
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 150ms cubic-bezier(.2,.8,.2,1),
+                transform 150ms cubic-bezier(.2,.8,.2,1);
+  }
+  /* 悬停：颜色加深 + 微上移 */
+  .shell-btn-primary:hover {
+    background-color: var(--color-brand-hover);
+    transform: translateY(-1px);
+  }
+  /* 按下：回弹归位 */
+  .shell-btn-primary:active {
+    transform: translateY(0);
+  }
+  /* 键盘聚焦：Teal 描边 */
+  .shell-btn-primary:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+  .shell-btn-primary i {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  /* 用户头像：圆形 + 首字母 */
+  .shell-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-full);         /* 正圆 */
+    background-color: var(--color-brand);      /* Teal 背景 */
+    color: var(--color-text-on-primary);       /* 白色文字 */
+    font-size: var(--text-xs);                 /* 0.75rem */
+    font-weight: var(--font-medium);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .shell-avatar:hover {
+    background-color: var(--color-brand-hover);
+  }
+
+  /* ============================================================
+   * 页面主内容区
+   * 设计要点：最大宽度 1200px，水平居中，上下留白
+   * ============================================================ */
+  .page-content {
+    max-width: 1200px;
+    margin: 0 auto;                            /* 水平居中 */
+    padding: var(--space-8) var(--space-8);    /* 上下左右 2rem */
+    min-height: calc(100vh - 64px - 60px);     /* 最小高度 = 视口 - 导航栏 - 页脚 */
+  }
+
+  /* 页面标题样式（叶子页面通过 SLOT 注入 <h1> 时自动继承） */
+  .page-content > h1 {
+    font-size: var(--text-2xl);                /* 1.5rem */
+    font-weight: var(--font-semibold);         /* 600 */
+    color: var(--color-text-primary);
+    line-height: var(--leading-tight);         /* 1.25 */
+    margin-top: 0;
+    margin-bottom: var(--space-6);             /* 标题与内容间距 1.5rem */
+    text-wrap: balance;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  /* ============================================================
+   * 页脚样式
+   * 设计要点：通栏宽度、顶部细线、居中弱化文字
+   * ============================================================ */
+  .shell-footer {
+    width: 100%;
+    border-top: 1px solid var(--color-border);
+    background-color: var(--color-surface);
+  }
+  .shell-footer__inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-8);    /* 上下 1.25rem，左右 2rem */
+    text-align: center;
+    font-size: var(--text-sm);                 /* 0.875rem */
+    color: var(--color-text-muted);            /* 弱化文字色 */
+    white-space: nowrap;
+  }
+
+  /* ============================================================
+   * 响应式：移动端适配（< 768px）
+   * ============================================================ */
+  @media (max-width: 768px) {
+    .shell-navbar__inner {
+      padding: 0 var(--space-4);               /* 缩小左右内边距 */
+      gap: var(--space-3);
+    }
+    .shell-logo span {
+      font-size: var(--text-base);             /* 缩小 Logo 文字 */
+    }
+    .shell-nav {
+      gap: 0;
+    }
+    .shell-nav__link {
+      padding: 0 var(--space-2);
+      font-size: var(--text-xs);               /* 缩小导航文字 */
+    }
+    /* 移动端按钮只显示加号图标，节省空间 */
+    .shell-btn-primary span {
+      display: none;
+    }
+    .shell-btn-primary {
+      padding: 0 var(--space-3);
+      width: 36px;
+      justify-content: center;
+    }
+    .page-content {
+      padding: var(--space-4);
+    }
+  }
+
+  /* ============================================================
+   * 无障碍：尊重用户"减弱动画"偏好
+   * ============================================================ */
+  @media (prefers-reduced-motion: reduce) {
+    .shell-nav__link,
+    .shell-btn-primary,
+    .shell-avatar {
+      transition-duration: 0.01ms !important;
+    }
+    .shell-btn-primary:hover {
+      transform: none;
+    }
+  }
+</style>
+
+<!-- ============================================================
+     顶部导航栏 — 全宽吸顶，白色背景 + 底部细线
+     左：Logo ｜ 中：导航链接 ｜ 右：新建需求按钮 + 用户头像
+     ============================================================ -->
+<header class="shell-navbar">
+  <div class="shell-navbar__inner">
+
+    <!-- 左侧 Logo：图标 + 系统名称 -->
+    <a href="index.html" class="shell-logo" aria-label="供应商寻源系统首页">
+      <i class="bi bi-diagram-3" aria-hidden="true"></i>
+      <span>供应商寻源系统</span>
+    </a>
+
+    <!-- 中间导航链接组 -->
+    <!-- 每个链接同时携带 data-nav-key（供激活态脚本查询）和 data-dom-id（供交互绑定） -->
+    <nav class="shell-nav" aria-label="主导航">
+      <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="shell-nav__link">首页</a>
+      <a href="supplier-list.html" data-nav-key="supplier" data-dom-id="nav-supplier" class="shell-nav__link">供应商</a>
+      <a href="requirement-list.html" data-nav-key="requirement" data-dom-id="nav-requirement" class="shell-nav__link">需求管理</a>
+      <a href="ai-automation.html" data-nav-key="ai" data-dom-id="nav-ai" class="shell-nav__link">AI自动化</a>
+
+      <!-- SLOT: activeNavItem
+           ── 叶子页面使用方法 ──
+           将此注释替换为以下内联脚本（修改 data-nav-key 值即可激活对应导航项）：
+           <script>document.querySelector('[data-nav-key="home"]').setAttribute('data-active','true');</script>
+           可选值：home / supplier / requirement / ai
+      -->
+    </nav>
+
+    <!-- 右侧操作区：新建需求按钮 + 用户头像 -->
+    <div class="shell-actions">
+      <button type="button" class="shell-btn-primary" data-dom-id="cta-new-requirement">
+        <i class="bi bi-plus-lg" aria-hidden="true"></i>
+        <span>新建需求</span>
+      </button>
+      <div class="shell-avatar" title="采购员账户" role="button" tabindex="0" aria-label="用户菜单">采购</div>
+    </div>
+
+  </div>
+</header>
+
+<!-- ============================================================
+     页面主内容区 — 最大宽度 1200px，居中，上下留白 2rem
+     叶子页面通过以下 2 个 SLOT 注入标题和专属内容
+     ============================================================ -->
+<main class="page-content">
+  <!-- SLOT: pageTitle
+       ── 叶子页面使用方法 ──
+       将此注释替换为页面标题，例如：
+       <h1>首页仪表盘</h1>
+  -->
+
+  <!-- SLOT: pageContent
+       ── 叶子页面使用方法 ──
+       将此注释替换为页面专属 HTML 内容（卡片、表格、图表等）
+  -->
+</main>
+
+<!-- ============================================================
+     页脚 — 全宽，顶部细线，居中弱化文字
+     ============================================================ -->
+<footer class="shell-footer">
+  <div class="shell-footer__inner">
+    <span>供应商寻源系统 © 2026 · 让采购更高效</span>
+  </div>
+</footer>

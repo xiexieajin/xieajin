@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}供应商寻源系统{% endblock %}</title>
+    {# 小白讲解：Bootstrap CSS/JS/图标字体全部改为本地引用（放在 static 目录下）
+       原来用 cdn.jsdelivr.net 国内访问不稳定，一旦加载失败所有下拉菜单、模态框、折叠等交互都会失效
+       本地化后不再依赖外网，页面在任何网络环境下都能正常工作 #}
+    <!-- 引入 Bootstrap CSS 框架 -->
+    <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
+    <!-- 引入 Bootstrap Icons 图标库（字体文件在 css/fonts/ 下，与CSS同目录） -->
+    <link href="{{ url_for('static', filename='css/bootstrap-icons.min.css') }}" rel="stylesheet">
+    <!-- 引入我们自己的设计系统样式 -->
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head>
+<body>
+    <!-- ============================================================
+         顶部导航栏
+         小白讲解：白色背景 + 底部细线，Logo 在左，导航在中间，操作在右
+         用 request.endpoint 判断当前在哪个页面，自动高亮对应导航项
+         ============================================================ -->
+    <nav class="navbar navbar-expand-lg sticky-top">
+        <div class="container">
+            <!-- 左侧 Logo：图标 + 系统名称 -->
+            <a class="navbar-brand" href="{{ url_for('index') }}">
+                <i class="bi bi-diagram-3"></i>
+                <span>供应商寻源系统</span>
+            </a>
+
+            <!-- 移动端折叠按钮 -->
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <!-- 导航链接区域 -->
+            <div class="collapse navbar-collapse" id="navbarMain">
+                <ul class="navbar-nav mx-auto">
+                    <!-- 首页：当路由是 index 时高亮 -->
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" href="{{ url_for('index') }}">
+                            <i class="bi bi-house-door"></i> 首页
+                        </a>
+                    </li>
+                    <!-- 需求管理：当路由以 requirement 开头时高亮 -->
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint and request.endpoint.startswith('requirement') %}active{% endif %}" href="{{ url_for('requirement_list') }}">
+                            <i class="bi bi-clipboard-check"></i> 需求管理
+                        </a>
+                    </li>
+                    <!-- 供应商管理：当路由以 supplier 开头时高亮 -->
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint and request.endpoint.startswith('supplier') %}active{% endif %}" href="{{ url_for('supplier_list') }}">
+                            <i class="bi bi-building"></i> 供应商管理
+                        </a>
+                    </li>
+                    <!-- AI自动化：当路由以 ai 开头时高亮 -->
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint and request.endpoint.startswith('ai') %}active{% endif %}" href="{{ url_for('ai_index') }}">
+                            <i class="bi bi-robot"></i> AI自动化
+                        </a>
+                    </li>
+                    <!-- 管理中心：仅管理员可见 -->
+                    {% if g.current_user and g.current_user.role == 'admin' %}
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path.startswith('/admin') %}active{% endif %}" href="{{ url_for('admin_index') }}">
+                            <i class="bi bi-gear"></i> 管理中心
+                        </a>
+                    </li>
+                    {% endif %}
+                </ul>
+
+                <!-- 右侧操作区：AI解析需求按钮 + 用户信息下拉 -->
+                <div class="d-flex align-items-center gap-2">
+                    <a href="{{ url_for('ai_parse_requirement') }}" class="btn btn-primary btn-sm">
+                        <i class="bi bi-robot"></i> AI解析需求
+                    </a>
+                    {% if g.current_user %}
+                    <div class="dropdown">
+                        <button class="btn btn-light btn-sm dropdown-toggle d-flex align-items-center" type="button" data-bs-toggle="dropdown">
+                            <span class="d-flex align-items-center justify-content-center rounded-circle bg-primary text-white me-2"
+                                  style="width:28px;height:28px;font-size:0.7rem;">
+                                {{ g.current_user.display_name[:1] }}
+                            </span>
+                            <span class="small">{{ g.current_user.display_name }}</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li class="dropdown-item-text small text-muted">
+                                角色：{{ '管理员' if g.current_user.role == 'admin' else '普通用户' }}
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item text-danger" href="{{ url_for('logout') }}">
+                                    <i class="bi bi-box-arrow-right"></i> 退出登录
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- ============================================================
+         主内容区
+         小白讲解：所有页面的内容都放在这里，用 main-content 控制宽度和间距
+         ============================================================ -->
+    <div class="main-content mx-auto">
+        <!-- Flash 消息提示（后端发来的成功/错误提示） -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- 各个页面的具体内容（子模板在这里填充） -->
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- ============================================================
+         页脚
+         ============================================================ -->
+    <footer class="py-4 text-center border-top mt-auto">
+        <small class="text-muted">供应商寻源系统 &copy; 2026 · 让采购更高效</small>
+    </footer>
+
+    <!-- Bootstrap JS（用于折叠菜单、模态框、下拉筛选等交互组件，本地引用避免CDN失效） -->
+    <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

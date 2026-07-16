@@ -1,0 +1,395 @@
+{% extends "base.html" %}
+
+{% block title %}AI搜索供应商 - {{ requirement.product_name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-2-circle"></i> AI搜索供应商</h1>
+    <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> 返回需求
+    </a>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><i class="bi bi-clipboard-data"></i> 当前需求</div>
+    <div class="card-body">
+        <p><strong>产品名称：</strong>{{ requirement.product_name }}</p>
+        <p class="mb-0"><strong>需求总结：</strong>{{ requirement.requirement_summary or '-' }}</p>
+        {# 用from_json解析关键词JSON，展示P0-P3关键词矩阵 #}
+        {% set kw = requirement.keywords | from_json if requirement.keywords else None %}
+        {% if kw and kw is mapping and kw.P0 %}
+        <hr>
+        <p class="mb-2"><strong>P0-P3 搜索关键词矩阵：</strong></p>
+        <table class="table table-sm table-bordered mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th width="80">级别</th>
+                    <th>中文关键词</th>
+                    <th>英文关键词</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key, label in [('P0','P0 最精准'), ('P1_1','P1 高匹配1'), ('P1_2','P1 高匹配2'),
+                                       ('P2_1','P2 特征扩展1'), ('P2_2','P2 特征扩展2'),
+                                       ('P3_1','P3 模糊扩展1'), ('P3_2','P3 模糊扩展2')] %}
+                {% if kw[key] %}
+                <tr>
+                    <td><span class="badge bg-primary">{{ label }}</span></td>
+                    <td>{{ kw[key].cn }}</td>
+                    <td>{{ kw[key].en }}</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+</div>
+
+<form id="searchForm" method="POST" action="{{ url_for('ai_search_suppliers', req_id=requirement.id) }}">
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-search"></i> 搜索范围</div>
+        <div class="card-body">
+            <p class="mb-0">
+                <i class="bi bi-check-circle text-success"></i>
+                系统会自动使用上面的P0-P3关键词进行多轮搜索，<strong>不限制搜索数量</strong>，尽量多找供应商，后续会做初筛。
+            </p>
+        </div>
+    </div>
+
+    <div class="text-end mb-4">
+        <button type="submit" id="startBtn" class="btn btn-success btn-lg">
+            <i class="bi bi-magic"></i> 开始AI搜索
+        </button>
+        <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-outline-secondary btn-lg">取消</a>
+    </div>
+</form>
+
+<div id="progressArea" style="display:none;">
+    <div class="card border-primary">
+        <div class="card-header bg-primary text-white">
+            <i class="bi bi-hourglass-split"></i> 搜索进度
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <div class="d-flex justify-content-between mb-1">
+                    <span id="progressLabel">准备开始...</span>
+                    <span id="elapsedTime" class="text-primary fw-bold">已用时 0 秒</span>
+                </div>
+                <div class="progress" style="height: 25px;">
+                    <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                         role="progressbar" style="width: 0%;">0%</div>
+                </div>
+            </div>
+
+            <div id="currentStep" class="alert alert-info mb-3">
+                <i class="bi bi-arrow-repeat spinner-border spinner-border-sm"></i>
+                <span id="stepDesc">正在初始化...</span>
+            </div>
+
+            {# 小白讲解：关键词搜索进度表格
+               每个关键词占一行，收到进度消息时更新对应行（不追加日志），避免并发导致日志交错混乱
+               小白讲解：给表格容器加 max-height + overflow-y:auto，表格太长时用滚轮查看，不会把后面的详细日志推到很下面 #}
+            <div id="keywordTableArea" class="mb-3" style="display:none;">
+                <strong><i class="bi bi-table"></i> 关键词搜索进度：</strong>
+                <div style="max-height:300px; overflow-y:auto;">
+                    <table class="table table-sm table-bordered mt-2 mb-0">
+                        <thead class="table-light" style="position:sticky; top:0; z-index:1;">
+                            <tr>
+                                <th width="40">#</th>
+                                <th>关键词</th>
+                                <th width="100">状态</th>
+                                <th width="160">结果</th>
+                            </tr>
+                        </thead>
+                        <tbody id="keywordTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="mb-0">
+                <strong><i class="bi bi-list-check"></i> 详细日志：</strong>
+                <ul id="logList" class="list-group list-group-flush mt-2" style="max-height:400px; overflow-y:auto;">
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="doneArea" style="display:none;">
+    <div class="card border-success">
+        <div class="card-body text-center py-4">
+            <i class="bi bi-check-circle-fill text-success" style="font-size: 3rem;"></i>
+            <h3 class="mt-3 mb-2" id="doneTitle">搜索完成！</h3>
+            <p class="text-muted" id="doneDesc"></p>
+            <p class="text-muted">将在 <span id="countdown">3</span> 秒后自动跳转到需求详情页...</p>
+            <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-primary">
+                <i class="bi bi-arrow-right"></i> 立即跳转
+            </a>
+        </div>
+    </div>
+</div>
+
+<div id="errorArea" style="display:none;">
+    <div class="card border-danger">
+        <div class="card-body">
+            <h5 class="text-danger"><i class="bi bi-exclamation-triangle"></i> 搜索失败</h5>
+            <p id="errorMsg" class="mb-3"></p>
+            <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> 返回
+            </a>
+        </div>
+    </div>
+</div>
+
+<script>
+/**
+ * AI搜索进度展示脚本
+ *
+ * 实现原理：
+ * 1. 拦截表单提交，改用 fetch 发起 POST 请求
+ * 2. 后端用SSE（Server-Sent Events）流式推送进度消息
+ * 3. 用 ReadableStream 读取响应体，实时解析每条SSE消息
+ * 4. 收到 done 消息后显示完成提示并自动跳转
+ */
+document.getElementById('searchForm').addEventListener('submit', async function(e) {
+    e.preventDefault();  // 阻止表单默认提交
+
+    // 切换UI：隐藏表单，显示进度区域
+    document.getElementById('searchForm').style.display = 'none';
+    document.getElementById('progressArea').style.display = 'block';
+
+    // 禁用开始按钮防止重复点击
+    const startBtn = document.getElementById('startBtn');
+    startBtn.disabled = true;
+
+    const form = e.target;
+    const logList = document.getElementById('logList');
+
+    // 小白讲解：独立的前端计时器，每秒更新一次"已用时"
+    // 这样即使后端消息推送有间隔，用户也能看到时间在走，不会以为卡死
+    const elapsedEl = document.getElementById('elapsedTime');
+    const startTime = Date.now();
+    const elapsedTimer = setInterval(() => {
+        const secs = Math.floor((Date.now() - startTime) / 1000);
+        if (secs < 60) {
+            elapsedEl.textContent = '已用时 ' + secs + ' 秒';
+        } else {
+            elapsedEl.textContent = '已用时 ' + Math.floor(secs / 60) + ' 分 ' + (secs % 60) + ' 秒';
+        }
+    }, 1000);
+
+    // 停止计时器的辅助函数（搜索完成或出错时调用）
+    function stopTimer() {
+        if (elapsedTimer) clearInterval(elapsedTimer);
+    }
+
+    /**
+     * 添加一条日志到日志列表（正序：最新的放最下面，自动滚动到底部）
+     * @param {string} text - 日志内容
+     * @param {string} type - 日志类型（info/success）
+     */
+    function addLog(text, type = 'info') {
+        const li = document.createElement('li');
+        li.className = 'list-group-item list-group-item-' + (type === 'success' ? 'success' : 'light');
+        li.innerHTML = '<small><i class="bi bi-' + (type === 'success' ? 'check-circle-fill text-success' : 'dot text-muted') + '"></i> ' + text + '</small>';
+        logList.appendChild(li);  // 正序：最新在底部
+        logList.scrollTop = logList.scrollHeight;  // 自动滚到底部
+    }
+
+    // ========== 关键词搜索进度表格管理 ==========
+    // 小白讲解：用对象存储每个关键词的状态，key是编号（如"3"），value是{keyword, status, result}
+    // 收到进度消息时更新对应编号的状态，然后重新渲染表格（按编号排序），避免并发导致日志交错
+    const keywordStatus = {};  // 编号字符串 -> {keyword, status, result, order}
+    let keywordTotal = 0;      // 关键词总数
+
+    /**
+     * 解析进度描述，提取关键词编号和操作类型
+     * @param {string} desc - 进度描述文本
+     * @returns {object|null} - {idx, total, action, keyword} 或 null（非关键词消息）
+     */
+    function parseKeywordMsg(desc) {
+        // 匹配 "[3/14] 正在搜索关键词：玻璃柜" 或 "[3/14] 关键词'玻璃柜'完成：..."
+        const m = desc.match(/^\[(\d+)\/(\d+)\]\s+(正在搜索关键词：|关键词'(.+?)'完成：)/);
+        if (!m) return null;
+        const idx = parseInt(m[1]);
+        const total = parseInt(m[2]);
+        if (m[3] === '正在搜索关键词：') {
+            // "[3/14] 正在搜索关键词：玻璃柜，已用时..."
+            const kwMatch = desc.match(/正在搜索关键词：(.+?)，已用时/);
+            return {idx, total, action: 'start', keyword: kwMatch ? kwMatch[1] : ''};
+        } else {
+            // "[3/14] 关键词'玻璃柜'完成：1688=34家，MIC=0家..."
+            const resultMatch = desc.match(/完成：(.+?)(?:，已用时|$)/);
+            return {idx, total, action: 'done', keyword: m[4], result: resultMatch ? resultMatch[1] : ''};
+        }
+    }
+
+    /**
+     * 更新关键词表格的某一行
+     */
+    function updateKeywordRow(parsed) {
+        keywordTotal = Math.max(keywordTotal, parsed.total);
+        // 显示表格区域
+        document.getElementById('keywordTableArea').style.display = 'block';
+
+        if (!keywordStatus[parsed.idx]) {
+            keywordStatus[parsed.idx] = {keyword: '', status: '等待中', result: '-', order: parsed.idx};
+        }
+        keywordStatus[parsed.idx].keyword = parsed.keyword || keywordStatus[parsed.idx].keyword;
+        if (parsed.action === 'start') {
+            keywordStatus[parsed.idx].status = '搜索中';
+            keywordStatus[parsed.idx].result = '-';
+        } else if (parsed.action === 'done') {
+            keywordStatus[parsed.idx].status = '完成';
+            keywordStatus[parsed.idx].result = parsed.result || '-';
+        }
+        renderKeywordTable();
+    }
+
+    /**
+     * 重新渲染关键词表格（按编号排序）
+     */
+    function renderKeywordTable() {
+        const tbody = document.getElementById('keywordTableBody');
+        const indices = Object.keys(keywordStatus).map(Number).sort((a, b) => a - b);
+        let html = '';
+        for (const idx of indices) {
+            const s = keywordStatus[idx];
+            let statusBadge, resultText;
+            if (s.status === '搜索中') {
+                statusBadge = '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm" style="width:0.8rem;height:0.8rem;"></span> 搜索中</span>';
+                resultText = '<span class="text-muted">-</span>';
+            } else if (s.status === '完成') {
+                statusBadge = '<span class="badge bg-success"><i class="bi bi-check-circle-fill"></i> 完成</span>';
+                // 小白讲解：结果着色看"本次新增"是不是0家。
+                // 现在进度格式是"本次新增X家，累计Y家"，X=0就是没搜到，显示灰色
+                if (s.result.includes('本次新增0家')) {
+                    resultText = '<span class="text-muted">' + s.result + '</span>';
+                } else {
+                    resultText = '<span class="text-success fw-bold">' + s.result + '</span>';
+                }
+            } else {
+                statusBadge = '<span class="badge bg-secondary">等待中</span>';
+                resultText = '<span class="text-muted">-</span>';
+            }
+            html += '<tr><td>' + idx + '</td><td>' + s.keyword + '</td><td>' + statusBadge + '</td><td>' + resultText + '</td></tr>';
+        }
+        tbody.innerHTML = html;
+    }
+
+    /**
+     * 更新进度条
+     * @param {number} step - 当前步骤
+     * @param {number} total - 总步骤数
+     * @param {string} desc - 步骤描述
+     */
+    function updateProgress(step, total, desc) {
+        const percent = Math.round((step / total) * 100);
+        document.getElementById('progressBar').style.width = percent + '%';
+        document.getElementById('progressBar').textContent = percent + '%';
+        document.getElementById('progressLabel').textContent = '步骤 ' + step + ' / ' + total;
+        document.getElementById('stepDesc').textContent = desc;
+    }
+
+    try {
+        // 用fetch发起POST请求，获取SSE流式响应
+        const response = await fetch(form.action, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: new FormData(form),
+        });
+
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
+
+        // 用ReadableStream读取响应体（SSE是文本流）
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // 把二进制解码成文本，加到缓冲区
+            buffer += decoder.decode(value, { stream: true });
+
+            // SSE消息以 \n\n 分隔，逐条解析
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                const rawMsg = buffer.slice(0, idx);
+                buffer = buffer.slice(idx + 2);
+
+                // 跳过注释（心跳）和非data行
+                if (!rawMsg.startsWith('data: ')) continue;
+
+                // 提取JSON部分
+                const jsonStr = rawMsg.slice(6).trim();
+                if (!jsonStr) continue;
+
+                let msg;
+                try {
+                    msg = JSON.parse(jsonStr);
+                } catch (err) {
+                    console.error('消息解析失败:', jsonStr);
+                    continue;
+                }
+
+                // 根据消息类型处理
+                if (msg.type === 'progress') {
+                    updateProgress(msg.step, msg.total, msg.desc);
+                    // 小白讲解：关键词相关的进度消息（带[x/14]标记）只更新表格，不进详细日志
+                    // 这样详细日志只剩重要节点（AI过滤、天眼查等），不会被14×2=28条关键词消息淹没
+                    const parsed = parseKeywordMsg(msg.desc);
+                    if (parsed) {
+                        updateKeywordRow(parsed);
+                    } else {
+                        addLog(msg.desc);
+                    }
+                } else if (msg.type === 'done') {
+                    // 搜索完成
+                    stopTimer();
+                    updateProgress(msg.total || 1, msg.total || 1, '搜索完成');
+                    addLog('搜索完成！共找到 ' + msg.total_found + ' 家供应商，保存 ' + msg.saved_count + ' 家', 'success');
+
+                    // 显示完成提示
+                    document.getElementById('progressArea').style.display = 'none';
+                    document.getElementById('doneArea').style.display = 'block';
+                    document.getElementById('doneDesc').textContent =
+                        '共找到 ' + msg.total_found + ' 家供应商，已保存 ' + msg.saved_count + ' 家到数据库。';
+
+                    // 3秒后自动跳转
+                    let countdown = 3;
+                    const countdownEl = document.getElementById('countdown');
+                    const timer = setInterval(() => {
+                        countdown--;
+                        countdownEl.textContent = countdown;
+                        if (countdown <= 0) {
+                            clearInterval(timer);
+                            window.location.href = '{{ url_for("requirement_detail", id=requirement.id) }}';
+                        }
+                    }, 1000);
+                    return;
+                } else if (msg.type === 'error') {
+                    // 出错了
+                    stopTimer();
+                    document.getElementById('progressArea').style.display = 'none';
+                    document.getElementById('errorArea').style.display = 'block';
+                    document.getElementById('errorMsg').textContent = msg.message;
+                    return;
+                }
+            }
+        }
+    } catch (err) {
+        stopTimer();
+        document.getElementById('progressArea').style.display = 'none';
+        document.getElementById('errorArea').style.display = 'block';
+        document.getElementById('errorMsg').textContent = '请求失败：' + err.message + '（可能是网络问题或服务器超时）';
+    }
+});
+</script>
+{% endblock %}

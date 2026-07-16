@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+
+{% block title %}需求详情 - {{ requirement.product_name }}{% endblock %}
+
+{% block content %}
+{# 小白讲解：返回链接放在标题最上面，点击回到需求列表 #}
+<a class="back-link" href="{{ url_for('requirement_list') }}"><i class="bi bi-arrow-left"></i> 返回列表</a>
+
+{# 小白讲解：标题独占一行，按钮单独一行，避免长标题和按钮挤在一起 #}
+<h1 class="page-title mb-3"><i class="bi bi-clipboard-data"></i> {{ requirement.product_name }}</h1>
+
+{# 按钮工具栏：主操作在左，危险操作在右，用 flex-wrap 自动换行 #}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
+    <div class="d-flex flex-wrap gap-2">
+        <a href="{{ url_for('ai_search_suppliers', req_id=requirement.id) }}" class="btn btn-primary">
+            <i class="bi bi-robot"></i> AI搜索供应商
+        </a>
+        {% if suppliers %}
+        <a href="{{ url_for('ai_auto_screening', req_id=requirement.id) }}" class="btn btn-outline-secondary">
+            <i class="bi bi-shield-check"></i> AI自动初筛
+        </a>
+        {% endif %}
+        <a href="{{ url_for('requirement_edit', id=requirement.id) }}" class="btn btn-outline-secondary">
+            <i class="bi bi-pencil"></i> 编辑
+        </a>
+    </div>
+    <form method="POST" action="{{ url_for('requirement_delete', id=requirement.id) }}"
+          class="d-inline"
+          onsubmit="return confirm('确定删除需求【{{ requirement.product_name }}】吗？\n\n注意：会同时删除该需求下所有供应商、初筛记录和沟通记录，且不可恢复！');">
+        <button type="submit" class="btn btn-outline-danger">
+            <i class="bi bi-trash"></i> 删除
+        </button>
+    </form>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-box"></i> 产品信息</div>
+            <div class="card-body">
+                {# 小白讲解：用 info-grid 网格展示键值对信息，比表格更清爽 #}
+                <div class="info-grid">
+                    <div>
+                        <div class="info-grid__label">产品名称</div>
+                        <div class="info-grid__value">{{ requirement.product_name }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">通用别名</div>
+                        <div class="info-grid__value">{{ requirement.product_aliases or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">核心功能</div>
+                        <div class="info-grid__value">{{ requirement.core_functions or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">材质</div>
+                        <div class="info-grid__value">{{ requirement.material or '-' }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-calculator"></i> 采购要求</div>
+            <div class="card-body">
+                <div class="info-grid">
+                    <div>
+                        <div class="info-grid__label">首批采购量</div>
+                        <div class="info-grid__value">{{ requirement.first_purchase_qty or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">日常补货量</div>
+                        <div class="info-grid__value">{{ requirement.daily_replenish_qty or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">最大备货量</div>
+                        <div class="info-grid__value">{{ requirement.max_stock_qty or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">可接受MOQ</div>
+                        <div class="info-grid__value">{{ requirement.acceptable_moq or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">可接受交期</div>
+                        <div class="info-grid__value">{{ requirement.acceptable_lead_time or '-' }} 天</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">目标市场</div>
+                        <div class="info-grid__value">{{ requirement.target_market or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">必须认证</div>
+                        <div class="info-grid__value">{{ requirement.required_certs or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">状态</div>
+                        <div class="info-grid__value">
+                            {# 小白讲解：需求状态徽章颜色
+                               已完成=成功(绿)、寻源中=进行中(蓝)、需求确认中=初筛阶段(黄)、其他=次要(灰) #}
+                            {% if requirement.status == '需求确认中' %}
+                                <span class="badge bg-warning">{{ requirement.status }}</span>
+                            {% elif requirement.status == '寻源中' %}
+                                <span class="badge bg-info">{{ requirement.status }}</span>
+                            {% elif requirement.status == '已完成' %}
+                                <span class="badge bg-success">{{ requirement.status }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ requirement.status }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if requirement.customization_req %}
+                    {# 小白讲解：定制化要求内容较长，用 grid-column: 1 / -1 让它占满整行 #}
+                    <div style="grid-column: 1 / -1;">
+                        <div class="info-grid__label">定制化要求</div>
+                        <div class="info-grid__value">{{ requirement.customization_req }}</div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-key"></i> 需求总结与关键词</div>
+            <div class="card-body">
+                {% if requirement.requirement_summary %}
+                <p><strong>需求总结：</strong>{{ requirement.requirement_summary }}</p>
+                {% endif %}
+                {% if requirement.keywords %}
+                    {# 关键词是P0-P3的JSON字符串，需要解析后展示 #}
+                    {% set kw = requirement.keywords | from_json %}
+                    {% if kw and kw is mapping %}
+                    <table class="table table-sm">
+                        <thead class="table-light">
+                            <tr><th width="80">分级</th><th>中文关键词</th><th>英文关键词</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for key, label in [['P0','P0 最精准'],['P1_1','P1-1'],['P1_2','P1-2'],['P2_1','P2-1'],['P2_2','P2-2'],['P3_1','P3-1'],['P3_2','P3-2']] %}
+                            {% if kw[key] %}
+                            <tr>
+                                <td><span class="badge {% if key == 'P0' %}bg-danger{% elif key.startswith('P1') %}bg-warning{% elif key.startswith('P2') %}bg-info{% else %}bg-success{% endif %}">{{ label }}</span></td>
+                                <td>{{ kw[key].cn }}</td>
+                                <td>{{ kw[key].en }}</td>
+                            </tr>
+                            {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    {# 兼容旧数据：逗号分隔的关键词 #}
+                    <p><strong>关键词：</strong>
+                        {% for k in requirement.keywords.split(',') %}
+                            <span class="badge bg-light text-dark">{{ k.strip() }}</span>
+                        {% endfor %}
+                    </p>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-building"></i> 关联供应商</span>
+                <span class="badge bg-success">{{ suppliers|length }}</span>
+            </div>
+            <div class="card-body p-0">
+                {% if suppliers %}
+                <div class="list-group list-group-flush">
+                    {% for s in suppliers %}
+                    <a href="{{ url_for('supplier_detail', id=s.id) }}" class="list-group-item list-group-item-action">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>{{ s.name }}</strong>
+                                <br><small class="text-muted">{{ s.factory_address or '地址未填' }}</small>
+                            </div>
+                            {# 小白讲解：供应商开发阶段徽章，颜色与供应商详情页保持一致 #}
+                            {% if s.dev_stage == '已合作' %}
+                                <span class="badge bg-success">{{ s.dev_stage }}</span>
+                            {% elif s.dev_stage == '已通过初筛' %}
+                                <span class="badge bg-warning">{{ s.dev_stage }}</span>
+                            {% elif s.dev_stage == '沟通中' %}
+                                <span class="badge bg-info">{{ s.dev_stage }}</span>
+                            {% elif s.dev_stage == '未通过初筛' or s.dev_stage == '已淘汰' %}
+                                <span class="badge bg-danger">未通过初筛</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ s.dev_stage }}</span>
+                            {% endif %}
+                        </div>
+                    </a>
+                    {% endfor %}
+                </div>
+                {% else %}
+                {# 小白讲解：没有关联供应商时用 empty-state 空状态样式 #}
+                <div class="empty-state">
+                    <div class="empty-state__icon"><i class="bi bi-building"></i></div>
+                    <div class="empty-state__title">暂无关联供应商</div>
+                    <div class="empty-state__desc">使用 AI 搜索供应商后会显示在这里</div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-body">
+                <small class="text-muted">
+                    创建时间：{{ requirement.created_at }}<br>
+                    更新时间：{{ requirement.updated_at }}
+                </small>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

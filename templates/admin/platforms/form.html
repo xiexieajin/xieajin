@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}编辑搜索平台 - 供应商寻源系统{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-pencil"></i> 编辑搜索平台</h1>
+    <a href="{{ url_for('admin_platform_list') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回列表
+    </a>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <form method="POST">
+                    <!-- 平台名称（只读） -->
+                    <div class="mb-3">
+                        <label class="form-label">平台名称</label>
+                        <input type="text" class="form-control" value="{{ platform.provider_name }}" disabled>
+                        <small class="text-muted">代码标识：<code>{{ platform.provider_code }}</code>（不可修改）</small>
+                    </div>
+
+                    <!-- 优先级 -->
+                    <div class="mb-3">
+                        <label class="form-label">优先级 <span class="text-danger">*</span></label>
+                        <input type="number" class="form-control" name="priority"
+                               value="{{ platform.priority }}" min="0" max="99" required>
+                        <small class="text-muted">数字越小越先搜索，如1=最先搜索，2=第二个搜索</small>
+                    </div>
+
+                    <!-- 最大结果数 -->
+                    <div class="mb-3">
+                        <label class="form-label">最大结果数 <span class="text-danger">*</span></label>
+                        <input type="number" class="form-control" name="max_results"
+                               value="{{ platform.max_results }}" min="10" max="200" step="10" required>
+                        <small class="text-muted">该平台单次搜索目标供应商数量（实际数量受平台限制）</small>
+                    </div>
+
+                    <!-- 启用状态 -->
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" name="is_enabled" id="is_enabled"
+                               {% if platform.is_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="is_enabled">启用此平台</label>
+                        <small class="text-muted d-block">停用后，搜索供应商时不再调用此平台</small>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg"></i> 保存
+                    </button>
+                    <a href="{{ url_for('admin_platform_list') }}" class="btn btn-outline-secondary">
+                        取消
+                    </a>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 侧边说明 -->
+    <div class="col-md-4">
+        <div class="card bg-light">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-info-circle"></i> 平台说明</h6>
+                <hr>
+                <p class="small mb-2"><strong>{{ platform.provider_name }}</strong></p>
+                <p class="small mb-0 text-muted">
+                    {% if platform.provider_code == 'ali1688' %}
+                        通过1688官方API搜索供应商。每个关键词固定返回10家，需用关键词变体多次搜索凑够目标数量。
+                    {% elif platform.provider_code == 'made_in_china' %}
+                        通过中国制造网MCP服务搜索供应商。每页10家，最多翻10页。
+                    {% endif %}
+                </p>
+                <hr>
+                <p class="small mb-0 text-muted">
+                    修改保存后立即生效，无需重启服务器。
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

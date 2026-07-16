@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}服务商管理 - 供应商寻源系统{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-key"></i> 服务商管理</h1>
+    <a href="{{ url_for('admin_models_index') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回
+    </a>
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    服务商配置包括API地址和密钥。密钥留空保存时保留原值，避免误清空。
+</div>
+
+<!-- 按类型分组显示 -->
+{% set type_map = {'ai_model': 'AI大模型', 'search_platform': '供应商搜索平台', 'data_api': '数据查询API'} %}
+{% set type_colors = {'ai_model': 'primary', 'search_platform': 'info', 'data_api': 'secondary'} %}
+
+{% for ptype, plabel in type_map.items() %}
+    {% set group = providers | selectattr('provider_type', 'equalto', ptype) | list %}
+    {% if group %}
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center">
+            <span class="badge bg-{{ type_colors[ptype] }} me-2">{{ plabel }}</span>
+            <span class="text-muted small">{{ group | length }} 个</span>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th width="60">ID</th>
+                            <th>服务商名称</th>
+                            <th width="120">代码标识</th>
+                            <th>API地址</th>
+                            <th width="120">密钥状态</th>
+                            <th width="80">启用</th>
+                            <th width="100">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in group %}
+                        <tr>
+                            <td>{{ p.id }}</td>
+                            <td><strong>{{ p.provider_name }}</strong></td>
+                            <td><code class="text-muted">{{ p.provider_code }}</code></td>
+                            <td><small class="text-muted">{{ p.base_url or '—' }}</small></td>
+                            <td>
+                                {% if p.api_key %}
+                                <span class="badge bg-success">已配置</span>
+                                {% else %}
+                                <span class="badge bg-warning text-dark">未配置</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if p.is_enabled %}
+                                <span class="badge bg-success">启用</span>
+                                {% else %}
+                                <span class="badge bg-secondary">停用</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <a href="{{ url_for('admin_provider_edit', id=p.id) }}"
+                                   class="btn btn-outline-primary btn-sm" title="编辑">
+                                    <i class="bi bi-pencil"></i> 编辑
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+{% endfor %}
+{% endblock %}

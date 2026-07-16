@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}首页 - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<!-- ============================================================
+     首页仪表盘
+     小白讲解：这是用户进来后看到的第一个页面，展示系统整体概况
+     包含：统计卡片、阶段分布图、最近供应商表格、快捷操作
+     ============================================================ -->
+
+<!-- 页面标题 -->
+<h1 class="page-title">系统概览</h1>
+
+<!-- ============================================================
+     统计卡片区域（4 个卡片一行）
+     小白讲解：用 stat-card 类来显示带图标的统计数据
+     ============================================================ -->
+<div class="row g-3 mb-4">
+    <!-- 采购需求数量 -->
+    <div class="col-md-3 col-sm-6">
+        <a href="{{ url_for('requirement_list') }}" class="text-decoration-none">
+            <div class="stat-card">
+                <div class="stat-card__icon">
+                    <i class="bi bi-clipboard-check"></i>
+                </div>
+                <div>
+                    <div class="stat-card__number">{{ req_count }}</div>
+                    <div class="stat-card__label">采购需求</div>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <!-- 供应商总数 -->
+    <div class="col-md-3 col-sm-6">
+        <a href="{{ url_for('supplier_list') }}" class="text-decoration-none">
+            <div class="stat-card">
+                <div class="stat-card__icon">
+                    <i class="bi bi-building"></i>
+                </div>
+                <div>
+                    <div class="stat-card__number">{{ supplier_count }}</div>
+                    <div class="stat-card__label">供应商总数</div>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <!-- 已通过初筛数量 -->
+    <div class="col-md-3 col-sm-6">
+        <div class="stat-card">
+            <div class="stat-card__icon">
+                <i class="bi bi-check-circle"></i>
+            </div>
+            <div>
+                {% set passed = stage_stats | selectattr('dev_stage', 'equalto', '已通过初筛') | list %}
+                <div class="stat-card__number">{% if passed %}{{ passed[0].count }}{% else %}0{% endif %}</div>
+                <div class="stat-card__label">已通过初筛</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 沟通中数量 -->
+    <div class="col-md-3 col-sm-6">
+        <div class="stat-card">
+            <div class="stat-card__icon">
+                <i class="bi bi-chat-dots"></i>
+            </div>
+            <div>
+                {% set communicating = stage_stats | selectattr('dev_stage', 'equalto', '沟通中') | list %}
+                <div class="stat-card__number">{% if communicating %}{{ communicating[0].count }}{% else %}0{% endif %}</div>
+                <div class="stat-card__label">沟通中</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     阶段分布 + 最近供应商（左右两栏）
+     ============================================================ -->
+<div class="row g-3">
+    <!-- 左栏：供应商开发阶段分布 -->
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-bar-chart"></i> 供应商阶段分布
+            </div>
+            <div class="card-body">
+                {% if stage_stats %}
+                    {# 小白讲解：找出最大数量用于计算进度条宽度比例 #}
+                    {% set max_count = stage_stats | map(attribute='count') | max %}
+                    {% for stat in stage_stats %}
+                        <div class="stage-bar-row">
+                            <span class="stage-bar-row__label">{{ stat.dev_stage }}</span>
+                            <div class="stage-bar-row__track">
+                                {# 小白讲解：进度条宽度 = 当前数量 / 最大数量 * 100%
+                                   颜色用预定义的 Teal 色阶，按顺序取不同深浅 #}
+                                {% set stage_colors = ['var(--color-primary-600)', 'var(--color-primary-500)', 'var(--color-primary-400)', 'var(--color-primary-300)', 'var(--color-primary-200)', 'var(--color-primary-200)'] %}
+                                <div class="stage-bar-row__fill"
+                                     style="width: {{ (stat.count / max_count * 100) if max_count > 0 else 0 }}%;
+                                            background-color: {{ stage_colors[loop.index0] if loop.index0 < stage_colors|length else stage_colors[-1] }};">
+                                </div>
+                            </div>
+                            <span class="stage-bar-row__count">{{ stat.count }}</span>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-state">
+                        <div class="empty-state__icon"><i class="bi bi-inbox"></i></div>
+                        <div class="empty-state__title">暂无供应商数据</div>
+                        <div class="empty-state__desc">创建需求并添加供应商后这里会显示统计</div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- 右栏：最近添加的供应商 -->
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clock-history"></i> 最近添加的供应商</span>
+                <a href="{{ url_for('supplier_list') }}" class="btn btn-sm btn-outline-primary">
+                    查看全部 <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_suppliers %}
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>供应商名称</th>
+                                <th>关联需求</th>
+                                <th>开发阶段</th>
+                                <th>添加时间</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for s in recent_suppliers %}
+                                <tr>
+                                    <td>
+                                        <a href="{{ url_for('supplier_detail', id=s.id) }}">{{ s.name }}</a>
+                                    </td>
+                                    <td>{{ s.product_name }}</td>
+                                    <td>
+                                        {# 小白讲解：根据阶段名称选择不同的徽章颜色 #}
+                                        {% if '已通过' in s.dev_stage %}
+                                            <span class="badge bg-success">{{ s.dev_stage }}</span>
+                                        {% elif '沟通' in s.dev_stage %}
+                                            <span class="badge bg-info">{{ s.dev_stage }}</span>
+                                        {% elif '初筛' in s.dev_stage %}
+                                            <span class="badge bg-warning">{{ s.dev_stage }}</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">{{ s.dev_stage }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td><small class="text-muted">{{ s.created_at }}</small></td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <div class="empty-state">
+                        <div class="empty-state__icon"><i class="bi bi-building"></i></div>
+                        <div class="empty-state__title">暂无供应商</div>
+                        <div class="empty-state__desc">请先创建需求并添加供应商</div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

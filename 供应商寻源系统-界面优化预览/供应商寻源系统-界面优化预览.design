@@ -1,0 +1,225 @@
+{
+  "data": [
+    {
+      "id": "page-index",
+      "title": "首页仪表盘",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1784093200000,
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/index.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-supplier",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "nav-requirement",
+            "targetPageId": "page-requirement-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "nav-ai",
+            "targetPageId": "page-ai-automation",
+            "hideEdge": false
+          },
+          {
+            "domId": "cta-supplier-list",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "cta-requirement-list",
+            "targetPageId": "page-requirement-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "view-all-suppliers",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "view-supplier-detail",
+            "targetPageId": "page-supplier-detail",
+            "hideEdge": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-supplier-list",
+      "title": "供应商列表",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1784093200000,
+      "canvasData": {
+        "x": 620,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/supplier-list.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-supplier",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-requirement",
+            "targetPageId": "page-requirement-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "nav-ai",
+            "targetPageId": "page-ai-automation",
+            "hideEdge": false
+          },
+          {
+            "domId": "view-supplier-detail",
+            "targetPageId": "page-supplier-detail",
+            "hideEdge": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-supplier-detail",
+      "title": "供应商详情",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1784093200000,
+      "canvasData": {
+        "x": 620,
+        "y": 1146,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/supplier-detail.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-supplier",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-requirement",
+            "targetPageId": "page-requirement-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-ai",
+            "targetPageId": "page-ai-automation",
+            "hideEdge": true
+          },
+          {
+            "domId": "back-supplier-list",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-requirement-list",
+      "title": "需求列表",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1784093200000,
+      "canvasData": {
+        "x": 620,
+        "y": 377,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/requirement-list.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-supplier",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "nav-requirement",
+            "targetPageId": "page-requirement-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-ai",
+            "targetPageId": "page-ai-automation",
+            "hideEdge": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-ai-automation",
+      "title": "AI自动化",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1784093200000,
+      "canvasData": {
+        "x": 620,
+        "y": 754,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/ai-automation.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-supplier",
+            "targetPageId": "page-supplier-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "nav-requirement",
+            "targetPageId": "page-requirement-list",
+            "hideEdge": false
+          },
+          {
+            "domId": "nav-ai",
+            "targetPageId": "page-ai-automation",
+            "hideEdge": true
+          }
+        ]
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "desktop",
+    "projectName": "供应商寻源系统-界面优化预览",
+    "designLibrary": null
+  }
+}

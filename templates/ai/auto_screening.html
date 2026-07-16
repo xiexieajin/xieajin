@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+
+{% block title %}AI自动初筛 - {{ requirement.product_name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-3-circle"></i> AI批量自动初筛</h1>
+    <div>
+        <a href="{{ url_for('screening_rules_config', req_id=requirement.id) }}" class="btn btn-outline-secondary me-2">
+            <i class="bi bi-gear"></i> 规则配置
+        </a>
+        <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> 返回需求
+        </a>
+    </div>
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    新版初筛采用"规则驱动 + 天眼查MCP + AI语义辅助"标准化流程：天眼查实时数据采集 → 11条一票否决规则 → 6条100分评分规则 → 完整审计日志。
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><i class="bi bi-clipboard-data"></i> 需求信息</div>
+    <div class="card-body">
+        <p><strong>产品：</strong>{{ requirement.product_name }} | <strong>目标市场：</strong>{{ requirement.target_market or '-' }} | <strong>要求认证：</strong>{{ requirement.required_certs or '-' }}</p>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><i class="bi bi-shield-check"></i> 初筛概况</div>
+    <div class="card-body text-center">
+        <div class="display-4 text-warning">{{ pending_count }}</div>
+        <p class="text-muted">家供应商等待初筛</p>
+
+        {% if pending_count > 0 %}
+        <div class="alert alert-warning mt-3">
+            <i class="bi bi-clock-history"></i>
+            初筛需对每家供应商查询天眼查数据并匹配规则，{{ pending_count }}家供应商预计需要 {{ pending_count * 15 }} 秒左右，请耐心等待。
+        </div>
+
+        <form id="screeningForm" method="POST" class="mt-3">
+            <button type="submit" class="btn btn-primary btn-lg" id="startBtn">
+                <i class="bi bi-magic"></i> 开始AI自动初筛
+            </button>
+            <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-outline-secondary btn-lg">取消</a>
+        </form>
+        {% else %}
+        <div class="alert alert-success mt-3">
+            <i class="bi bi-check-circle"></i> 所有供应商已完成初筛，无需处理
+        </div>
+        <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-outline-primary">
+            <i class="bi bi-eye"></i> 查看供应商列表
+        </a>
+        {% endif %}
+    </div>
+</div>
+
+{# ==================== 规则预览区 ==================== #}
+<div class="row mb-3">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-danger text-white"><i class="bi bi-x-octagon"></i> 一票否决规则（{{ veto_rules|length }}条）</div>
+            <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+                <table class="table table-sm">
+                    <thead><tr><th>规则</th><th>说明</th><th>状态</th></tr></thead>
+                    <tbody>
+                        {% for rule in veto_rules %}
+                        <tr>
+                            <td>{{ rule.rule_name }}</td>
+                            <td><small class="text-muted">{{ rule.description[:40] }}</small></td>
+                            <td>
+                                {% if rule.is_enabled %}
+                                    <span class="badge bg-danger">启用</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">禁用</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-success text-white"><i class="bi bi-star"></i> 评分规则（{{ score_rules|length }}条，满分100）</div>
+            <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+                <table class="table table-sm">
+                    <thead><tr><th>维度</th><th>满分</th><th>状态</th></tr></thead>
+                    <tbody>
+                        {% for rule in score_rules %}
+                        <tr>
+                            <td>{{ rule.rule_name }}</td>
+                            <td><strong>{{ rule.max_score }}</strong>分</td>
+                            <td>
+                                {% if rule.is_enabled %}
+                                    <span class="badge bg-success">启用</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">禁用</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                <div class="mt-2 small text-muted">
+                    <strong>通过标准：</strong>总分≥通过线为通过 / 人工确认线至通过线-1为人工确认 / &lt;人工确认线为未通过（阈值可在<a href="{{ url_for('screening_rules_config') }}">规则配置页</a>调整）
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ==================== SSE进度区（默认隐藏，点开始后显示）==================== #}
+<div id="progressArea" style="display:none;">
+    <div class="card mb-3">
+        <div class="card-header bg-primary text-white">
+            <i class="bi bi-arrow-repeat"></i> 初筛进度
+            <span class="float-end" id="elapsedTime">已用时 0 秒</span>
+        </div>
+        <div class="card-body">
+            <div class="progress mb-3" style="height: 25px;">
+                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width: 0%">0%</div>
+            </div>
+            <p id="progressDesc" class="text-center text-muted">正在初始化...</p>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-list-check"></i> 供应商初筛结果</div>
+        <div class="card-body" style="max-height: 500px; overflow-y: auto;">
+            <table class="table table-sm table-hover">
+                <thead>
+                    <tr><th>#</th><th>供应商</th><th>状态</th><th>结论</th><th>得分</th></tr>
+                </thead>
+                <tbody id="supplierTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><i class="bi bi-journal-text"></i> 执行日志</div>
+        <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+            <ul id="logList" class="list-group list-group-flush"></ul>
+        </div>
+    </div>
+</div>
+
+{# ==================== 完成提示区（默认隐藏）==================== #}
+<div id="doneArea" style="display:none;">
+    <div class="card border-success">
+        <div class="card-header bg-success text-white"><i class="bi bi-check-circle"></i> 初筛完成</div>
+        <div class="card-body text-center">
+            <p id="doneDesc" class="fs-5"></p>
+            <div id="auditLink" class="mt-3" style="display:none;">
+                <a href="#" id="auditUrl" class="btn btn-outline-info">
+                    <i class="bi bi-search"></i> 查看审计日志
+                </a>
+            </div>
+            <p class="mt-3 text-muted">
+                <span id="countdown">3</span> 秒后自动跳转到需求详情页...
+            </p>
+            <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-primary">立即跳转</a>
+        </div>
+    </div>
+</div>
+
+{# ==================== 错误提示区（默认隐藏）==================== #}
+<div id="errorArea" style="display:none;">
+    <div class="card border-danger">
+        <div class="card-header bg-danger text-white"><i class="bi bi-x-circle"></i> 初筛出错</div>
+        <div class="card-body">
+            <p id="errorMsg" class="text-danger"></p>
+            <a href="{{ url_for('ai_auto_screening', req_id=requirement.id) }}" class="btn btn-outline-primary">重试</a>
+        </div>
+    </div>
+</div>
+
+<script>
+{# ==================== SSE前端逻辑 ==================== #}
+document.getElementById('screeningForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+
+    // 切换UI：隐藏表单，显示进度区
+    document.getElementById('screeningForm').style.display = 'none';
+    document.getElementById('progressArea').style.display = 'block';
+
+    const startBtn = document.getElementById('startBtn');
+    startBtn.disabled = true;
+
+    const logList = document.getElementById('logList');
+    const supplierTableBody = document.getElementById('supplierTableBody');
+
+    // 独立计时器
+    const elapsedEl = document.getElementById('elapsedTime');
+    const startTime = Date.now();
+    const elapsedTimer = setInterval(() => {
+        const secs = Math.floor((Date.now() - startTime) / 1000);
+        if (secs < 60) {
+            elapsedEl.textContent = '已用时 ' + secs + ' 秒';
+        } else {
+            elapsedEl.textContent = '已用时 ' + Math.floor(secs / 60) + ' 分 ' + (secs % 60) + ' 秒';
+        }
+    }, 1000);
+
+    function stopTimer() { if (elapsedTimer) clearInterval(elapsedTimer); }
+
+    function addLog(text, type) {
+        type = type || 'info';
+        const li = document.createElement('li');
+        li.className = 'list-group-item list-group-item-' + (type === 'success' ? 'success' : type === 'warning' ? 'warning' : 'light');
+        li.innerHTML = '<small><i class="bi bi-' + (type === 'success' ? 'check-circle-fill text-success' : type === 'warning' ? 'exclamation-triangle-fill text-warning' : 'dot text-muted') + '"></i> ' + text + '</small>';
+        logList.appendChild(li);
+        logList.scrollTop = logList.scrollHeight;
+    }
+
+    function updateProgress(current, total, desc) {
+        const pct = total > 0 ? Math.round(current * 100 / total) : 0;
+        const bar = document.getElementById('progressBar');
+        bar.style.width = pct + '%';
+        bar.textContent = pct + '%';
+        document.getElementById('progressDesc').textContent = desc;
+    }
+
+    function addSupplierRow(idx, name) {
+        const tr = document.createElement('tr');
+        tr.id = 'supplier-row-' + idx;
+        tr.innerHTML = '<td>' + idx + '</td><td>' + name + '</td><td><span class="badge bg-info">处理中</span></td><td>-</td><td>-</td>';
+        supplierTableBody.appendChild(tr);
+        return tr;
+    }
+
+    function updateSupplierRow(idx, conclusion, score, vetoed) {
+        const tr = document.getElementById('supplier-row-' + idx);
+        if (!tr) return;
+        let badge = '';
+        if (conclusion === '已通过初筛') {
+            badge = '<span class="badge bg-success">通过</span>';
+        } else if (conclusion === '未通过初筛') {
+            badge = '<span class="badge bg-danger">' + (vetoed ? '否决' : '未通过') + '</span>';
+        } else {
+            badge = '<span class="badge bg-warning text-dark">人工确认</span>';
+        }
+        tr.cells[2].innerHTML = '<span class="badge bg-secondary">完成</span>';
+        tr.cells[3].innerHTML = badge;
+        tr.cells[4].textContent = score;
+    }
+
+    try {
+        const response = await fetch(window.location.href, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            body: new FormData(document.getElementById('screeningForm')),
+        });
+
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                const rawMsg = buffer.slice(0, idx);
+                buffer = buffer.slice(idx + 2);
+
+                if (!rawMsg.startsWith('data: ')) continue;
+
+                const jsonStr = rawMsg.slice(6).trim();
+                if (!jsonStr) continue;
+
+                let msg;
+                try { msg = JSON.parse(jsonStr); } catch (err) { continue; }
+
+                if (msg.type === 'progress') {
+                    updateProgress(msg.step, msg.total, msg.desc);
+                    addLog(msg.desc);
+                } else if (msg.type === 'supplier_progress') {
+                    updateProgress(msg.current, msg.total, msg.desc);
+                    addSupplierRow(msg.current, msg.supplier_name);
+                    addLog('开始初筛：' + msg.supplier_name);
+                } else if (msg.type === 'supplier_step') {
+                    addLog(msg.supplier_name + ' - ' + msg.step);
+                } else if (msg.type === 'supplier_done') {
+                    updateSupplierRow(
+                        msg.current || 0,
+                        msg.conclusion,
+                        msg.total_score,
+                        msg.veto_triggered
+                    );
+                    addLog(msg.supplier_name + ' - ' + msg.conclusion + '（得分：' + msg.total_score + '）',
+                           msg.conclusion === '已通过初筛' ? 'success' : msg.conclusion === '需人工确认' ? 'warning' : 'info');
+                } else if (msg.type === 'supplier_error') {
+                    addLog(msg.supplier_name + ' - ' + msg.message, 'warning');
+                } else if (msg.type === 'done') {
+                    stopTimer();
+                    updateProgress(1, 1, msg.message);
+                    addLog(msg.message, 'success');
+
+                    document.getElementById('progressArea').style.display = 'none';
+                    document.getElementById('doneArea').style.display = 'block';
+                    document.getElementById('doneDesc').textContent = msg.message;
+
+                    if (msg.report && msg.report.run_id) {
+                        document.getElementById('auditLink').style.display = 'block';
+                        document.getElementById('auditUrl').href = '/screening/rules/audit/' + msg.report.run_id;
+                    }
+
+                    let countdown = 3;
+                    const countdownEl = document.getElementById('countdown');
+                    const timer = setInterval(() => {
+                        countdown--;
+                        countdownEl.textContent = countdown;
+                        if (countdown <= 0) {
+                            clearInterval(timer);
+                            window.location.href = '{{ url_for("requirement_detail", id=requirement.id) }}';
+                        }
+                    }, 1000);
+                    return;
+                } else if (msg.type === 'error') {
+                    stopTimer();
+                    document.getElementById('progressArea').style.display = 'none';
+                    document.getElementById('errorArea').style.display = 'block';
+                    document.getElementById('errorMsg').textContent = msg.message;
+                    return;
+                }
+            }
+        }
+    } catch (err) {
+        stopTimer();
+        document.getElementById('progressArea').style.display = 'none';
+        document.getElementById('errorArea').style.display = 'block';
+        document.getElementById('errorMsg').textContent = '请求失败：' + err.message;
+    }
+});
+</script>
+{% endblock %}

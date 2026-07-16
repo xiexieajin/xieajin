@@ -1,0 +1,15 @@
+# Flask 网页框架
+Flask==3.0.3
+
+# HTTP请求库（调用大模型API用）
+requests==2.32.3
+
+# 文档解析库
+PyPDF2==3.0.1          # 读取PDF文档
+openpyxl==3.1.5        # 读取Excel文档
+python-docx==1.2.0     # 读取Word文档
+
+# 密码哈希：使用Python标准库hashlib.pbkdf2_hmac，无需额外安装bcrypt
+
+# MySQL 数据库驱动（从SQLite迁移到MySQL，解决并发写入锁问题）
+pymysql==1.1.1

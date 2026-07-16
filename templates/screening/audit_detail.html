@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}初筛审计日志 - {{ report.run_id[:8] }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-journal-text"></i> 初筛审计日志</h1>
+    <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> 返回首页
+    </a>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><i class="bi bi-info-circle"></i> 运行概况</div>
+    <div class="card-body">
+        <p><strong>运行批次ID：</strong><code>{{ report.run_id }}</code></p>
+        <p><strong>总日志条数：</strong>{{ report.total_logs }}</p>
+        <div class="row">
+            <div class="col-md-3">
+                <div class="card text-center border-success">
+                    <div class="card-body">
+                        <div class="display-6 text-success">{{ report.statistics.success }}</div>
+                        <small>成功</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center border-warning">
+                    <div class="card-body">
+                        <div class="display-6 text-warning">{{ report.statistics.uncertain }}</div>
+                        <small>不确定</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center border-danger">
+                    <div class="card-body">
+                        <div class="display-6 text-danger">{{ report.statistics.fail }}</div>
+                        <small>失败</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center border-secondary">
+                    <div class="card-body">
+                        <div class="display-6 text-secondary">{{ report.statistics.skip }}</div>
+                        <small>跳过</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if report.anomalies %}
+<div class="card mb-3 border-warning">
+    <div class="card-header bg-warning text-dark"><i class="bi bi-exclamation-triangle"></i> 异常步骤（{{ report.anomalies|length }}处，需人工复核）</div>
+    <div class="card-body">
+        <table class="table table-sm">
+            <thead><tr><th>供应商ID</th><th>步骤</th><th>状态</th><th>证据</th></tr></thead>
+            <tbody>
+                {% for a in report.anomalies %}
+                <tr>
+                    <td>{{ a.supplier_id }}</td>
+                    <td>{{ a.task_name }}<br><small class="text-muted">{{ a.task_code }}</small></td>
+                    <td>
+                        {% if a.status == 'fail' %}
+                            <span class="badge bg-danger">失败</span>
+                        {% else %}
+                            <span class="badge bg-warning text-dark">不确定</span>
+                        {% endif %}
+                    </td>
+                    <td><small>{{ a.evidence }}</small></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-list-check"></i> 供应商初筛详情（{{ report.suppliers|length }}家）</div>
+    <div class="card-body">
+        {% for s in report.suppliers %}
+        <div class="card mb-3 {% if s.has_veto %}border-danger{% elif s.has_uncertain %}border-warning{% else %}border-success{% endif %}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>
+                    <strong>供应商ID：{{ s.supplier_id }}</strong>
+                    {% if s.has_veto %}
+                        <span class="badge bg-danger">触发否决</span>
+                    {% elif s.has_uncertain %}
+                        <span class="badge bg-warning text-dark">需人工确认</span>
+                    {% else %}
+                        <span class="badge bg-success">正常通过</span>
+                    {% endif %}
+                </span>
+                <small class="text-muted">{{ s.tasks|length }}个步骤</small>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <thead><tr><th width="180">步骤</th><th>状态</th><th>结论</th><th>证据</th></tr></thead>
+                    <tbody>
+                        {% for t in s.tasks %}
+                        <tr>
+                            <td>{{ t.task_name }}<br><small class="text-muted">{{ t.task_code }}</small></td>
+                            <td>
+                                {% if t.status == 'success' %}
+                                    <span class="badge bg-success">成功</span>
+                                {% elif t.status == 'fail' %}
+                                    <span class="badge bg-danger">失败</span>
+                                {% elif t.status == 'uncertain' %}
+                                    <span class="badge bg-warning text-dark">不确定</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ t.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if t.passed is defined %}
+                                    {% if t.passed %}
+                                        <span class="text-success">通过</span>
+                                    {% else %}
+                                        <span class="text-danger">否决</span>
+                                    {% endif %}
+                                    {% if t.reason %}<br><small>{{ t.reason }}</small>{% endif %}
+                                {% elif t.score is defined %}
+                                    得分：<strong>{{ t.score }}</strong>
+                                {% endif %}
+                            </td>
+                            <td><small>{{ t.evidence }}</small></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

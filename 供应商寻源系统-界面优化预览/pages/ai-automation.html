@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 自动化寻源 - 供应商寻源系统</title>
+    <style id="theme-vars">
+/* ============================================================
+ * 供应商寻源系统 - 现代简约风设计样式
+ * 主色：Teal 翠绿 / 辅助：中性灰阶
+ * 字体：Inter + Noto Sans SC
+ * ============================================================ */
+
+:root {
+  /* === 品牌主色 (Teal 翠绿色系) === */
+  --color-primary-50: #f0fdfa;
+  --color-primary-100: #ccfbf1;
+  --color-primary-200: #99f6e4;
+  --color-primary-300: #5eead4;
+  --color-primary-400: #2dd4bf;
+  --color-primary-500: #14b8a6;
+  --color-primary-600: #0d9488;
+  --color-primary-700: #0f766e;
+  --color-primary-800: #115e59;
+  --color-primary-900: #134e4a;
+
+  /* === 中性色阶 (Slate) === */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+
+  /* === 语义状态色 === */
+  --state-success: #10b981;
+  --state-success-bg: #ecfdf5;
+  --state-warning: #f59e0b;
+  --state-warning-bg: #fffbeb;
+  --state-error: #ef4444;
+  --state-error-bg: #fef2f2;
+  --state-info: #3b82f6;
+  --state-info-bg: #eff6ff;
+
+  /* === 语义变量映射 === */
+  --color-bg: var(--color-neutral-50);
+  --color-surface: var(--color-neutral-0);
+  --color-surface-hover: var(--color-neutral-50);
+  --color-border: var(--color-neutral-200);
+  --color-border-light: var(--color-neutral-100);
+  --color-text-primary: var(--color-neutral-900);
+  --color-text-secondary: var(--color-neutral-600);
+  --color-text-muted: var(--color-neutral-400);
+  --color-text-on-primary: #ffffff;
+  --color-brand: var(--color-primary-600);
+  --color-brand-hover: var(--color-primary-700);
+  --color-brand-light: var(--color-primary-50);
+  --color-brand-border: var(--color-primary-200);
+
+  /* === 圆角规范 === */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* === 阴影规范 (静态表面用极浅阴影) === */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
+  --shadow-float: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+
+  /* === 字体系统 === */
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  /* === 字号层级 === */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+
+  /* === 行高 === */
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  /* === 字重 === */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* === 间距系统 === */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+}
+
+/* === 暗色模式 (预留) === */
+.dark {
+  --color-bg: var(--color-neutral-900);
+  --color-surface: var(--color-neutral-800);
+  --color-surface-hover: var(--color-neutral-700);
+  --color-border: var(--color-neutral-700);
+  --color-border-light: var(--color-neutral-700);
+  --color-text-primary: var(--color-neutral-100);
+  --color-text-secondary: var(--color-neutral-400);
+  --color-text-muted: var(--color-neutral-500);
+  --color-brand-light: rgba(13, 148, 136, 0.15);
+  --color-brand-border: rgba(13, 148, 136, 0.3);
+}
+
+/* === 全局基础样式 === */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* === 排版工具类 === */
+.text-primary { color: var(--color-text-primary); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-muted { color: var(--color-text-muted); }
+.text-brand { color: var(--color-brand); }
+.text-success { color: var(--state-success); }
+.text-warning { color: var(--state-warning); }
+.text-error { color: var(--state-error); }
+.text-info { color: var(--state-info); }
+
+.font-medium { font-weight: var(--font-medium); }
+.font-semibold { font-weight: var(--font-semibold); }
+.font-bold { font-weight: var(--font-bold); }
+
+.text-xs { font-size: var(--text-xs); }
+.text-sm { font-size: var(--text-sm); }
+.text-base { font-size: var(--text-base); }
+.text-lg { font-size: var(--text-lg); }
+.text-xl { font-size: var(--text-xl); }
+.text-2xl { font-size: var(--text-2xl); }
+.text-3xl { font-size: var(--text-3xl); }
+.text-4xl { font-size: var(--text-4xl); }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-border: var(--color-border);
+  }
+  @layer base {
+    body { background: var(--color-surface); color: var(--color-text-primary); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+
+<body>
+
+  <!-- ============================================================
+       顶部导航栏 — 全宽吸顶，白色背景 + 底部细线
+       左：Logo ｜ 中：导航链接 ｜ 右：新建需求按钮 + 用户头像
+       ============================================================ -->
+  <header class="shell-navbar">
+    <div class="shell-navbar__inner">
+
+      <!-- 左侧 Logo：图标 + 系统名称 -->
+      <a href="index.html" class="shell-logo" aria-label="供应商寻源系统首页">
+        <i class="bi bi-diagram-3" aria-hidden="true"></i>
+        <span>供应商寻源系统</span>
+      </a>
+
+      <!-- 中间导航链接组 -->
+      <!-- 每个链接同时携带 data-nav-key（供激活态脚本查询）和 data-dom-id（供交互绑定） -->
+      <nav class="shell-nav" aria-label="主导航">
+        <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="shell-nav__link">首页</a>
+        <a href="supplier-list.html" data-nav-key="supplier" data-dom-id="nav-supplier" class="shell-nav__link">供应商</a>
+        <a href="requirement-list.html" data-nav-key="requirement" data-dom-id="nav-requirement" class="shell-nav__link">需求管理</a>
+        <a href="ai-automation.html" data-nav-key="ai" data-dom-id="nav-ai" class="shell-nav__link">AI自动化</a>
+
+        <!-- SLOT: activeNavItem → 激活"AI自动化"导航项 -->
+        <script>document.querySelector('[data-nav-key="ai"]').setAttribute('data-active','true');</script>
+      </nav>
+
+      <!-- 右侧操作区：新建需求按钮 + 用户头像 -->
+      <div class="shell-actions">
+        <button type="button" class="shell-btn-primary" data-dom-id="cta-new-requirement">
+          <i class="bi bi-plus-lg" aria-hidden="true"></i>
+          <span>新建需求</span>
+        </button>
+        <div class="shell-avatar" title="采购员账户" role="button" tabindex="0" aria-label="用户菜单">采购</div>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ============================================================
+       页面主内容区 — 最大宽度 1200px，居中，上下留白 2rem
+       ============================================================ -->
+  <main class="page-content">
+
+    <!-- SLOT: pageTitle → 页面标题 -->
+    <h1>AI 自动化寻源</h1>
+
+    <!-- SLOT: pageContent → AI 自动化页面专属内容 -->
+
+    <!-- ========================================================
+         Section 1: AI 工作流步骤
+         3 张编号卡片横向排列，箭头连接，展示寻源流程
+         ======================================================== -->
+    <section aria-label="AI 工作流步骤">
+      <div class="ai-steps">
+
+        <!-- 步骤 1：选择需求 -->
+        <div class="ai-step-card">
+          <!-- 编号圆圈：渐变背景 + 白色数字 -->
+          <div class="ai-step-number">1</div>
+          <!-- 标题行：图标 + 标题文字 -->
+          <div class="ai-step-title">
+            <i class="bi bi-clipboard-check" aria-hidden="true"></i>
+            <span>选择需求</span>
+          </div>
+          <!-- 描述文字 -->
+          <p class="ai-step-desc">从需求列表中选择需要寻源的采购需求，系统将自动分析需求关键词和采购要求。</p>
+        </div>
+
+        <!-- 箭头分隔符 1 → 2 -->
+        <div class="ai-step-arrow" aria-hidden="true">
+          <i class="bi bi-arrow-right"></i>
+        </div>
+
+        <!-- 步骤 2：AI 智能寻源 -->
+        <div class="ai-step-card">
+          <div class="ai-step-number">2</div>
+          <div class="ai-step-title">
+            <i class="bi bi-robot" aria-hidden="true"></i>
+            <span>AI 智能寻源</span>
+          </div>
+          <p class="ai-step-desc">AI 根据需求自动搜索匹配供应商，从企业数据库、行业平台等多渠道智能匹配。</p>
+        </div>
+
+        <!-- 箭头分隔符 2 → 3 -->
+        <div class="ai-step-arrow" aria-hidden="true">
+          <i class="bi bi-arrow-right"></i>
+        </div>
+
+        <!-- 步骤 3：自动初筛 -->
+        <div class="ai-step-card">
+          <div class="ai-step-number">3</div>
+          <div class="ai-step-title">
+            <i class="bi bi-funnel" aria-hidden="true"></i>
+            <span>自动初筛</span>
+          </div>
+          <p class="ai-step-desc">AI 对候选供应商进行自动初筛评分，生成评估报告，推荐最优供应商名单。</p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ========================================================
+         Section 2: 需求列表表格
+         展示采购需求列表，每行可启动 AI 寻源或查看报告
+         ======================================================== -->
+    <section aria-label="选择需求启动 AI 寻源">
+      <!-- 区块标题 -->
+      <h2 class="ai-section-title">选择需求启动 AI 寻源</h2>
+
+      <!-- 表格卡片容器 -->
+      <div class="ai-table-card">
+        <!-- 横向滚动容器（窄屏时可左右滑动表格） -->
+        <div class="ai-table-scroll">
+          <table class="ai-table">
+            <thead>
+              <tr>
+                <th>需求名称</th>
+                <th>类别</th>
+                <th>状态</th>
+                <th>创建时间</th>
+                <th>AI操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- 第 1 行：进行中 → 启动 AI 寻源按钮 -->
+              <tr>
+                <td class="col-name">2026年Q3电子元器件采购</td>
+                <td class="col-category">电子元器件</td>
+                <td><span class="ai-badge ai-badge--info">进行中</span></td>
+                <td>2026-07-01</td>
+                <td>
+                  <button type="button" class="ai-btn-action">
+                    <i class="bi bi-robot" aria-hidden="true"></i>
+                    <span>启动AI寻源</span>
+                  </button>
+                </td>
+              </tr>
+              <!-- 第 2 行：进行中 → 启动 AI 寻源按钮 -->
+              <tr>
+                <td class="col-name">消费电子主板供应商寻源</td>
+                <td class="col-category">电子元器件</td>
+                <td><span class="ai-badge ai-badge--info">进行中</span></td>
+                <td>2026-06-28</td>
+                <td>
+                  <button type="button" class="ai-btn-action">
+                    <i class="bi bi-robot" aria-hidden="true"></i>
+                    <span>启动AI寻源</span>
+                  </button>
+                </td>
+              </tr>
+              <!-- 第 3 行：进行中 → 启动 AI 寻源按钮 -->
+              <tr>
+                <td class="col-name">精密模具定制需求</td>
+                <td class="col-category">模具制造</td>
+                <td><span class="ai-badge ai-badge--info">进行中</span></td>
+                <td>2026-06-10</td>
+                <td>
+                  <button type="button" class="ai-btn-action">
+                    <i class="bi bi-robot" aria-hidden="true"></i>
+                    <span>启动AI寻源</span>
+                  </button>
+                </td>
+              </tr>
+              <!-- 第 4 行：已完成 → 查看报告链接 -->
+              <tr>
+                <td class="col-name">包装材料年度采购</td>
+                <td class="col-category">包装材料</td>
+                <td><span class="ai-badge ai-badge--success">已完成</span></td>
+                <td>2026-06-15</td>
+                <td>
+                  <a href="#" class="ai-link-report">
+                    <i class="bi bi-file-earmark-text" aria-hidden="true"></i>
+                    <span>查看报告</span>
+                  </a>
+                </td>
+              </tr>
+              <!-- 第 5 行：已完成 → 查看报告链接 -->
+              <tr>
+                <td class="col-name">注塑件供应商开发</td>
+                <td class="col-category">注塑成型</td>
+                <td><span class="ai-badge ai-badge--success">已完成</span></td>
+                <td>2026-05-20</td>
+                <td>
+                  <a href="#" class="ai-link-report">
+                    <i class="bi bi-file-earmark-text" aria-hidden="true"></i>
+                    <span>查看报告</span>
+                  </a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================
+         Section 3: AI 寻源统计
+         3 张统计卡片展示 AI 寻源的核心数据指标
+         ======================================================== -->
+    <section aria-label="AI 寻源统计">
+      <div class="ai-stats">
+
+        <!-- 统计卡片 1：AI 寻源次数 -->
+        <div class="ai-stat-card">
+          <div class="ai-stat-icon">
+            <i class="bi bi-cpu" aria-hidden="true"></i>
+          </div>
+          <div>
+            <div class="ai-stat-number">156</div>
+            <div class="ai-stat-label">AI 寻源次数</div>
+          </div>
+        </div>
+
+        <!-- 统计卡片 2：匹配供应商数 -->
+        <div class="ai-stat-card">
+          <div class="ai-stat-icon">
+            <i class="bi bi-people" aria-hidden="true"></i>
+          </div>
+          <div>
+            <div class="ai-stat-number">432</div>
+            <div class="ai-stat-label">匹配供应商数</div>
+          </div>
+        </div>
+
+        <!-- 统计卡片 3：平均节省时间 -->
+        <div class="ai-stat-card">
+          <div class="ai-stat-icon">
+            <i class="bi bi-clock-history" aria-hidden="true"></i>
+          </div>
+          <div>
+            <div class="ai-stat-number">2.3h</div>
+            <div class="ai-stat-label">平均节省时间</div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============================================================
+       页脚 — 全宽，顶部细线，居中弱化文字
+       ============================================================ -->
+  <footer class="shell-footer">
+    <div class="shell-footer__inner">
+      <span>供应商寻源系统 © 2026 · 让采购更高效</span>
+    </div>
+  </footer>
+
+
+    <style>
+    /* ============================================================
+     * 顶部导航栏样式（继承自 project-shell.html）
+     * 设计要点：通栏宽度、吸顶定位、白色背景 + 底部细线
+     * ============================================================ */
+
+    /* 导航栏外层容器：全宽 + 吸顶 */
+    .shell-navbar {
+      position: sticky;                          /* 吸顶：滚动时固定在顶部 */
+      top: 0;
+      z-index: 50;                               /* 层级高于页面内容 */
+      width: 100%;
+      background-color: var(--color-surface);    /* 白色背景 */
+      border-bottom: 1px solid var(--color-border); /* 底部细线分隔 */
+    }
+
+    /* 导航栏内部容器：最大宽度 1200px，水平居中 */
+    .shell-navbar__inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      height: 64px;                              /* 导航栏高度 64px（符合 64-72px 规范） */
+      padding: 0 var(--space-8);                 /* 左右内边距 2rem */
+      display: flex;
+      align-items: center;                       /* 垂直居中对齐所有子元素 */
+      gap: var(--space-6);                       /* 各区块间距 1.5rem */
+    }
+
+    /* ---- 左侧 Logo 区域 ---- */
+    .shell-logo {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);                       /* 图标与文字间距 0.5rem */
+      text-decoration: none;
+      flex-shrink: 0;                            /* 不被压缩 */
+    }
+    .shell-logo i {
+      font-size: 24px;                           /* 图标尺寸 24px */
+      color: var(--color-brand);                 /* Teal 主色图标 */
+      line-height: 1;
+    }
+    .shell-logo span {
+      font-size: var(--text-lg);                 /* 1.125rem */
+      font-weight: var(--font-semibold);         /* 600 字重 */
+      color: var(--color-text-primary);          /* 深色文字 */
+      white-space: nowrap;                       /* 不换行 */
+    }
+
+    /* ---- 中间导航链接组 ---- */
+    .shell-nav {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);                       /* 链接间距 0.25rem */
+      flex: 1;                                   /* 占据中间剩余空间 */
+      justify-content: center;                   /* 链接居中排列 */
+    }
+
+    /* 单个导航链接：高度与导航栏一致，便于底部指示线定位 */
+    .shell-nav__link {
+      position: relative;                        /* 为底部指示线 ::after 提供定位基准 */
+      height: 64px;                              /* 与导航栏等高 */
+      padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+      display: inline-flex;
+      align-items: center;                       /* 文字垂直居中 */
+      font-size: var(--text-sm);                 /* 0.875rem */
+      font-weight: var(--font-medium);           /* 500 字重 */
+      color: var(--color-text-secondary);        /* 默认次要文字色 */
+      text-decoration: none;
+      white-space: nowrap;                       /* 不换行 */
+      transition: color 150ms cubic-bezier(.2,.8,.2,1); /* 仅过渡颜色属性 */
+    }
+    /* 悬停：文字变深 */
+    .shell-nav__link:hover {
+      color: var(--color-text-primary);
+    }
+    /* 键盘聚焦：Teal 描边 */
+    .shell-nav__link:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: -4px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* 激活态：Teal 文字（与底部指示线同色，视觉统一） */
+    .shell-nav__link[data-active="true"] {
+      color: var(--color-brand);
+    }
+    /* 激活态底部指示线：2px Teal 横线，覆盖在导航栏底边上 */
+    .shell-nav__link[data-active="true"]::after {
+      content: '';
+      position: absolute;
+      bottom: 0;                                 /* 紧贴导航栏底部 */
+      left: var(--space-4);                      /* 与文字左右对齐 */
+      right: var(--space-4);
+      height: 2px;
+      background-color: var(--color-brand);
+      border-radius: var(--radius-sm);
+    }
+
+    /* ---- 右侧操作区 ---- */
+    .shell-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);                       /* 按钮与头像间距 0.75rem */
+      flex-shrink: 0;
+    }
+
+    /* 主操作按钮："新建需求" */
+    .shell-btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);                       /* 图标与文字间距 */
+      height: 36px;                              /* 按钮高度 36px */
+      padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+      font-size: var(--text-sm);                 /* 0.875rem */
+      font-weight: var(--font-medium);
+      font-family: var(--font-sans);
+      color: var(--color-text-on-primary);       /* 白色文字 */
+      background-color: var(--color-brand);      /* Teal 主色背景 */
+      border: none;
+      border-radius: var(--radius-md);           /* 8px 圆角 */
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(.2,.8,.2,1),
+                  transform 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    /* 悬停：颜色加深 + 微上移 */
+    .shell-btn-primary:hover {
+      background-color: var(--color-brand-hover);
+      transform: translateY(-1px);
+    }
+    /* 按下：回弹归位 */
+    .shell-btn-primary:active {
+      transform: translateY(0);
+    }
+    /* 键盘聚焦：Teal 描边 */
+    .shell-btn-primary:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+    }
+    .shell-btn-primary i {
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    /* 用户头像：圆形 + 首字母 */
+    .shell-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-full);         /* 正圆 */
+      background-color: var(--color-brand);      /* Teal 背景 */
+      color: var(--color-text-on-primary);       /* 白色文字 */
+      font-size: var(--text-xs);                 /* 0.75rem */
+      font-weight: var(--font-medium);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .shell-avatar:hover {
+      background-color: var(--color-brand-hover);
+    }
+
+    /* ============================================================
+     * 页面主内容区（继承自 project-shell.html）
+     * 设计要点：最大宽度 1200px，水平居中，上下留白
+     * ============================================================ */
+    .page-content {
+      max-width: 1200px;
+      margin: 0 auto;                            /* 水平居中 */
+      padding: var(--space-8) var(--space-8);    /* 上下左右 2rem */
+      min-height: calc(100vh - 64px - 60px);     /* 最小高度 = 视口 - 导航栏 - 页脚 */
+    }
+
+    /* 页面标题样式 */
+    .page-content > h1 {
+      font-size: var(--text-2xl);                /* 1.5rem */
+      font-weight: var(--font-semibold);         /* 600 */
+      color: var(--color-text-primary);
+      line-height: var(--leading-tight);         /* 1.25 */
+      margin-top: 0;
+      margin-bottom: var(--space-6);             /* 标题与内容间距 1.5rem */
+      text-wrap: balance;
+      word-break: keep-all;
+      overflow-wrap: break-word;
+    }
+
+    /* ============================================================
+     * 页脚样式（继承自 project-shell.html）
+     * ============================================================ */
+    .shell-footer {
+      width: 100%;
+      border-top: 1px solid var(--color-border);
+      background-color: var(--color-surface);
+    }
+    .shell-footer__inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-5) var(--space-8);    /* 上下 1.25rem，左右 2rem */
+      text-align: center;
+      font-size: var(--text-sm);                 /* 0.875rem */
+      color: var(--color-text-muted);            /* 弱化文字色 */
+      white-space: nowrap;
+    }
+
+    /* ============================================================
+     * 响应式：移动端适配（< 768px）（继承自 project-shell.html）
+     * ============================================================ */
+    @media (max-width: 768px) {
+      .shell-navbar__inner {
+        padding: 0 var(--space-4);               /* 缩小左右内边距 */
+        gap: var(--space-3);
+      }
+      .shell-logo span {
+        font-size: var(--text-base);             /* 缩小 Logo 文字 */
+      }
+      .shell-nav {
+        gap: 0;
+      }
+      .shell-nav__link {
+        padding: 0 var(--space-2);
+        font-size: var(--text-xs);               /* 缩小导航文字 */
+      }
+      /* 移动端按钮只显示加号图标，节省空间 */
+      .shell-btn-primary span {
+        display: none;
+      }
+      .shell-btn-primary {
+        padding: 0 var(--space-3);
+        width: 36px;
+        justify-content: center;
+      }
+      .page-content {
+        padding: var(--space-4);
+      }
+    }
+
+    /* ============================================================
+     * 无障碍：尊重用户"减弱动画"偏好（继承自 project-shell.html）
+     * ============================================================ */
+    @media (prefers-reduced-motion: reduce) {
+      .shell-nav__link,
+      .shell-btn-primary,
+      .shell-avatar,
+      .ai-step-card,
+      .ai-btn-action,
+      .ai-link-report,
+      .ai-stat-card {
+        transition-duration: 0.01ms !important;
+      }
+      .shell-btn-primary:hover,
+      .ai-step-card:hover {
+        transform: none;
+      }
+    }
+
+    /* ============================================================
+     * ============================================================
+     *  ↓↓↓ AI 自动化页面专属样式（privateRegions） ↓↓↓
+     * ============================================================
+     * ============================================================ */
+
+    /* ============================================================
+     * Section 1: AI 工作流步骤卡片
+     * 布局：3 张等宽卡片横向排列，卡片间用箭头连接
+     * ============================================================ */
+
+    /* 步骤区域容器：flex 横向排列，卡片等宽 */
+    .ai-steps {
+      display: flex;
+      align-items: stretch;          /* 所有卡片等高（顶部基线对齐） */
+      gap: var(--space-6);           /* 卡片间距 1.5rem */
+      margin-bottom: var(--space-8); /* 与下一个区块间距 2rem */
+    }
+
+    /* 单个步骤卡片：白底 + 细线边框 + 12px 圆角 */
+    .ai-step-card {
+      flex: 1;                       /* 三张卡片等宽分配 */
+      min-width: 0;                  /* 允许内容截断，防止溢出 */
+      background-color: var(--color-surface);   /* 白色背景 */
+      border: 1px solid var(--color-border);    /* 细线边框（border-led） */
+      border-radius: var(--radius-lg);          /* 12px 圆角 */
+      padding: var(--space-6);                  /* 内边距 1.5rem */
+      transition: border-color 150ms cubic-bezier(.2,.8,.2,1),
+                  transform 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    /* 悬停：边框变为主色调 + 微上移 */
+    .ai-step-card:hover {
+      border-color: var(--color-brand-border);  /* Teal 浅色边框 */
+      transform: translateY(-2px);               /* 微上移 2px */
+    }
+
+    /* 步骤编号圆圈：48px 渐变背景圆，白色数字 */
+    .ai-step-number {
+      width: 48px;
+      height: 48px;
+      border-radius: var(--radius-full);         /* 正圆 */
+      /* 从 primary-400 到 primary-600 的同色系渐变（非彩虹渐变） */
+      background: linear-gradient(135deg, var(--color-primary-400), var(--color-primary-600));
+      color: var(--color-text-on-primary);       /* 白色文字 */
+      font-size: var(--text-xl);                 /* 1.25rem */
+      font-weight: var(--font-bold);             /* 700 字重 */
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      margin-bottom: var(--space-4);             /* 与标题间距 1rem */
+      flex-shrink: 0;
+    }
+
+    /* 步骤间箭头分隔符：Bootstrap Icons 箭头图标 */
+    .ai-step-arrow {
+      display: flex;
+      align-items: center;           /* 垂直居中对齐箭头 */
+      flex-shrink: 0;                /* 不被压缩 */
+      color: var(--color-neutral-300); /* 浅灰色箭头，保持低调 */
+      font-size: var(--text-2xl);    /* 1.5rem */
+    }
+
+    /* 步骤标题行：图标 + 标题文字水平排列 */
+    .ai-step-title {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);           /* 图标与文字间距 0.5rem */
+      font-size: var(--text-lg);     /* 1.125rem */
+      font-weight: var(--font-semibold); /* 600 字重 */
+      color: var(--color-brand);     /* Teal 主色标题 */
+      margin-bottom: var(--space-2); /* 与描述间距 0.5rem */
+    }
+    .ai-step-title i {
+      font-size: 20px;               /* 标题图标稍大于文字 */
+      color: var(--color-brand);     /* Teal 图标 */
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    /* 步骤描述文字 */
+    .ai-step-desc {
+      font-size: var(--text-sm);     /* 0.875rem */
+      color: var(--color-text-secondary); /* 次要文字色 */
+      line-height: var(--leading-relaxed); /* 1.625 行高（约 1.5） */
+      margin: 0;                     /* 清除默认外边距 */
+    }
+
+    /* ============================================================
+     * Section 2: 需求列表表格
+     * 布局：区块标题 + 卡片容器内嵌数据表格
+     * ============================================================ */
+
+    /* 区块标题 */
+    .ai-section-title {
+      font-size: var(--text-xl);     /* 1.25rem */
+      font-weight: var(--font-semibold); /* 600 */
+      color: var(--color-text-primary);
+      margin: 0 0 var(--space-4) 0;  /* 底部间距 1rem */
+    }
+
+    /* 表格卡片容器：白底 + 细线边框 + 8px 圆角 + 横向滚动 */
+    .ai-table-card {
+      background-color: var(--color-surface);   /* 白色背景 */
+      border: 1px solid var(--color-border);    /* 细线边框 */
+      border-radius: var(--radius-md);          /* 8px 圆角 */
+      overflow: hidden;                         /* 圆角裁剪表格 */
+      margin-bottom: var(--space-8);            /* 与统计卡片间距 2rem */
+    }
+
+    /* 表格横向滚动容器（移动端窄屏时可左右滑动） */
+    .ai-table-scroll {
+      overflow-x: auto;
+    }
+
+    /* 数据表格基础样式 */
+    .ai-table {
+      width: 100%;
+      border-collapse: collapse;     /* 合并边框 */
+      font-size: var(--text-sm);     /* 0.875rem */
+    }
+
+    /* 表头：浅灰背景 + 小号大写文字 */
+    .ai-table thead th {
+      background-color: var(--color-neutral-50); /* 浅灰背景 */
+      color: var(--color-text-secondary);        /* 次要文字色 */
+      font-size: var(--text-xs);                 /* 0.75rem */
+      font-weight: var(--font-medium);           /* 500 字重 */
+      text-transform: uppercase;                 /* 大写字母 */
+      text-align: left;
+      padding: var(--space-3) var(--space-4);    /* 上下 0.75rem，左右 1rem */
+      white-space: nowrap;                       /* 不换行 */
+      border-bottom: 1px solid var(--color-border); /* 底部分隔线 */
+    }
+
+    /* 表格单元格基础样式 */
+    .ai-table tbody td {
+      padding: var(--space-3) var(--space-4);    /* 上下 0.75rem，左右 1rem */
+      color: var(--color-text-primary);
+      border-bottom: 1px solid var(--color-border-light); /* 极浅分隔线 */
+      white-space: nowrap;                       /* 默认不换行 */
+      vertical-align: middle;                    /* 垂直居中 */
+    }
+    /* 最后一行去除底边框 */
+    .ai-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+    /* 行悬停：浅灰背景 */
+    .ai-table tbody tr {
+      transition: background-color 120ms cubic-bezier(.2,.8,.2,1);
+    }
+    .ai-table tbody tr:hover {
+      background-color: var(--color-surface-hover); /* 悬停浅灰 */
+    }
+
+    /* 需求名称列：允许截断（防止长名称撑爆表格） */
+    .ai-table .col-name {
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 类别列：中等宽度 */
+    .ai-table .col-category {
+      color: var(--color-text-secondary);
+    }
+
+    /* AI 操作列：右对齐（P0 对齐要求） */
+    .ai-table th:last-child,
+    .ai-table td:last-child {
+      text-align: right;
+    }
+
+    /* ---- 状态徽章 ---- */
+    /* 徽章基础样式：小圆角标签 */
+    .ai-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px var(--space-2);   /* 上下 2px，左右 0.5rem */
+      border-radius: var(--radius-sm); /* 4px 圆角 */
+      font-size: var(--text-xs);     /* 0.75rem */
+      font-weight: var(--font-medium); /* 500 */
+      white-space: nowrap;
+      line-height: 1.5;
+    }
+    /* 进行中：蓝色信息态 */
+    .ai-badge--info {
+      background-color: var(--state-info-bg);
+      color: var(--state-info);
+    }
+    /* 已完成：绿色成功态 */
+    .ai-badge--success {
+      background-color: var(--state-success-bg);
+      color: var(--state-success);
+    }
+
+    /* ---- "启动 AI 寻源" 操作按钮 ---- */
+    /* 紧凑型 Teal 主色按钮：高 32px，小号文字，6px 圆角 */
+    .ai-btn-action {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);           /* 图标与文字间距 */
+      height: 32px;                  /* 按钮高度 32px */
+      padding: 0 var(--space-3);     /* 左右内边距 0.75rem */
+      font-size: var(--text-xs);     /* 0.75rem */
+      font-weight: var(--font-medium);
+      font-family: var(--font-sans);
+      color: var(--color-text-on-primary);  /* 白色文字 */
+      background-color: var(--color-brand); /* Teal 主色背景 */
+      border: none;
+      border-radius: 6px;            /* 6px 圆角 */
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .ai-btn-action:hover {
+      background-color: var(--color-brand-hover); /* 悬停加深 */
+    }
+    .ai-btn-action:active {
+      background-color: var(--color-primary-800); /* 按下更深 */
+    }
+    .ai-btn-action:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+    }
+    .ai-btn-action i {
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    /* ---- "查看报告" 文字链接 ---- */
+    .ai-link-report {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);           /* 图标与文字间距 */
+      font-size: var(--text-sm);     /* 0.875rem */
+      color: var(--color-text-muted); /* 弱化文字色 */
+      text-decoration: none;
+      white-space: nowrap;
+      transition: color 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .ai-link-report:hover {
+      color: var(--color-brand);     /* 悬停变为主色 */
+    }
+    .ai-link-report:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+    .ai-link-report i {
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    /* ============================================================
+     * Section 3: AI 寻源统计卡片
+     * 布局：3 张等宽小卡片横向排列
+     * ============================================================ */
+
+    /* 统计卡片网格：3 列等宽，间距 1rem */
+    .ai-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr); /* 3 列等宽 */
+      gap: var(--space-4);           /* 间距 1rem */
+    }
+
+    /* 单个统计卡片：白底 + 细线边框 + 8px 圆角 + 1rem 内边距 */
+    .ai-stat-card {
+      background-color: var(--color-surface);   /* 白色背景 */
+      border: 1px solid var(--color-border);    /* 细线边框 */
+      border-radius: var(--radius-md);          /* 8px 圆角 */
+      padding: var(--space-4);                  /* 内边距 1rem */
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);           /* 图标与数字间距 0.75rem */
+      transition: border-color 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .ai-stat-card:hover {
+      border-color: var(--color-brand-border);  /* 悬停边框变 Teal */
+    }
+
+    /* 统计图标圆圈：36px 圆形，浅 Teal 背景 + Teal 图标 */
+    .ai-stat-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-full);         /* 正圆 */
+      background-color: var(--color-brand-light); /* 浅 Teal 背景（primary-50） */
+      color: var(--color-brand);                  /* Teal 图标 */
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    /* 统计数字：大号粗体 */
+    .ai-stat-number {
+      font-size: var(--text-2xl);    /* 1.5rem */
+      font-weight: var(--font-bold); /* 700 */
+      color: var(--color-text-primary);
+      line-height: 1.2;
+      font-variant-numeric: tabular-nums; /* 等宽数字，对齐整齐 */
+    }
+
+    /* 统计标签：小号次要文字 */
+    .ai-stat-label {
+      font-size: var(--text-sm);     /* 0.875rem */
+      color: var(--color-text-secondary);
+      margin-top: 2px;
+    }
+
+    /* ============================================================
+     * 响应式：AI 页面专属移动端适配（< 768px）
+     * ============================================================ */
+    @media (max-width: 768px) {
+      /* 步骤卡片：纵向堆叠，箭头旋转 90 度 */
+      .ai-steps {
+        flex-direction: column;
+        gap: var(--space-4);
+      }
+      .ai-step-arrow {
+        transform: rotate(90deg);    /* 箭头朝下 */
+        justify-content: center;
+        padding: var(--space-1) 0;
+      }
+
+      /* 统计卡片：纵向堆叠 */
+      .ai-stats {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* 平板适配（768px - 1024px）：步骤卡片保持 3 列但缩小间距 */
+    @media (max-width: 1024px) and (min-width: 769px) {
+      .ai-steps {
+        gap: var(--space-4);         /* 缩小间距 */
+      }
+      .ai-step-card {
+        padding: var(--space-4);     /* 缩小内边距 */
+      }
+    }
+  </style>
+</body>
+</html>

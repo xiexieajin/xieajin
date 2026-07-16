@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block title %}初筛评估 - {{ supplier.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title"><i class="bi bi-shield-check"></i> 初筛评估 - {{ supplier.name }}</h1>
+    <a href="{{ url_for('supplier_detail', id=supplier.id) }}" class="back-link">
+        <i class="bi bi-arrow-left"></i> 返回详情
+    </a>
+</div>
+
+<div class="alert alert-info">
+    <strong>评分规则：</strong>100分制，通过标准详见<a href="{{ url_for('screening_rules_config') }}">规则配置页</a>。
+    <strong>一票否决项：</strong>经营状态非存续 / 近3年侵权败诉 / 平台确认侵权下架。
+</div>
+
+<form method="POST" action="{{ url_for('screening_edit', supplier_id=supplier.id) if screening else url_for('screening_create', supplier_id=supplier.id) }}">
+
+    <div class="card mb-3">
+        <div class="card-header bg-danger text-white">
+            <i class="bi bi-exclamation-triangle"></i> 风险排查（知识产权 40分）
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label">商标查询结果（满分20分）</label>
+                <select class="form-select" name="trademark_result">
+                    {% set tv = screening.trademark_result if screening else '' %}
+                    <option value="">请选择</option>
+                    <option value="无风险，未发现商标侵权" {{ 'selected' if '无风险' in tv }}>无风险（20分）</option>
+                    <option value="潜在风险，需进一步核实" {{ 'selected' if '潜在' in tv }}>潜在风险（10分）</option>
+                    <option value="明确侵权迹象" {{ 'selected' if '明确侵权' in tv }}>明确侵权迹象（0分）</option>
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">专利查询结果（满分20分）</label>
+                <select class="form-select" name="patent_result">
+                    {% set pv = screening.patent_result if screening else '' %}
+                    <option value="">请选择</option>
+                    <option value="无风险，未发现专利侵权" {{ 'selected' if '无风险' in pv }}>无风险（20分）</option>
+                    <option value="潜在风险，需进一步核实" {{ 'selected' if '潜在' in pv }}>潜在风险（10分）</option>
+                    <option value="明确侵权迹象" {{ 'selected' if '明确侵权' in pv }}>明确侵权迹象（0分）</option>
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">侵权诉讼记录（一票否决项）</label>
+                <select class="form-select" name="lawsuit_result">
+                    {% set lv = screening.lawsuit_result if screening else '' %}
+                    <option value="">请选择</option>
+                    <option value="无侵权诉讼记录" {{ 'selected' if '无侵权' in lv }}>无侵权诉讼记录</option>
+                    <option value="有侵权诉讼但未败诉" {{ 'selected' if '未败诉' in lv }}>有侵权诉讼但未败诉</option>
+                    <option value="近3年有知识产权侵权诉讼败诉记录" {{ 'selected' if '败诉' in lv }}>近3年有侵权败诉记录（一票否决）</option>
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">平台侵权记录（一票否决项）</label>
+                <select class="form-select" name="platform_infringe">
+                    {% set piv = screening.platform_infringe if screening else '' %}
+                    <option value="">请选择</option>
+                    <option value="无平台侵权记录" {{ 'selected' if '无平台' in piv }}>无平台侵权记录</option>
+                    <option value="有投诉但未确认侵权" {{ 'selected' if '未确认' in piv }}>有投诉但未确认侵权</option>
+                    <option value="目标平台有确认侵权下架记录" {{ 'selected' if '下架' in piv or '确认侵权' in piv }}>有确认侵权下架记录（一票否决）</option>
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">自有知识产权</label>
+                <input type="text" class="form-control" name="own_ip"
+                       value="{{ screening.own_ip if screening else '' }}"
+                       placeholder="如：拥有XX专利、XX商标">
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">风险排查总结</label>
+                <textarea class="form-control" name="risk_summary" rows="2">{{ screening.risk_summary if screening else '' }}</textarea>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header bg-warning">
+            <i class="bi bi-award"></i> 资质核实（资质合规 40分）
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label">目标市场认证（2项及以上20分 / 1项10分 / 无0分）</label>
+                <input type="text" class="form-control" name="cert_authenticity"
+                       value="{{ screening.cert_authenticity if screening else '' }}"
+                       placeholder="如：CE, FCC, RoHS（填写持有的认证名称）">
+                <small class="text-muted">需求要求认证：{{ supplier.required_certs or '未指定' }}</small>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">第三方检测报告（有10分 / 无0分）</label>
+                <select class="form-select" name="test_report">
+                    {% set tr = screening.test_report if screening else '' %}
+                    <option value="">请选择</option>
+                    <option value="有第三方检测报告" {{ 'selected' if '有' in tr and '无' not in tr }}>有第三方检测报告</option>
+                    <option value="无第三方检测报告" {{ 'selected' if '无' in tr }}>无第三方检测报告</option>
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">进出口经营权（有10分 / 无0分）</label>
+                <select class="form-select" name="customs_qualification">
+                    {% set cq = screening.customs_qualification if screening else '' %}
+                    <option value="">请选择</option>
+                    <option value="有进出口经营权" {{ 'selected' if '有' in cq and '无' not in cq }}>有进出口经营权</option>
+                    <option value="无进出口经营权" {{ 'selected' if '无' in cq }}>无进出口经营权</option>
+                </select>
+            </div>
+
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">出口备案</label>
+                    <input type="text" class="form-control" name="export_record"
+                           value="{{ screening.export_record if screening else '' }}">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">标签合规</label>
+                    <input type="text" class="form-control" name="label_compliance"
+                           value="{{ screening.label_compliance if screening else '' }}">
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">资质核实总结</label>
+                <textarea class="form-control" name="qual_summary" rows="2">{{ screening.qual_summary if screening else '' }}</textarea>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header bg-info text-white">
+            <i class="bi bi-building-check"></i> 基础条件（20分）
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label">成立年限（≥5年20分 / 2~5年10分）</label>
+                <input type="text" class="form-control" name="establish_years"
+                       value="{{ screening.establish_years if screening else supplier.establish_years }}"
+                       placeholder="填写数字，如：5">
+            </div>
+            <div class="alert alert-light border">
+                <small>当前供应商经营状态：<strong>{{ supplier.operating_status }}</strong>
+                {% if supplier.operating_status != '存续' %}
+                    <span class="text-danger">（将触发一票否决！）</span>
+                {% endif %}
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <div class="text-end mt-4">
+        <button type="submit" class="btn btn-primary btn-lg">
+            <i class="bi bi-calculator"></i> 提交并自动评分
+        </button>
+        <a href="{{ url_for('supplier_detail', id=supplier.id) }}" class="btn btn-outline-secondary btn-lg">取消</a>
+    </div>
+</form>
+{% endblock %}

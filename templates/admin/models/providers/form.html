@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}编辑服务商 - 供应商寻源系统{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-pencil"></i> 编辑服务商</h1>
+    <a href="{{ url_for('admin_provider_list') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回列表
+    </a>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <form method="POST">
+                    <!-- 服务商名称 -->
+                    <div class="mb-3">
+                        <label class="form-label">服务商名称 <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" name="provider_name"
+                               value="{{ provider.provider_name }}" required>
+                        <small class="text-muted">显示用名称，如"DeepSeek"、"1688开放平台"</small>
+                    </div>
+
+                    <!-- 代码标识（只读展示） -->
+                    <div class="mb-3">
+                        <label class="form-label">代码标识</label>
+                        <input type="text" class="form-control" value="{{ provider.provider_code }}" disabled>
+                        <small class="text-muted">代码内部使用，不可修改</small>
+                    </div>
+
+                    <!-- API地址 -->
+                    <div class="mb-3">
+                        <label class="form-label">API地址</label>
+                        <input type="text" class="form-control" name="base_url"
+                               value="{{ provider.base_url }}" placeholder="如 https://api.deepseek.com">
+                        <small class="text-muted">API接口的基础地址</small>
+                    </div>
+
+                    <!-- API密钥 -->
+                    <div class="mb-3">
+                        <label class="form-label">API密钥</label>
+                        {% if provider.api_key %}
+                        <input type="password" class="form-control" name="api_key"
+                               placeholder="已配置（留空保存时保留原值）">
+                        <small class="text-muted">已配置密钥。如需修改请输入新值，留空则保留原密钥。</small>
+                        {% else %}
+                        <input type="text" class="form-control" name="api_key"
+                               placeholder="请输入API密钥">
+                        <small class="text-danger">尚未配置密钥，请输入API密钥</small>
+                        {% endif %}
+                    </div>
+
+                    <!-- 启用状态 -->
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" name="is_enabled" id="is_enabled"
+                               {% if provider.is_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="is_enabled">启用此服务商</label>
+                        <small class="text-muted d-block">停用后，相关AI调用或搜索功能将不可用</small>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg"></i> 保存
+                    </button>
+                    <a href="{{ url_for('admin_provider_list') }}" class="btn btn-outline-secondary">
+                        取消
+                    </a>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 侧边说明 -->
+    <div class="col-md-4">
+        <div class="card bg-light">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-info-circle"></i> 服务商说明</h6>
+                <hr>
+                <p class="small mb-2"><strong>类型：</strong>
+                    {% if provider.provider_type == 'ai_model' %}AI大模型
+                    {% elif provider.provider_type == 'search_platform' %}供应商搜索平台
+                    {% elif provider.provider_type == 'data_api' %}数据查询API
+                    {% endif %}
+                </p>
+                <p class="small mb-2"><strong>作用：</strong>
+                    {% if provider.provider_code == 'deepseek' %}
+                        文本理解、需求解析、供应商过滤、自动初筛等核心AI功能
+                    {% elif provider.provider_code == 'zhipu' %}
+                        图片识别（GLM-4V），把用户上传的产品图片转成文字描述
+                    {% elif provider.provider_code == 'ali1688' %}
+                        通过1688官方API搜索供应商
+                    {% elif provider.provider_code == 'tianyancha' %}
+                        查询供应商的工商信息（注册资本、法人、地址等）
+                    {% elif provider.provider_code == 'made_in_china' %}
+                        通过中国制造网MCP服务搜索供应商
+                    {% endif %}
+                </p>
+                <p class="small mb-0 text-muted">
+                    修改保存后立即生效，无需重启服务器。
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

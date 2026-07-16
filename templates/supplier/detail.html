@@ -1,0 +1,390 @@
+{% extends "base.html" %}
+
+{% block title %}供应商详情 - {{ supplier.name }}{% endblock %}
+
+{% block content %}
+{# 小白讲解：返回链接放在标题最上面，点击回到供应商列表 #}
+<a class="back-link" href="{{ url_for('supplier_list') }}"><i class="bi bi-arrow-left"></i> 返回列表</a>
+
+{# 小白讲解：标题独占一行，编辑按钮单独一行，避免长名称和按钮挤在一起 #}
+<h1 class="page-title mb-3"><i class="bi bi-building"></i> {{ supplier.name }}</h1>
+
+<div class="mb-4">
+    <a href="{{ url_for('supplier_edit', id=supplier.id) }}" class="btn btn-primary">
+        <i class="bi bi-pencil-square"></i> 编辑
+    </a>
+</div>
+
+<div class="alert alert-info d-flex justify-content-between align-items-center">
+    <div>
+        <strong>开发阶段：</strong>
+        {# 小白讲解：根据开发阶段显示不同颜色的徽章
+           已合作=成功(绿)、已通过初筛=初筛(黄)、沟通中=进行中(蓝)、未通过初筛=危险(红)、其他=次要(灰)
+           兼容历史数据：旧值"已淘汰"也按"未通过初筛"显示 #}
+        {% if supplier.dev_stage == '已合作' %}
+            <span class="badge bg-success fs-6">{{ supplier.dev_stage }}</span>
+        {% elif supplier.dev_stage == '已通过初筛' %}
+            <span class="badge bg-warning fs-6">{{ supplier.dev_stage }}</span>
+        {% elif supplier.dev_stage == '沟通中' %}
+            <span class="badge bg-info fs-6">{{ supplier.dev_stage }}</span>
+        {% elif supplier.dev_stage == '未通过初筛' or supplier.dev_stage == '已淘汰' %}
+            <span class="badge bg-danger fs-6">未通过初筛</span>
+        {% else %}
+            <span class="badge bg-secondary fs-6">{{ supplier.dev_stage }}</span>
+        {% endif %}
+        <span class="ms-3"><strong>关联需求：</strong>{{ supplier.product_name }}</span>
+    </div>
+    <form method="POST" action="{{ url_for('supplier_delete', id=supplier.id) }}"
+          onsubmit="return confirm('确定删除供应商【{{ supplier.name }}】？关联的初筛和沟通记录也会一并删除。')">
+        <button type="submit" class="btn btn-sm btn-outline-danger">
+            <i class="bi bi-trash"></i> 删除供应商
+        </button>
+    </form>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-info-circle"></i> 基本信息</div>
+            <div class="card-body">
+                {# 小白讲解：用 info-grid 网格展示键值对信息，比表格更清爽 #}
+                <div class="info-grid">
+                    <div>
+                        <div class="info-grid__label">供应商名称</div>
+                        <div class="info-grid__value">{{ supplier.name }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">供应商类型</div>
+                        <div class="info-grid__value">
+                            {% if supplier.supplier_type == '制造商' %}
+                                <span class="badge bg-success">{{ supplier.supplier_type }}</span>
+                            {% elif supplier.supplier_type == '疑似制造商' %}
+                                <span class="badge bg-warning">{{ supplier.supplier_type }}</span>
+                            {% else %}
+                                {{ supplier.supplier_type or '-' }}
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">来源平台</div>
+                        <div class="info-grid__value">{{ supplier.source }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">命中关键词</div>
+                        <div class="info-grid__value">{{ supplier.hit_keyword or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">法定代表人</div>
+                        <div class="info-grid__value">{{ supplier.legal_person or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">注册资本</div>
+                        <div class="info-grid__value">{{ supplier.registered_capital or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">经营状态</div>
+                        <div class="info-grid__value">
+                            {% if supplier.operating_status in ['存续', '开业', '在营'] %}
+                                <span class="badge bg-success">{{ supplier.operating_status }}</span>
+                            {% elif supplier.operating_status %}
+                                <span class="badge bg-danger">{{ supplier.operating_status }}</span>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">成立时间</div>
+                        <div class="info-grid__value">
+                            {# 小白讲解：优先显示成立日期+年限（如"2015-03-12（成立11年）"），
+                               没有日期只有年限时显示"成立11年"，都没有时显示"-" #}
+                            {% if supplier.establish_date %}
+                                {{ supplier.establish_date }}
+                                {% if supplier.establish_years %}<small class="text-muted">（成立{{ supplier.establish_years }}年）</small>{% endif %}
+                            {% elif supplier.establish_years %}
+                                成立{{ supplier.establish_years }}年
+                            {% else %}
+                                -
+                            {% endif %}
+                        </div>
+                    </div>
+                    {# 小白讲解：工厂地址较长，用 grid-column: 1 / -1 让它占满整行 #}
+                    <div style="grid-column: 1 / -1;">
+                        <div class="info-grid__label">工厂地址</div>
+                        <div class="info-grid__value">{{ supplier.factory_address or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">联系电话</div>
+                        <div class="info-grid__value">
+                            {% if supplier.phone %}
+                                <span class="text-primary"><i class="bi bi-telephone"></i> {{ supplier.phone }}</span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">联系邮箱</div>
+                        <div class="info-grid__value">
+                            {% if supplier.email %}
+                                <span class="text-primary"><i class="bi bi-envelope"></i> {{ supplier.email }}</span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">联系方式状态</div>
+                        <div class="info-grid__value">
+                            {% if supplier.contact_status == '已获取电话和邮箱' %}
+                                <span class="badge bg-success">{{ supplier.contact_status }}</span>
+                            {% elif supplier.contact_status == '已获取电话' or supplier.contact_status == '已获取邮箱' %}
+                                <span class="badge bg-info">{{ supplier.contact_status }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ supplier.contact_status or '未获取' }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">添加时间</div>
+                        <div class="info-grid__value"><small>{{ supplier.created_at }}</small></div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">主营产品</div>
+                        <div class="info-grid__value">{{ supplier.main_product or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">跨境电商经验</div>
+                        <div class="info-grid__value">
+                            {% if supplier.has_cross_border_exp %}
+                                <span class="badge bg-success">有</span>
+                            {% else %}
+                                <span class="badge bg-secondary">无</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if supplier.intro %}
+                    <div style="grid-column: 1 / -1;">
+                        <div class="info-grid__label">供应商简介</div>
+                        <div class="info-grid__value">{{ supplier.intro }}</div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-shield-check"></i> 初筛结果</span>
+                {% if screening %}
+                    {# 小白讲解：根据初筛结论(conclusion)显示不同颜色徽章
+                       已通过初筛=绿色、需人工确认=黄色、未通过初筛=红色 #}
+                    {% if screening.conclusion == '已通过初筛' %}
+                        <span class="badge bg-success fs-6">{{ screening.conclusion }}</span>
+                    {% elif screening.conclusion == '需人工确认' %}
+                        <span class="badge bg-warning text-dark fs-6">{{ screening.conclusion }}</span>
+                    {% elif screening.conclusion == '未通过初筛' %}
+                        <span class="badge bg-danger fs-6">{{ screening.conclusion }}</span>
+                    {% else %}
+                        <span class="badge bg-secondary fs-6">{{ screening.conclusion or '未知' }}</span>
+                    {% endif %}
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if screening %}
+                {# 小白讲解：AI初筛引擎把总分存在 quality_score 字段（复用旧字段），
+                   6项评分维度各自独立存储，满分总和100分。
+                   每项用 score-row 进度条样式直观显示得分占比。 #}
+
+                {# ==================== 6项评分明细 ==================== #}
+                <div class="score-row">
+                    <div class="score-row__label">注册资本规模</div>
+                    <div class="score-row__track">
+                        <div class="score-row__fill" style="width: {{ (screening.score_capital_scale / 25 * 100) if screening.score_capital_scale else 0 }}%"></div>
+                    </div>
+                    <div class="score-row__value">{{ screening.score_capital_scale or 0 }}/25</div>
+                </div>
+                <div class="score-row">
+                    <div class="score-row__label">运营年限</div>
+                    <div class="score-row__track">
+                        <div class="score-row__fill" style="width: {{ (screening.score_operating_years / 15 * 100) if screening.score_operating_years else 0 }}%"></div>
+                    </div>
+                    <div class="score-row__value">{{ screening.score_operating_years or 0 }}/15</div>
+                </div>
+                <div class="score-row">
+                    <div class="score-row__label">产品匹配度</div>
+                    <div class="score-row__track">
+                        <div class="score-row__fill" style="width: {{ (screening.score_product_match / 30 * 100) if screening.score_product_match else 0 }}%"></div>
+                    </div>
+                    <div class="score-row__value">{{ screening.score_product_match or 0 }}/30</div>
+                </div>
+                <div class="score-row">
+                    <div class="score-row__label">联系方式完整度</div>
+                    <div class="score-row__track">
+                        <div class="score-row__fill" style="width: {{ (screening.score_contact_complete / 10 * 100) if screening.score_contact_complete else 0 }}%"></div>
+                    </div>
+                    <div class="score-row__value">{{ screening.score_contact_complete or 0 }}/10</div>
+                </div>
+                <div class="score-row">
+                    <div class="score-row__label">风险记录</div>
+                    <div class="score-row__track">
+                        <div class="score-row__fill" style="width: {{ (screening.score_risk_record / 15 * 100) if screening.score_risk_record else 0 }}%"></div>
+                    </div>
+                    <div class="score-row__value">{{ screening.score_risk_record or 0 }}/15</div>
+                </div>
+                <div class="score-row">
+                    <div class="score-row__label">出口经验</div>
+                    <div class="score-row__track">
+                        <div class="score-row__fill" style="width: {{ (screening.score_export_exp / 5 * 100) if screening.score_export_exp else 0 }}%"></div>
+                    </div>
+                    <div class="score-row__value">{{ screening.score_export_exp or 0 }}/5</div>
+                </div>
+
+                {# ==================== 总分行（突出显示） ==================== #}
+                {% set total_score = screening.quality_score or 0 %}
+                <div class="score-row" style="border-top: 2px solid #dee2e6; padding-top: 8px; margin-top: 8px;">
+                    <div class="score-row__label fw-bold">总分</div>
+                    <div class="score-row__track">
+                        <div class="score-row__fill" style="width: {{ total_score }}%;{% if total_score < 60 %} background: linear-gradient(90deg, #fca5a5, #ef4444);{% elif total_score >= 75 %} background: linear-gradient(90deg, #86efac, #22c55e);{% endif %}"></div>
+                    </div>
+                    <div class="score-row__value fw-bold">{{ total_score }}/100</div>
+                </div>
+
+                {# ==================== 初筛说明（原因/否决理由） ==================== #}
+                {% if screening.screen_note %}
+                <div class="alert {% if screening.conclusion == '已通过初筛' %}alert-success{% elif screening.conclusion == '需人工确认' %}alert-warning{% else %}alert-danger{% endif %} mt-2">
+                    <strong>初筛说明：</strong>{{ screening.screen_note }}
+                </div>
+                {% endif %}
+
+                {# ==================== 天眼查核实数据（AI初筛写入） ==================== #}
+                {% if screening.tyc_match_status %}
+                <div class="mt-3">
+                    <h6 class="text-muted"><i class="bi bi-building-check"></i> 天眼查核实数据</h6>
+                    <div class="info-grid">
+                        <div>
+                            <div class="info-grid__label">匹配状态</div>
+                            <div class="info-grid__value">
+                                {% if screening.tyc_match_status == 'exact_match' %}
+                                    <span class="badge bg-success">精确匹配</span>
+                                {% elif screening.tyc_match_status == 'fuzzy_match' %}
+                                    <span class="badge bg-warning text-dark">模糊匹配</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ screening.tyc_match_status }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% if screening.tyc_company_name %}
+                        <div>
+                            <div class="info-grid__label">天眼查企业名</div>
+                            <div class="info-grid__value">{{ screening.tyc_company_name }}</div>
+                        </div>
+                        {% endif %}
+                        {% if screening.registered_capital %}
+                        <div>
+                            <div class="info-grid__label">注册资本</div>
+                            <div class="info-grid__value">{{ screening.registered_capital }} 万元</div>
+                        </div>
+                        {% endif %}
+                        {% if screening.established_date %}
+                        <div>
+                            <div class="info-grid__label">成立日期</div>
+                            <div class="info-grid__value">{{ screening.established_date }}</div>
+                        </div>
+                        {% endif %}
+                        {% if screening.operating_status %}
+                        <div>
+                            <div class="info-grid__label">经营状态</div>
+                            <div class="info-grid__value">
+                                {% if screening.operating_status in ['存续', '开业', '在营'] %}
+                                    <span class="badge bg-success">{{ screening.operating_status }}</span>
+                                {% else %}
+                                    <span class="badge bg-danger">{{ screening.operating_status }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if screening.contact_audit_result %}
+                        <div>
+                            <div class="info-grid__label">联系方式审计</div>
+                            <div class="info-grid__value">
+                                {% if screening.contact_audit_result == 'both' %}
+                                    <span class="badge bg-success">电话+邮箱</span>
+                                {% elif screening.contact_audit_result == 'phone' %}
+                                    <span class="badge bg-info">仅电话</span>
+                                {% elif screening.contact_audit_result == 'email' %}
+                                    <span class="badge bg-info">仅邮箱</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ screening.contact_audit_result }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if screening.business_scope %}
+                        <div style="grid-column: 1 / -1;">
+                            <div class="info-grid__label">经营范围</div>
+                            <div class="info-grid__value"><small>{{ screening.business_scope }}</small></div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
+                <a href="{{ url_for('screening_edit', supplier_id=supplier.id) }}" class="btn btn-outline-secondary btn-sm mt-2">
+                    <i class="bi bi-pencil"></i> 修改初筛
+                </a>
+                {% else %}
+                {# 小白讲解：没有初筛记录时用 empty-state 空状态样式 #}
+                <div class="empty-state">
+                    <div class="empty-state__icon"><i class="bi bi-shield-check"></i></div>
+                    <div class="empty-state__title">尚未进行初筛</div>
+                    <div class="empty-state__desc">对该供应商进行初筛评分</div>
+                </div>
+                <a href="{{ url_for('screening_create', supplier_id=supplier.id) }}" class="btn btn-primary">
+                    <i class="bi bi-shield-check"></i> 开始初筛
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-chat-dots"></i> 沟通记录</span>
+                <a href="{{ url_for('communication_create', supplier_id=supplier.id) }}" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-plus"></i> 记录
+                </a>
+            </div>
+            <div class="card-body">
+                {% if communications %}
+                {# 小白讲解：沟通记录用 timeline 时间线样式，按时间倒序展示往来记录 #}
+                <ul class="timeline">
+                    {% for c in communications %}
+                    <li class="timeline-item">
+                        <div class="timeline-item__title">
+                            <span class="badge bg-secondary">{{ c.channel }}</span>
+                            {% if c.conclusion %}<span class="text-muted ms-2">{{ c.conclusion }}</span>{% endif %}
+                        </div>
+                        <div class="timeline-item__date">{{ c.comm_time }}</div>
+                        {% if c.content %}
+                        <div class="timeline-item__desc">{{ c.content[:80] }}{{ '...' if c.content|length > 80 }}</div>
+                        {% endif %}
+                        {% if c.next_step %}
+                        <div class="timeline-item__desc text-primary"><i class="bi bi-arrow-right-circle"></i> {{ c.next_step }}</div>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="empty-state">
+                    <div class="empty-state__icon"><i class="bi bi-chat-dots"></i></div>
+                    <div class="empty-state__title">暂无沟通记录</div>
+                    <div class="empty-state__desc">点击右上角"记录"添加沟通</div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

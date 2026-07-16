@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<!--
+  ============================================================
+  供应商列表页 (supplier-list.html)
+  ============================================================
+  说明：本页是"叶子页面"，继承共享外壳 partials/project-shell.html。
+  做法是把外壳片段包进一个完整的 HTML5 文档，并替换 3 个 SLOT：
+    1. activeNavItem  → 激活"供应商"导航项
+    2. pageTitle      → <h1>供应商列表</h1>
+    3. pageContent    → 筛选栏 + 供应商数据表格 + 分页
+  本页不运行 fill-html-head.mjs；品牌样式与外壳样式均来自继承的外壳片段。
+  ============================================================
+-->
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>供应商列表 - 供应商寻源系统</title>
+    <style id="theme-vars">
+/* ============================================================
+ * 供应商寻源系统 - 现代简约风设计样式
+ * 主色：Teal 翠绿 / 辅助：中性灰阶
+ * 字体：Inter + Noto Sans SC
+ * ============================================================ */
+
+:root {
+  /* === 品牌主色 (Teal 翠绿色系) === */
+  --color-primary-50: #f0fdfa;
+  --color-primary-100: #ccfbf1;
+  --color-primary-200: #99f6e4;
+  --color-primary-300: #5eead4;
+  --color-primary-400: #2dd4bf;
+  --color-primary-500: #14b8a6;
+  --color-primary-600: #0d9488;
+  --color-primary-700: #0f766e;
+  --color-primary-800: #115e59;
+  --color-primary-900: #134e4a;
+
+  /* === 中性色阶 (Slate) === */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+
+  /* === 语义状态色 === */
+  --state-success: #10b981;
+  --state-success-bg: #ecfdf5;
+  --state-warning: #f59e0b;
+  --state-warning-bg: #fffbeb;
+  --state-error: #ef4444;
+  --state-error-bg: #fef2f2;
+  --state-info: #3b82f6;
+  --state-info-bg: #eff6ff;
+
+  /* === 语义变量映射 === */
+  --color-bg: var(--color-neutral-50);
+  --color-surface: var(--color-neutral-0);
+  --color-surface-hover: var(--color-neutral-50);
+  --color-border: var(--color-neutral-200);
+  --color-border-light: var(--color-neutral-100);
+  --color-text-primary: var(--color-neutral-900);
+  --color-text-secondary: var(--color-neutral-600);
+  --color-text-muted: var(--color-neutral-400);
+  --color-text-on-primary: #ffffff;
+  --color-brand: var(--color-primary-600);
+  --color-brand-hover: var(--color-primary-700);
+  --color-brand-light: var(--color-primary-50);
+  --color-brand-border: var(--color-primary-200);
+
+  /* === 圆角规范 === */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* === 阴影规范 (静态表面用极浅阴影) === */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
+  --shadow-float: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+
+  /* === 字体系统 === */
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  /* === 字号层级 === */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+
+  /* === 行高 === */
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  /* === 字重 === */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* === 间距系统 === */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+}
+
+/* === 暗色模式 (预留) === */
+.dark {
+  --color-bg: var(--color-neutral-900);
+  --color-surface: var(--color-neutral-800);
+  --color-surface-hover: var(--color-neutral-700);
+  --color-border: var(--color-neutral-700);
+  --color-border-light: var(--color-neutral-700);
+  --color-text-primary: var(--color-neutral-100);
+  --color-text-secondary: var(--color-neutral-400);
+  --color-text-muted: var(--color-neutral-500);
+  --color-brand-light: rgba(13, 148, 136, 0.15);
+  --color-brand-border: rgba(13, 148, 136, 0.3);
+}
+
+/* === 全局基础样式 === */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* === 排版工具类 === */
+.text-primary { color: var(--color-text-primary); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-muted { color: var(--color-text-muted); }
+.text-brand { color: var(--color-brand); }
+.text-success { color: var(--state-success); }
+.text-warning { color: var(--state-warning); }
+.text-error { color: var(--state-error); }
+.text-info { color: var(--state-info); }
+
+.font-medium { font-weight: var(--font-medium); }
+.font-semibold { font-weight: var(--font-semibold); }
+.font-bold { font-weight: var(--font-bold); }
+
+.text-xs { font-size: var(--text-xs); }
+.text-sm { font-size: var(--text-sm); }
+.text-base { font-size: var(--text-base); }
+.text-lg { font-size: var(--text-lg); }
+.text-xl { font-size: var(--text-xl); }
+.text-2xl { font-size: var(--text-2xl); }
+.text-3xl { font-size: var(--text-3xl); }
+.text-4xl { font-size: var(--text-4xl); }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-border: var(--color-border);
+  }
+  @layer base {
+    body { background: var(--color-surface); color: var(--color-text-primary); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+
+<body>
+
+  <!-- ============================================================
+       顶部导航栏 — 全宽吸顶，白色背景 + 底部细线
+       左：Logo ｜ 中：导航链接 ｜ 右：新建需求按钮 + 用户头像
+       （以下 <header> 继承自外壳片段，保持原样）
+       ============================================================ -->
+  <header class="shell-navbar">
+    <div class="shell-navbar__inner">
+
+      <!-- 左侧 Logo：图标 + 系统名称 -->
+      <a href="index.html" class="shell-logo" aria-label="供应商寻源系统首页">
+        <i class="bi bi-diagram-3" aria-hidden="true"></i>
+        <span>供应商寻源系统</span>
+      </a>
+
+      <!-- 中间导航链接组 -->
+      <!-- 每个链接同时携带 data-nav-key（供激活态脚本查询）和 data-dom-id（供交互绑定） -->
+      <nav class="shell-nav" aria-label="主导航">
+        <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="shell-nav__link">首页</a>
+        <a href="supplier-list.html" data-nav-key="supplier" data-dom-id="nav-supplier" class="shell-nav__link">供应商</a>
+        <a href="requirement-list.html" data-nav-key="requirement" data-dom-id="nav-requirement" class="shell-nav__link">需求管理</a>
+        <a href="ai-automation.html" data-nav-key="ai" data-dom-id="nav-ai" class="shell-nav__link">AI自动化</a>
+
+        <!-- SLOT: activeNavItem → 激活"供应商"导航项 -->
+        <script>document.querySelector('[data-nav-key="supplier"]').setAttribute('data-active','true');</script>
+      </nav>
+
+      <!-- 右侧操作区：新建需求按钮 + 用户头像 -->
+      <div class="shell-actions">
+        <button type="button" class="shell-btn-primary" data-dom-id="cta-new-requirement">
+          <i class="bi bi-plus-lg" aria-hidden="true"></i>
+          <span>新建需求</span>
+        </button>
+        <div class="shell-avatar" title="采购员账户" role="button" tabindex="0" aria-label="用户菜单">采购</div>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ============================================================
+       页面主内容区 — 最大宽度 1200px，居中
+       SLOT: pageTitle 与 SLOT: pageContent 已替换为下方内容
+       ============================================================ -->
+  <main class="page-content">
+
+    <!-- SLOT: pageTitle → 页面标题 -->
+    <h1>供应商列表</h1>
+
+    <!-- SLOT: pageContent → 页面专属内容 -->
+    <div class="sl-sections">
+
+      <!-- ============================================================
+           第 1 区：筛选栏
+           左：搜索框 + 阶段下拉 + 类别下拉 ｜ 右：添加供应商
+           ============================================================ -->
+      <section class="sl-card" aria-label="供应商筛选">
+        <div class="sl-filter">
+
+          <!-- 左侧筛选控件组 -->
+          <div class="sl-filter__left">
+
+            <!-- 搜索框：带 bi-search 图标前缀 -->
+            <div class="sl-search">
+              <i class="bi bi-search" aria-hidden="true"></i>
+              <input
+                type="text"
+                class="sl-control"
+                placeholder="搜索供应商名称..."
+                aria-label="搜索供应商名称">
+            </div>
+
+            <!-- 阶段下拉 -->
+            <div class="sl-select-wrap">
+              <select class="sl-control sl-select" aria-label="按阶段筛选">
+                <option>全部阶段</option>
+                <option>潜在</option>
+                <option>初筛中</option>
+                <option>已联系</option>
+                <option>已报价</option>
+                <option>已合作</option>
+              </select>
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+            </div>
+
+            <!-- 类别下拉 -->
+            <div class="sl-select-wrap">
+              <select class="sl-control sl-select" aria-label="按类别筛选">
+                <option>全部类别</option>
+                <option>电子元器件</option>
+                <option>模具制造</option>
+                <option>机加工</option>
+                <option>注塑成型</option>
+                <option>包装材料</option>
+              </select>
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+            </div>
+
+          </div>
+
+          <!-- 右侧操作：添加供应商 -->
+          <div class="sl-filter__right">
+            <button type="button" class="sl-btn-add">
+              <i class="bi bi-plus-lg" aria-hidden="true"></i>
+              <span>添加供应商</span>
+            </button>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ============================================================
+           第 2 区：供应商数据表格
+           列：复选框 | 供应商名称 | 类别 | 联系人 | 联系电话 | 阶段 | 评分 | 操作
+           ============================================================ -->
+      <section class="sl-card" aria-label="供应商数据表">
+        <div class="sl-table-wrap">
+          <table class="sl-table">
+            <thead>
+              <tr>
+                <th class="sl-col-center" scope="col" style="width:48px;">
+                  <input type="checkbox" class="sl-checkbox" aria-label="全选" id="sl-select-all">
+                </th>
+                <th scope="col">供应商名称</th>
+                <th scope="col">类别</th>
+                <th scope="col">联系人</th>
+                <th scope="col">联系电话</th>
+                <th class="sl-col-center" scope="col">阶段</th>
+                <th class="sl-col-right" scope="col">评分</th>
+                <th class="sl-col-center" scope="col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+
+              <!-- 第 1 行：已合作 / 92 分（查看链接注册 data-dom-id） -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 深圳市科创电子有限公司"></td>
+                <td><span class="sl-name">深圳市科创电子有限公司</span></td>
+                <td>电子元器件</td>
+                <td>张明</td>
+                <td>138xxxx5678</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--success">已合作</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--high">92</span><span class="sl-score-unit">分</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view" data-dom-id="view-supplier-detail">
+                      <i class="bi bi-eye" aria-hidden="true"></i>查看
+                    </a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit">
+                      <i class="bi bi-pencil" aria-hidden="true"></i>编辑
+                    </a>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 第 2 行：已报价 / 85 分 -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 上海精密模具制造厂"></td>
+                <td><span class="sl-name">上海精密模具制造厂</span></td>
+                <td>模具制造</td>
+                <td>李芳</td>
+                <td>139xxxx1234</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--primary">已报价</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--mid">85</span><span class="sl-score-unit">分</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view"><i class="bi bi-eye" aria-hidden="true"></i>查看</a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit"><i class="bi bi-pencil" aria-hidden="true"></i>编辑</a>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 第 3 行：已联系 / 78 分 -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 东莞市鸿达机械加工厂"></td>
+                <td><span class="sl-name">东莞市鸿达机械加工厂</span></td>
+                <td>机加工</td>
+                <td>王强</td>
+                <td>137xxxx8765</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--info">已联系</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--mid">78</span><span class="sl-score-unit">分</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view"><i class="bi bi-eye" aria-hidden="true"></i>查看</a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit"><i class="bi bi-pencil" aria-hidden="true"></i>编辑</a>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 第 4 行：初筛中 / 65 分 -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 苏州永盛包装材料有限公司"></td>
+                <td><span class="sl-name">苏州永盛包装材料有限公司</span></td>
+                <td>包装材料</td>
+                <td>刘洋</td>
+                <td>136xxxx4321</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--warning">初筛中</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--low">65</span><span class="sl-score-unit">分</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view"><i class="bi bi-eye" aria-hidden="true"></i>查看</a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit"><i class="bi bi-pencil" aria-hidden="true"></i>编辑</a>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 第 5 行：已合作 / 88 分 -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 广州市利达电子科技有限公司"></td>
+                <td><span class="sl-name">广州市利达电子科技有限公司</span></td>
+                <td>电子元器件</td>
+                <td>陈伟</td>
+                <td>135xxxx6789</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--success">已合作</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--mid">88</span><span class="sl-score-unit">分</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view"><i class="bi bi-eye" aria-hidden="true"></i>查看</a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit"><i class="bi bi-pencil" aria-hidden="true"></i>编辑</a>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 第 6 行：已报价 / 81 分 -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 宁波市恒丰精密五金厂"></td>
+                <td><span class="sl-name">宁波市恒丰精密五金厂</span></td>
+                <td>机加工</td>
+                <td>赵敏</td>
+                <td>133xxxx2468</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--primary">已报价</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--mid">81</span><span class="sl-score-unit">分</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view"><i class="bi bi-eye" aria-hidden="true"></i>查看</a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit"><i class="bi bi-pencil" aria-hidden="true"></i>编辑</a>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 第 7 行：潜在 / 无评分（—） -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 中山市昌盛模具塑料制品厂"></td>
+                <td><span class="sl-name">中山市昌盛模具塑料制品厂</span></td>
+                <td>注塑成型</td>
+                <td>孙杰</td>
+                <td>132xxxx8642</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--neutral">潜在</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--none">—</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view"><i class="bi bi-eye" aria-hidden="true"></i>查看</a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit"><i class="bi bi-pencil" aria-hidden="true"></i>编辑</a>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 第 8 行：已联系 / 73 分 -->
+              <tr>
+                <td class="sl-col-center"><input type="checkbox" class="sl-checkbox" aria-label="选择 杭州市远景包装制品有限公司"></td>
+                <td><span class="sl-name">杭州市远景包装制品有限公司</span></td>
+                <td>包装材料</td>
+                <td>周婷</td>
+                <td>131xxxx9753</td>
+                <td class="sl-col-center"><span class="sl-badge sl-badge--info">已联系</span></td>
+                <td class="sl-col-right"><span class="sl-score sl-score--low">73</span><span class="sl-score-unit">分</span></td>
+                <td class="sl-col-center">
+                  <div class="sl-actions">
+                    <a href="supplier-detail.html" class="sl-action sl-action--view"><i class="bi bi-eye" aria-hidden="true"></i>查看</a>
+                    <span class="sl-action-divider" aria-hidden="true"></span>
+                    <a href="#" class="sl-action sl-action--edit"><i class="bi bi-pencil" aria-hidden="true"></i>编辑</a>
+                  </div>
+                </td>
+              </tr>
+
+            </tbody>
+          </table>
+        </div>
+
+        <!-- ============================================================
+             第 3 区：分页
+             左：共 86 条 ｜ 右：页码 < 1(激活) 2 3 … 9 >
+             ============================================================ -->
+        <div class="sl-pagination">
+          <span class="sl-pagination__count">共 86 条</span>
+          <div class="sl-pagination__pages">
+            <!-- 上一页：禁用态 -->
+            <button type="button" class="sl-page" disabled aria-label="上一页">
+              <i class="bi bi-chevron-left" aria-hidden="true"></i>
+            </button>
+            <!-- 当前页：激活态 -->
+            <button type="button" class="sl-page sl-page--active" aria-current="page">1</button>
+            <button type="button" class="sl-page">2</button>
+            <button type="button" class="sl-page">3</button>
+            <span class="sl-pagination__ellipsis" aria-hidden="true">…</span>
+            <button type="button" class="sl-page">9</button>
+            <!-- 下一页：可用 -->
+            <button type="button" class="sl-page" aria-label="下一页">
+              <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+
+      </section>
+
+    </div>
+  </main>
+
+  <!-- ============================================================
+       页脚 — 全宽，顶部细线，居中弱化文字（继承自外壳片段）
+       ============================================================ -->
+  <footer class="shell-footer">
+    <div class="shell-footer__inner">
+      <span>供应商寻源系统 © 2026 · 让采购更高效</span>
+    </div>
+  </footer>
+
+
+    <style> 来自继承的外壳片段（保持原样） ===== -->
+  <!-- 引入 Bootstrap Icons 图标库 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+
+  <style>
+    /* ============================================================
+     * 顶部导航栏样式
+     * 设计要点：通栏宽度、吸顶定位、白色背景 + 底部细线
+     * ============================================================ */
+
+    /* 导航栏外层容器：全宽 + 吸顶 */
+    .shell-navbar {
+      position: sticky;                          /* 吸顶：滚动时固定在顶部 */
+      top: 0;
+      z-index: 50;                               /* 层级高于页面内容 */
+      width: 100%;
+      background-color: var(--color-surface);    /* 白色背景 */
+      border-bottom: 1px solid var(--color-border); /* 底部细线分隔 */
+    }
+
+    /* 导航栏内部容器：最大宽度 1200px，水平居中 */
+    .shell-navbar__inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      height: 64px;                              /* 导航栏高度 64px（符合 64-72px 规范） */
+      padding: 0 var(--space-8);                 /* 左右内边距 2rem */
+      display: flex;
+      align-items: center;                       /* 垂直居中对齐所有子元素 */
+      gap: var(--space-6);                       /* 各区块间距 1.5rem */
+    }
+
+    /* ---- 左侧 Logo 区域 ---- */
+    .shell-logo {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);                       /* 图标与文字间距 0.5rem */
+      text-decoration: none;
+      flex-shrink: 0;                            /* 不被压缩 */
+    }
+    .shell-logo i {
+      font-size: 24px;                           /* 图标尺寸 24px */
+      color: var(--color-brand);                 /* Teal 主色图标 */
+      line-height: 1;
+    }
+    .shell-logo span {
+      font-size: var(--text-lg);                 /* 1.125rem */
+      font-weight: var(--font-semibold);         /* 600 字重 */
+      color: var(--color-text-primary);          /* 深色文字 */
+      white-space: nowrap;                       /* 不换行 */
+    }
+
+    /* ---- 中间导航链接组 ---- */
+    .shell-nav {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);                       /* 链接间距 0.25rem */
+      flex: 1;                                   /* 占据中间剩余空间 */
+      justify-content: center;                   /* 链接居中排列 */
+    }
+
+    /* 单个导航链接：高度与导航栏一致，便于底部指示线定位 */
+    .shell-nav__link {
+      position: relative;                        /* 为底部指示线 ::after 提供定位基准 */
+      height: 64px;                              /* 与导航栏等高 */
+      padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+      display: inline-flex;
+      align-items: center;                       /* 文字垂直居中 */
+      font-size: var(--text-sm);                 /* 0.875rem */
+      font-weight: var(--font-medium);           /* 500 字重 */
+      color: var(--color-text-secondary);        /* 默认次要文字色 */
+      text-decoration: none;
+      white-space: nowrap;                       /* 不换行 */
+      transition: color 150ms cubic-bezier(.2,.8,.2,1); /* 仅过渡颜色属性 */
+    }
+    /* 悬停：文字变深 */
+    .shell-nav__link:hover {
+      color: var(--color-text-primary);
+    }
+    /* 键盘聚焦：Teal 描边 */
+    .shell-nav__link:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: -4px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* 激活态：Teal 文字（与底部指示线同色，视觉统一） */
+    .shell-nav__link[data-active="true"] {
+      color: var(--color-brand);
+    }
+    /* 激活态底部指示线：2px Teal 横线，覆盖在导航栏底边上 */
+    .shell-nav__link[data-active="true"]::after {
+      content: '';
+      position: absolute;
+      bottom: 0;                                 /* 紧贴导航栏底部 */
+      left: var(--space-4);                      /* 与文字左右对齐 */
+      right: var(--space-4);
+      height: 2px;
+      background-color: var(--color-brand);
+      border-radius: var(--radius-sm);
+    }
+
+    /* ---- 右侧操作区 ---- */
+    .shell-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);                       /* 按钮与头像间距 0.75rem */
+      flex-shrink: 0;
+    }
+
+    /* 主操作按钮："新建需求" */
+    .shell-btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);                       /* 图标与文字间距 */
+      height: 36px;                              /* 按钮高度 36px */
+      padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+      font-size: var(--text-sm);                 /* 0.875rem */
+      font-weight: var(--font-medium);
+      font-family: var(--font-sans);
+      color: var(--color-text-on-primary);       /* 白色文字 */
+      background-color: var(--color-brand);      /* Teal 主色背景 */
+      border: none;
+      border-radius: var(--radius-md);           /* 8px 圆角 */
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(.2,.8,.2,1),
+                  transform 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    /* 悬停：颜色加深 + 微上移 */
+    .shell-btn-primary:hover {
+      background-color: var(--color-brand-hover);
+      transform: translateY(-1px);
+    }
+    /* 按下：回弹归位 */
+    .shell-btn-primary:active {
+      transform: translateY(0);
+    }
+    /* 键盘聚焦：Teal 描边 */
+    .shell-btn-primary:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+    }
+    .shell-btn-primary i {
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    /* 用户头像：圆形 + 首字母 */
+    .shell-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-full);         /* 正圆 */
+      background-color: var(--color-brand);      /* Teal 背景 */
+      color: var(--color-text-on-primary);       /* 白色文字 */
+      font-size: var(--text-xs);                 /* 0.75rem */
+      font-weight: var(--font-medium);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .shell-avatar:hover {
+      background-color: var(--color-brand-hover);
+    }
+
+    /* ============================================================
+     * 页面主内容区
+     * 设计要点：最大宽度 1200px，水平居中，上下留白
+     * ============================================================ */
+    .page-content {
+      max-width: 1200px;
+      margin: 0 auto;                            /* 水平居中 */
+      padding: var(--space-8) var(--space-8);    /* 上下左右 2rem */
+      min-height: calc(100vh - 64px - 60px);     /* 最小高度 = 视口 - 导航栏 - 页脚 */
+    }
+
+    /* 页面标题样式（叶子页面通过 SLOT 注入 <h1> 时自动继承） */
+    .page-content > h1 {
+      font-size: var(--text-2xl);                /* 1.5rem */
+      font-weight: var(--font-semibold);         /* 600 */
+      color: var(--color-text-primary);
+      line-height: var(--leading-tight);         /* 1.25 */
+      margin-top: 0;
+      margin-bottom: var(--space-6);             /* 标题与内容间距 1.5rem */
+      text-wrap: balance;
+      word-break: keep-all;
+      overflow-wrap: break-word;
+    }
+
+    /* ============================================================
+     * 页脚样式
+     * 设计要点：通栏宽度、顶部细线、居中弱化文字
+     * ============================================================ */
+    .shell-footer {
+      width: 100%;
+      border-top: 1px solid var(--color-border);
+      background-color: var(--color-surface);
+    }
+    .shell-footer__inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-5) var(--space-8);    /* 上下 1.25rem，左右 2rem */
+      text-align: center;
+      font-size: var(--text-sm);                 /* 0.875rem */
+      color: var(--color-text-muted);            /* 弱化文字色 */
+      white-space: nowrap;
+    }
+
+    /* ============================================================
+     * 响应式：移动端适配（< 768px）
+     * ============================================================ */
+    @media (max-width: 768px) {
+      .shell-navbar__inner {
+        padding: 0 var(--space-4);               /* 缩小左右内边距 */
+        gap: var(--space-3);
+      }
+      .shell-logo span {
+        font-size: var(--text-base);             /* 缩小 Logo 文字 */
+      }
+      .shell-nav {
+        gap: 0;
+      }
+      .shell-nav__link {
+        padding: 0 var(--space-2);
+        font-size: var(--text-xs);               /* 缩小导航文字 */
+      }
+      /* 移动端按钮只显示加号图标，节省空间 */
+      .shell-btn-primary span {
+        display: none;
+      }
+      .shell-btn-primary {
+        padding: 0 var(--space-3);
+        width: 36px;
+        justify-content: center;
+      }
+      .page-content {
+        padding: var(--space-4);
+      }
+    }
+
+    /* ============================================================
+     * 无障碍：尊重用户"减弱动画"偏好
+     * ============================================================ */
+    @media (prefers-reduced-motion: reduce) {
+      .shell-nav__link,
+      .shell-btn-primary,
+      .shell-avatar {
+        transition-duration: 0.01ms !important;
+      }
+      .shell-btn-primary:hover {
+        transform: none;
+      }
+    }
+  </style>
+    <style>
+    /* ============================================================
+     * 供应商列表页 - 页面专属样式
+     * 设计要点：border-led 卡片（静态表面用边框不用阴影）、
+     *           干净的数据表格、状态徽章、分页
+     * ============================================================ */
+
+    /* 内容区纵向堆叠：筛选栏 与 表格卡 之间的间距 */
+    .sl-sections {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-5);                        /* 1.25rem，卡片间距 ≥ 16px */
+    }
+
+    /* 通用卡片：白底 + 细边框 + 8px 圆角（静态表面用边框，不用阴影） */
+    .sl-card {
+      background-color: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);            /* 8px 卡片圆角 */
+    }
+
+    /* ---- 第 1 区：筛选栏 ---- */
+    /* 横向排列：左侧搜索+下拉，右侧添加按钮；移动端自动换行 */
+    .sl-filter {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+      padding: var(--space-4);                    /* 1rem 内边距 */
+    }
+    .sl-filter__left {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+      flex: 1;
+      min-width: 0;                               /* 允许内部截断生效 */
+    }
+    .sl-filter__right {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      flex-shrink: 0;
+    }
+
+    /* 通用表单控件：36px 高、4px 圆角、细边框、sm 字号 */
+    .sl-control {
+      height: 36px;
+      padding: 0 var(--space-3);
+      font-size: var(--text-sm);
+      font-family: var(--font-sans);
+      color: var(--color-text-primary);
+      background-color: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);            /* 4px 输入圆角 */
+      outline: none;
+      transition: border-color 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .sl-control::placeholder { color: var(--color-text-muted); }
+    .sl-control:hover { border-color: var(--color-neutral-300); }
+    /* 聚焦态：边框变为主色（Teal） */
+    .sl-control:focus { border-color: var(--color-brand); }
+
+    /* 搜索框：图标前缀布局 */
+    .sl-search {
+      position: relative;
+      flex: 1 1 240px;                            /* 可伸缩，最小 240px */
+      max-width: 360px;
+    }
+    .sl-search > i {
+      position: absolute;
+      left: var(--space-3);
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 14px;
+      color: var(--color-text-muted);
+      pointer-events: none;                       /* 图标不拦截鼠标 */
+    }
+    .sl-search .sl-control {
+      width: 100%;
+      padding-left: calc(var(--space-3) * 2 + 14px); /* 给图标留出空间 */
+    }
+
+    /* 下拉选择：包裹层 + 自定义箭头 */
+    .sl-select-wrap { position: relative; }
+    .sl-select-wrap > i {
+      position: absolute;
+      right: var(--space-3);
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 12px;
+      color: var(--color-text-muted);
+      pointer-events: none;
+    }
+    .sl-select {
+      appearance: none;                           /* 隐藏原生箭头 */
+      padding-right: calc(var(--space-3) * 2 + 12px);
+      min-width: 140px;
+      cursor: pointer;
+    }
+
+    /* "添加供应商"主按钮：复用与导航栏 CTA 一致的主按钮语言（保持连续性） */
+    .sl-btn-add {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      height: 36px;
+      padding: 0 var(--space-4);
+      font-size: var(--text-sm);
+      font-weight: var(--font-medium);
+      font-family: var(--font-sans);
+      color: var(--color-text-on-primary);
+      background-color: var(--color-brand);
+      border: none;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(.2,.8,.2,1),
+                  transform 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .sl-btn-add:hover { background-color: var(--color-brand-hover); transform: translateY(-1px); }
+    .sl-btn-add:active { transform: translateY(0); }
+    .sl-btn-add:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+    .sl-btn-add i { font-size: 16px; line-height: 1; }
+
+    /* ---- 第 2 区：数据表格 ---- */
+    /* 表格外层：窄屏横向滚动，避免撑破布局 */
+    .sl-table-wrap {
+      overflow-x: auto;
+    }
+    .sl-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--text-sm);                  /* 0.875rem 正文 */
+      min-width: 880px;                           /* 保证列宽，窄屏改横向滚动 */
+    }
+    /* 表头：浅灰底、小号字、次要色、中等字重 */
+    .sl-table thead th {
+      background-color: var(--color-neutral-50);
+      color: var(--color-text-secondary);
+      font-size: var(--text-xs);
+      font-weight: var(--font-medium);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      text-align: left;
+      padding: var(--space-3) var(--space-4);
+      white-space: nowrap;
+      border-bottom: 1px solid var(--color-border);
+    }
+    /* 表格单元格 */
+    .sl-table tbody td {
+      padding: var(--space-3) var(--space-4);
+      color: var(--color-text-primary);
+      border-bottom: 1px solid var(--color-border-light);
+      vertical-align: middle;
+    }
+    .sl-table tbody tr:last-child td { border-bottom: none; }
+    /* 行悬停：浅灰底反馈 */
+    .sl-table tbody tr { transition: background-color 120ms cubic-bezier(.2,.8,.2,1); }
+    .sl-table tbody tr:hover { background-color: var(--color-neutral-50); }
+
+    /* 列对齐：徽章居中、评分右对齐、复选框居中 */
+    .sl-col-center { text-align: center; }
+    .sl-col-right { text-align: right; }
+
+    /* 复选框：使用主色作为强调色 */
+    .sl-checkbox {
+      accent-color: var(--color-brand);
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      vertical-align: middle;
+    }
+
+    /* 供应商名称：主信息，加粗，单行截断 */
+    .sl-name {
+      font-weight: var(--font-medium);
+      color: var(--color-text-primary);
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 状态徽章：紧凑药丸，xs 字号、4px 圆角、紧凑内边距 */
+    .sl-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: var(--text-xs);
+      font-weight: var(--font-medium);
+      padding: var(--space-1) var(--space-2);     /* 0.25rem 0.5rem */
+      border-radius: var(--radius-sm);            /* 4px */
+      white-space: nowrap;
+      line-height: 1;
+    }
+    .sl-badge--neutral { background-color: var(--color-neutral-100); color: var(--color-neutral-600); }
+    .sl-badge--warning { background-color: var(--state-warning-bg);  color: var(--state-warning); }
+    .sl-badge--info    { background-color: var(--state-info-bg);     color: var(--state-info); }
+    .sl-badge--primary { background-color: var(--color-primary-50);  color: var(--color-primary-700); }
+    .sl-badge--success { background-color: var(--state-success-bg);  color: var(--state-success); }
+
+    /* 评分：数字等宽，颜色按分段区分 */
+    .sl-score {
+      font-weight: var(--font-medium);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .sl-score-unit { font-weight: var(--font-normal); color: var(--color-text-muted); margin-left: 2px; }
+    .sl-score--high { color: var(--state-success); }   /* ≥90 绿 */
+    .sl-score--mid  { color: var(--color-brand); }     /* ≥75 Teal */
+    .sl-score--low  { color: var(--state-warning); }   /* ≥60 琥珀 */
+    .sl-score--bad  { color: var(--state-error); }     /* <60 红 */
+    .sl-score--none { color: var(--color-text-muted); }/* 无评分 */
+
+    /* 操作链接：查看（主色）/ 编辑（次要色） */
+    .sl-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .sl-action {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      font-size: var(--text-sm);
+      text-decoration: none;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 120ms cubic-bezier(.2,.8,.2,1);
+    }
+    .sl-action i { font-size: 13px; line-height: 1; }
+    .sl-action--view { color: var(--color-brand); }
+    .sl-action--view:hover { color: var(--color-brand-hover); }
+    .sl-action--edit { color: var(--color-text-secondary); }
+    .sl-action--edit:hover { color: var(--color-text-primary); }
+    .sl-action:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; border-radius: var(--radius-sm); }
+    /* 操作之间的细分隔线 */
+    .sl-action-divider {
+      width: 1px;
+      height: 12px;
+      background-color: var(--color-border);
+    }
+
+    /* ---- 第 3 区：分页 ---- */
+    .sl-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+      padding: var(--space-4);
+      border-top: 1px solid var(--color-border-light);
+    }
+    .sl-pagination__count {
+      font-size: var(--text-sm);
+      color: var(--color-text-secondary);
+      white-space: nowrap;
+    }
+    .sl-pagination__pages {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    /* 页码按钮：32px 见方、8px 圆角 */
+    .sl-page {
+      min-width: 32px;
+      height: 32px;
+      padding: 0 var(--space-2);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--text-sm);
+      font-family: var(--font-sans);
+      color: var(--color-text-secondary);
+      background-color: var(--color-neutral-100);
+      border: none;
+      border-radius: var(--radius-md);            /* 8px */
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 120ms cubic-bezier(.2,.8,.2,1),
+                  color 120ms cubic-bezier(.2,.8,.2,1);
+    }
+    .sl-page:hover { background-color: var(--color-neutral-200); color: var(--color-text-primary); }
+    /* 激活页：主色底 + 白字 */
+    .sl-page--active,
+    .sl-page--active:hover {
+      background-color: var(--color-brand);
+      color: var(--color-text-on-primary);
+      cursor: default;
+    }
+    .sl-page:disabled,
+    .sl-page:disabled:hover {
+      background-color: var(--color-neutral-100);
+      color: var(--color-text-muted);
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .sl-page:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 1px; }
+    .sl-pagination__ellipsis {
+      padding: 0 var(--space-1);
+      color: var(--color-text-muted);
+      user-select: none;
+    }
+
+    /* 响应式：窄屏分页左右堆叠、筛选区已自动换行 */
+    @media (max-width: 640px) {
+      .sl-pagination { justify-content: center; }
+      .sl-search { max-width: none; flex-basis: 100%; }
+    }
+
+    /* 无障碍：减弱动画 */
+    @media (prefers-reduced-motion: reduce) {
+      .sl-control, .sl-btn-add, .sl-table tbody tr, .sl-action, .sl-page {
+        transition-duration: 0.01ms !important;
+      }
+      .sl-btn-add:hover { transform: none; }
+    }
+  </style>
+</body>
+</html>

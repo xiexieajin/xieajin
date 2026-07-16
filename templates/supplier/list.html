@@ -1,0 +1,372 @@
+{% extends "base.html" %}
+
+{% block title %}供应商管理 - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-building"></i> 供应商管理</h1>
+    <div>
+        {% if requirements %}
+        <a href="{{ url_for('supplier_create') }}" class="btn btn-success">
+            <i class="bi bi-plus-circle"></i> 添加供应商
+        </a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-3 align-items-end">
+            {# 小白讲解：5个筛选项都改为下拉式多选组件
+               点击筛选按钮 → 弹出下拉面板 → 勾选选项 → 点击"应用筛选"提交
+               按钮显示已选数量徽章，让用户一眼看出当前筛选状态 #}
+
+            <!-- 关联需求：下拉式多选 -->
+            <div class="col-md-4">
+                <label class="form-label small fw-semibold mb-1">关联需求</label>
+                <div class="dropdown">
+                    <button type="button" class="btn btn-outline-primary btn-sm w-100 text-start dropdown-toggle"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        关联需求
+                        {% if current_req_list %}
+                        <span class="badge bg-primary ms-1">{{ current_req_list|length }}</span>
+                        {% endif %}
+                    </button>
+                    <div class="dropdown-menu p-2" style="min-width:240px; max-height:300px; overflow-y:auto;">
+                        <div class="mb-2 d-flex justify-content-between">
+                            <button type="button" class="btn btn-link btn-sm p-0 text-primary" onclick="toggleAllCheckbox('requirement_id', true)">全选</button>
+                            <button type="button" class="btn btn-link btn-sm p-0 text-muted" onclick="toggleAllCheckbox('requirement_id', false)">清除</button>
+                        </div>
+                        {% for req in requirements %}
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="requirement_id" value="{{ req.id }}"
+                                   id="req_{{ req.id }}" autocomplete="off"
+                                   {{ 'checked' if (req.id|string) in current_req_list }}>
+                            <label class="form-check-label small" for="req_{{ req.id }}">{{ req.product_name }}</label>
+                        </div>
+                        {% endfor %}
+                        <hr class="my-2">
+                        <button type="submit" class="btn btn-primary btn-sm w-100">
+                            <i class="bi bi-check-lg"></i> 应用筛选
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 来源平台：下拉式多选 -->
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold mb-1">来源平台</label>
+                <div class="dropdown">
+                    <button type="button" class="btn btn-outline-primary btn-sm w-100 text-start dropdown-toggle"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        来源平台
+                        {% if current_source_list %}
+                        <span class="badge bg-primary ms-1">{{ current_source_list|length }}</span>
+                        {% endif %}
+                    </button>
+                    <div class="dropdown-menu p-2" style="min-width:180px;">
+                        <div class="mb-2 d-flex justify-content-between">
+                            <button type="button" class="btn btn-link btn-sm p-0 text-primary" onclick="toggleAllCheckbox('source', true)">全选</button>
+                            <button type="button" class="btn btn-link btn-sm p-0 text-muted" onclick="toggleAllCheckbox('source', false)">清除</button>
+                        </div>
+                        {% for src in sources %}
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="source" value="{{ src }}"
+                                   id="src_{{ loop.index }}" autocomplete="off"
+                                   {{ 'checked' if src in current_source_list }}>
+                            <label class="form-check-label small" for="src_{{ loop.index }}">{{ src }}</label>
+                        </div>
+                        {% endfor %}
+                        <hr class="my-2">
+                        <button type="submit" class="btn btn-primary btn-sm w-100">
+                            <i class="bi bi-check-lg"></i> 应用筛选
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 开发阶段：下拉式多选 -->
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold mb-1">开发阶段</label>
+                <div class="dropdown">
+                    <button type="button" class="btn btn-outline-primary btn-sm w-100 text-start dropdown-toggle"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        开发阶段
+                        {% if current_dev_stage_list %}
+                        <span class="badge bg-primary ms-1">{{ current_dev_stage_list|length }}</span>
+                        {% endif %}
+                    </button>
+                    <div class="dropdown-menu p-2" style="min-width:180px; max-height:280px; overflow-y:auto;">
+                        <div class="mb-2 d-flex justify-content-between">
+                            <button type="button" class="btn btn-link btn-sm p-0 text-primary" onclick="toggleAllCheckbox('dev_stage', true)">全选</button>
+                            <button type="button" class="btn btn-link btn-sm p-0 text-muted" onclick="toggleAllCheckbox('dev_stage', false)">清除</button>
+                        </div>
+                        {% for stage in supplier_stages %}
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="dev_stage" value="{{ stage }}"
+                                   id="stage_{{ loop.index }}" autocomplete="off"
+                                   {{ 'checked' if stage in current_dev_stage_list }}>
+                            <label class="form-check-label small" for="stage_{{ loop.index }}">{{ stage }}</label>
+                        </div>
+                        {% endfor %}
+                        <hr class="my-2">
+                        <button type="submit" class="btn btn-primary btn-sm w-100">
+                            <i class="bi bi-check-lg"></i> 应用筛选
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 供应商类型：下拉式多选 -->
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold mb-1">供应商类型</label>
+                <div class="dropdown">
+                    <button type="button" class="btn btn-outline-primary btn-sm w-100 text-start dropdown-toggle"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        供应商类型
+                        {% if current_supplier_type_list %}
+                        <span class="badge bg-primary ms-1">{{ current_supplier_type_list|length }}</span>
+                        {% endif %}
+                    </button>
+                    <div class="dropdown-menu p-2" style="min-width:180px;">
+                        <div class="mb-2 d-flex justify-content-between">
+                            <button type="button" class="btn btn-link btn-sm p-0 text-primary" onclick="toggleAllCheckbox('supplier_type', true)">全选</button>
+                            <button type="button" class="btn btn-link btn-sm p-0 text-muted" onclick="toggleAllCheckbox('supplier_type', false)">清除</button>
+                        </div>
+                        {% set types = ['制造商', '疑似制造商'] %}
+                        {% for t in types %}
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="supplier_type" value="{{ t }}"
+                                   id="type_{{ loop.index }}" autocomplete="off"
+                                   {{ 'checked' if t in current_supplier_type_list }}>
+                            <label class="form-check-label small" for="type_{{ loop.index }}">{{ t }}</label>
+                        </div>
+                        {% endfor %}
+                        <hr class="my-2">
+                        <button type="submit" class="btn btn-primary btn-sm w-100">
+                            <i class="bi bi-check-lg"></i> 应用筛选
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 联系方式：下拉式多选 -->
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold mb-1">联系方式</label>
+                <div class="dropdown">
+                    <button type="button" class="btn btn-outline-primary btn-sm w-100 text-start dropdown-toggle"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        联系方式
+                        {% if current_contact_status_list %}
+                        <span class="badge bg-primary ms-1">{{ current_contact_status_list|length }}</span>
+                        {% endif %}
+                    </button>
+                    <div class="dropdown-menu p-2" style="min-width:200px;">
+                        <div class="mb-2 d-flex justify-content-between">
+                            <button type="button" class="btn btn-link btn-sm p-0 text-primary" onclick="toggleAllCheckbox('contact_status', true)">全选</button>
+                            <button type="button" class="btn btn-link btn-sm p-0 text-muted" onclick="toggleAllCheckbox('contact_status', false)">清除</button>
+                        </div>
+                        {% set contact_statuses = ['已获取电话', '已获取邮箱', '已获取电话和邮箱', '未获取'] %}
+                        {% for cs in contact_statuses %}
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="contact_status" value="{{ cs }}"
+                                   id="cs_{{ loop.index }}" autocomplete="off"
+                                   {{ 'checked' if cs in current_contact_status_list }}>
+                            <label class="form-check-label small" for="cs_{{ loop.index }}">{{ cs }}</label>
+                        </div>
+                        {% endfor %}
+                        <hr class="my-2">
+                        <button type="submit" class="btn btn-primary btn-sm w-100">
+                            <i class="bi bi-check-lg"></i> 应用筛选
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 供应商名称搜索 + 筛选/重置按钮 -->
+            <div class="col-12">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text">供应商名称</span>
+                    <input type="text" class="form-control" name="name_search"
+                           value="{{ current_name_search }}" placeholder="输入供应商名称关键词搜索">
+                    <button type="submit" class="btn btn-primary btn-sm">
+                        <i class="bi bi-search"></i> 筛选
+                    </button>
+                    {% if current_req_list or current_source_list or current_dev_stage_list or current_supplier_type_list or current_contact_status_list or current_name_search %}
+                    <a href="{{ url_for('supplier_list') }}" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-clockwise"></i> 重置
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+// 小白讲解：通用全选/清除函数，给指定name的所有复选框设置选中状态
+function toggleAllCheckbox(name, checked) {
+    document.querySelectorAll('input[name="' + name + '"]').forEach(cb => cb.checked = checked);
+}
+</script>
+
+{% if suppliers %}
+<form method="POST" action="{{ url_for('supplier_batch_delete') }}" id="batchForm">
+    <div class="card mb-3" id="batchBar" style="display:none;">
+        <div class="card-body py-2 d-flex align-items-center">
+            <span class="me-3"><i class="bi bi-check2-square"></i> 已选择 <strong id="selCount">0</strong> 项</span>
+            <button type="submit" class="btn btn-sm btn-danger"
+                    onclick="return confirm('确定批量删除选中的供应商吗？\n关联的初筛和沟通记录也会一并删除，且不可恢复！')">
+                <i class="bi bi-trash"></i> 批量删除
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary ms-2" onclick="clearAll()">取消选择</button>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th width="40"><input type="checkbox" id="selectAll" onclick="toggleAll(this)"></th>
+                        <th width="50">
+                            <a href="?{{ _build_sort_query('id', order_by, sort) }}" class="text-decoration-none text-dark">
+                                ID
+                                {% if order_by == 'id' %}<i class="bi bi-caret-{{ 'up' if sort == 'asc' else 'down' }}-fill"></i>{% endif %}
+                            </a>
+                        </th>
+                        <th>
+                            <a href="?{{ _build_sort_query('name', order_by, sort) }}" class="text-decoration-none text-dark">
+                                供应商名称
+                                {% if order_by == 'name' %}<i class="bi bi-caret-{{ 'up' if sort == 'asc' else 'down' }}-fill"></i>{% endif %}
+                            </a>
+                        </th>
+                        <th>关联需求</th>
+                        <th style="min-width: 180px;">联系方式</th>
+                        <th>
+                            <a href="?{{ _build_sort_query('quality_score', order_by, sort) }}" class="text-decoration-none text-dark">
+                                评分
+                                {% if order_by == 'quality_score' %}<i class="bi bi-caret-{{ 'up' if sort == 'asc' else 'down' }}-fill"></i>{% endif %}
+                            </a>
+                        </th>
+                        <th>
+                            <a href="?{{ _build_sort_query('dev_stage', order_by, sort) }}" class="text-decoration-none text-dark">
+                                开发阶段
+                                {% if order_by == 'dev_stage' %}<i class="bi bi-caret-{{ 'up' if sort == 'asc' else 'down' }}-fill"></i>{% endif %}
+                            </a>
+                        </th>
+                        <th>来源</th>
+                        <th width="130">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in suppliers %}
+                    <tr>
+                        <td><input type="checkbox" name="supplier_ids" value="{{ s.id }}" onclick="onCheck()"></td>
+                        <td>{{ s.id }}</td>
+                        <td>
+                            <a href="{{ url_for('supplier_detail', id=s.id) }}">
+                                <strong>{{ s.name }}</strong>
+                            </a>
+                            {% if s.intro %}<br><small class="text-muted">{{ s.intro[:30] }}...</small>{% endif %}
+                        </td>
+                        <td>{{ s.product_name }}</td>
+                        <td>
+                            {% if s.email %}<small><i class="bi bi-envelope"></i> {{ s.email }}</small><br>{% endif %}
+                            {% if s.phone %}<small><i class="bi bi-telephone"></i> {{ s.phone }}</small>{% endif %}
+                            {% if not s.email and not s.phone %}<span class="text-muted">-</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if s.score is not none and s.score != '' %}
+                                {% set score_val = s.score|int %}
+                                {% if score_val >= 75 %}
+                                    <span class="badge bg-success fs-6">{{ score_val }}</span>
+                                {% elif score_val >= 60 %}
+                                    <span class="badge bg-warning fs-6">{{ score_val }}</span>
+                                {% else %}
+                                    <span class="badge bg-danger fs-6">{{ score_val }}</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if s.dev_stage == '已合作' %}
+                                <span class="badge bg-success">{{ s.dev_stage }}</span>
+                            {% elif s.dev_stage == '已通过初筛' %}
+                                <span class="badge bg-warning">{{ s.dev_stage }}</span>
+                            {% elif s.dev_stage == '沟通中' %}
+                                <span class="badge bg-info">{{ s.dev_stage }}</span>
+                            {% elif s.dev_stage == '未通过初筛' or s.dev_stage == '已淘汰' %}
+                                <span class="badge bg-danger">未通过初筛</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ s.dev_stage }}</span>
+                            {% endif %}
+                        </td>
+                        <td><small>{{ s.source }}</small></td>
+                        <td>
+                            <a href="{{ url_for('supplier_detail', id=s.id) }}" class="action-link" title="查看">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                            <a href="{{ url_for('supplier_edit', id=s.id) }}" class="action-link" title="编辑">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            {# 小白讲解：删除按钮不能再用内嵌form（HTML禁止form嵌套，会被浏览器拆坏）
+                               改成普通button，把删除地址和供应商名存在data属性里，点击后由JS提交到页面底部隐藏的deleteForm #}
+                            <button type="button" class="btn btn-sm btn-outline-danger" title="删除"
+                                    data-delete-url="{{ url_for('supplier_delete', id=s.id) }}"
+                                    data-delete-name="{{ s.name }}"
+                                    onclick="deleteItem(this)">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</form>
+{# 小白讲解：隐藏的删除表单，放在batchForm外面避免form嵌套（HTML禁止form互相嵌套）
+   删除按钮点击后，JS把action设为对应删除地址再提交这个空表单 #}
+<form id="deleteForm" method="POST" action=""></form>
+<script>
+// 小白讲解：删除按钮点击处理 - 从data属性读取删除地址和供应商名，确认后提交隐藏表单
+function deleteItem(btn) {
+    var name = btn.dataset.deleteName;
+    if (!confirm('确定删除供应商【' + name + '】？关联的初筛和沟通记录也会一并删除。')) return;
+    var form = document.getElementById('deleteForm');
+    form.action = btn.dataset.deleteUrl;
+    form.submit();
+}
+// 全选/全不选
+function toggleAll(master) {
+    document.querySelectorAll('input[name="supplier_ids"]').forEach(cb => cb.checked = master.checked);
+    onCheck();
+}
+// 更新选中数量和批量操作栏显示
+function onCheck() {
+    const checks = document.querySelectorAll('input[name="supplier_ids"]:checked');
+    document.getElementById('selCount').textContent = checks.length;
+    document.getElementById('batchBar').style.display = checks.length > 0 ? '' : 'none';
+    // 更新全选框状态
+    const all = document.querySelectorAll('input[name="supplier_ids"]');
+    document.getElementById('selectAll').checked = all.length > 0 && checks.length === all.length;
+}
+// 取消全选
+function clearAll() {
+    document.querySelectorAll('input[name="supplier_ids"]').forEach(cb => cb.checked = false);
+    document.getElementById('selectAll').checked = false;
+    onCheck();
+}
+</script>
+{% else %}
+<div class="empty-state">
+    <div class="empty-state__icon"><i class="bi bi-building"></i></div>
+    <div class="empty-state__title">暂无供应商</div>
+    {% if requirements %}
+    <div class="empty-state__desc">可手动添加，或前往<a href="{{ url_for('ai_index') }}">AI自动化</a>搜索供应商</div>
+    {% else %}
+    <div class="empty-state__desc">请先<a href="{{ url_for('ai_parse_requirement') }}">创建采购需求</a></div>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

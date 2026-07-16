@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<!--
+  ============================================================
+  供应商寻源系统 — 需求列表页 (requirement-list.html)
+  ============================================================
+  说明：本页继承共享项目外壳 partials/project-shell.html，
+  通过替换 3 个 SLOT 定制内容：
+    1. SLOT: activeNavItem → 激活"需求管理"导航项
+    2. SLOT: pageTitle     → 注入 <h1>需求列表</h1>
+    3. SLOT: pageContent   → 注入筛选栏 + 需求表格 + 分页
+  ============================================================
+-->
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>需求列表 - 供应商寻源系统</title>
+    <style id="theme-vars">
+/* ============================================================
+ * 供应商寻源系统 - 现代简约风设计样式
+ * 主色：Teal 翠绿 / 辅助：中性灰阶
+ * 字体：Inter + Noto Sans SC
+ * ============================================================ */
+
+:root {
+  /* === 品牌主色 (Teal 翠绿色系) === */
+  --color-primary-50: #f0fdfa;
+  --color-primary-100: #ccfbf1;
+  --color-primary-200: #99f6e4;
+  --color-primary-300: #5eead4;
+  --color-primary-400: #2dd4bf;
+  --color-primary-500: #14b8a6;
+  --color-primary-600: #0d9488;
+  --color-primary-700: #0f766e;
+  --color-primary-800: #115e59;
+  --color-primary-900: #134e4a;
+
+  /* === 中性色阶 (Slate) === */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+
+  /* === 语义状态色 === */
+  --state-success: #10b981;
+  --state-success-bg: #ecfdf5;
+  --state-warning: #f59e0b;
+  --state-warning-bg: #fffbeb;
+  --state-error: #ef4444;
+  --state-error-bg: #fef2f2;
+  --state-info: #3b82f6;
+  --state-info-bg: #eff6ff;
+
+  /* === 语义变量映射 === */
+  --color-bg: var(--color-neutral-50);
+  --color-surface: var(--color-neutral-0);
+  --color-surface-hover: var(--color-neutral-50);
+  --color-border: var(--color-neutral-200);
+  --color-border-light: var(--color-neutral-100);
+  --color-text-primary: var(--color-neutral-900);
+  --color-text-secondary: var(--color-neutral-600);
+  --color-text-muted: var(--color-neutral-400);
+  --color-text-on-primary: #ffffff;
+  --color-brand: var(--color-primary-600);
+  --color-brand-hover: var(--color-primary-700);
+  --color-brand-light: var(--color-primary-50);
+  --color-brand-border: var(--color-primary-200);
+
+  /* === 圆角规范 === */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* === 阴影规范 (静态表面用极浅阴影) === */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
+  --shadow-float: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+
+  /* === 字体系统 === */
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  /* === 字号层级 === */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+
+  /* === 行高 === */
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  /* === 字重 === */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* === 间距系统 === */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+}
+
+/* === 暗色模式 (预留) === */
+.dark {
+  --color-bg: var(--color-neutral-900);
+  --color-surface: var(--color-neutral-800);
+  --color-surface-hover: var(--color-neutral-700);
+  --color-border: var(--color-neutral-700);
+  --color-border-light: var(--color-neutral-700);
+  --color-text-primary: var(--color-neutral-100);
+  --color-text-secondary: var(--color-neutral-400);
+  --color-text-muted: var(--color-neutral-500);
+  --color-brand-light: rgba(13, 148, 136, 0.15);
+  --color-brand-border: rgba(13, 148, 136, 0.3);
+}
+
+/* === 全局基础样式 === */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* === 排版工具类 === */
+.text-primary { color: var(--color-text-primary); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-muted { color: var(--color-text-muted); }
+.text-brand { color: var(--color-brand); }
+.text-success { color: var(--state-success); }
+.text-warning { color: var(--state-warning); }
+.text-error { color: var(--state-error); }
+.text-info { color: var(--state-info); }
+
+.font-medium { font-weight: var(--font-medium); }
+.font-semibold { font-weight: var(--font-semibold); }
+.font-bold { font-weight: var(--font-bold); }
+
+.text-xs { font-size: var(--text-xs); }
+.text-sm { font-size: var(--text-sm); }
+.text-base { font-size: var(--text-base); }
+.text-lg { font-size: var(--text-lg); }
+.text-xl { font-size: var(--text-xl); }
+.text-2xl { font-size: var(--text-2xl); }
+.text-3xl { font-size: var(--text-3xl); }
+.text-4xl { font-size: var(--text-4xl); }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-border: var(--color-border);
+  }
+  @layer base {
+    body { background: var(--color-surface); color: var(--color-text-primary); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body>
+
+  <!-- ============================================================
+       顶部导航栏 — 全宽吸顶，白色背景 + 底部细线
+       左：Logo ｜ 中：导航链接 ｜ 右：新建需求按钮 + 用户头像
+       ============================================================ -->
+  <header class="shell-navbar">
+    <div class="shell-navbar__inner">
+
+      <!-- 左侧 Logo：图标 + 系统名称 -->
+      <a href="index.html" class="shell-logo" aria-label="供应商寻源系统首页">
+        <i class="bi bi-diagram-3" aria-hidden="true"></i>
+        <span>供应商寻源系统</span>
+      </a>
+
+      <!-- 中间导航链接组 -->
+      <nav class="shell-nav" aria-label="主导航">
+        <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="shell-nav__link">首页</a>
+        <a href="supplier-list.html" data-nav-key="supplier" data-dom-id="nav-supplier" class="shell-nav__link">供应商</a>
+        <a href="requirement-list.html" data-nav-key="requirement" data-dom-id="nav-requirement" class="shell-nav__link">需求管理</a>
+        <a href="ai-automation.html" data-nav-key="ai" data-dom-id="nav-ai" class="shell-nav__link">AI自动化</a>
+      </nav>
+
+      <!-- 右侧操作区：新建需求按钮（全局）+ 用户头像 -->
+      <div class="shell-actions">
+        <button type="button" class="shell-btn-primary" data-dom-id="cta-new-requirement">
+          <i class="bi bi-plus-lg" aria-hidden="true"></i>
+          <span>新建需求</span>
+        </button>
+        <div class="shell-avatar" title="采购员账户" role="button" tabindex="0" aria-label="用户菜单">采购</div>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ============================================================
+       页面主内容区
+       ============================================================ -->
+  <main class="page-content">
+    <!-- SLOT: pageTitle → 需求列表标题 -->
+    <h1>需求列表</h1>
+
+    <!-- SLOT: pageContent → 需求列表专属内容 -->
+
+    <!-- ============ 1. 筛选栏 ============ -->
+    <section class="filter-bar" aria-label="需求筛选">
+      <!-- 左侧：搜索框 + 状态下拉 -->
+      <div class="filter-bar__left">
+        <!-- 搜索输入框：左侧搜索图标 -->
+        <div class="search-input">
+          <i class="bi bi-search" aria-hidden="true"></i>
+          <input type="text" placeholder="搜索需求名称..." aria-label="搜索需求名称">
+        </div>
+        <!-- 状态下拉框：右侧下拉箭头 -->
+        <div class="select-wrapper">
+          <select class="status-select" aria-label="按状态筛选">
+            <option value="all">全部状态</option>
+            <option value="draft">草稿</option>
+            <option value="progress">进行中</option>
+            <option value="done">已完成</option>
+            <option value="cancelled">已取消</option>
+          </select>
+          <i class="bi bi-chevron-down" aria-hidden="true"></i>
+        </div>
+      </div>
+      <!-- 右侧：新建需求按钮（页面上下文操作，复用品牌主按钮样式） -->
+      <div class="filter-bar__right">
+        <button type="button" class="shell-btn-primary">
+          <i class="bi bi-plus-lg" aria-hidden="true"></i>
+          <span>新建需求</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ============ 2. 需求表格 ============ -->
+    <section class="table-card" aria-label="需求列表表格">
+      <div class="table-scroll">
+        <table class="req-table">
+          <!-- 列宽定义：复选框 / 需求名称(自适应) / 类别 / 关键词 / 状态 / 创建时间 / 操作 -->
+          <colgroup>
+            <col style="width: 48px;">   <!-- 复选框 -->
+            <col style="width: auto;">   <!-- 需求名称 -->
+            <col style="width: 130px;">  <!-- 类别 -->
+            <col style="width: 230px;">  <!-- 关键词 -->
+            <col style="width: 96px;">   <!-- 状态 -->
+            <col style="width: 120px;">  <!-- 创建时间 -->
+            <col style="width: 150px;">  <!-- 操作 -->
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="col-center">
+                <!-- 表头复选框：全选 -->
+                <input type="checkbox" class="req-checkbox" aria-label="全选" data-dom-id="select-all">
+              </th>
+              <th>需求名称</th>
+              <th>类别</th>
+              <th>关键词</th>
+              <th class="col-center">状态</th>
+              <th>创建时间</th>
+              <th class="col-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- 第 1 行：进行中（含"初筛"操作，首行初筛带 data-dom-id） -->
+            <tr>
+              <td class="cell-center"><input type="checkbox" class="req-checkbox" aria-label="选择该需求"></td>
+              <td><span class="req-name" title="2026年Q3电子元器件采购">2026年Q3电子元器件采购</span></td>
+              <td><span class="req-category">电子元器件</span></td>
+              <td>
+                <div class="tag-list">
+                  <span class="tag-pill">贴片电容</span>
+                  <span class="tag-pill">电阻器</span>
+                  <span class="tag-pill">IC芯片</span>
+                </div>
+              </td>
+              <td class="cell-center"><span class="status-badge status-badge--progress">进行中</span></td>
+              <td><span class="req-date">2026-07-01</span></td>
+              <td class="cell-right">
+                <div class="action-group">
+                  <button type="button" class="action-link">查看</button>
+                  <button type="button" class="action-link">编辑</button>
+                  <button type="button" class="action-link action-link--brand" data-dom-id="start-screening">初筛</button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- 第 2 行：进行中 -->
+            <tr>
+              <td class="cell-center"><input type="checkbox" class="req-checkbox" aria-label="选择该需求"></td>
+              <td><span class="req-name" title="消费电子主板供应商寻源">消费电子主板供应商寻源</span></td>
+              <td><span class="req-category">电子元器件</span></td>
+              <td>
+                <div class="tag-list">
+                  <span class="tag-pill">PCB</span>
+                  <span class="tag-pill">SMT贴片</span>
+                </div>
+              </td>
+              <td class="cell-center"><span class="status-badge status-badge--progress">进行中</span></td>
+              <td><span class="req-date">2026-06-28</span></td>
+              <td class="cell-right">
+                <div class="action-group">
+                  <button type="button" class="action-link">查看</button>
+                  <button type="button" class="action-link">编辑</button>
+                  <button type="button" class="action-link action-link--brand">初筛</button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- 第 3 行：已完成（无"初筛"） -->
+            <tr>
+              <td class="cell-center"><input type="checkbox" class="req-checkbox" aria-label="选择该需求"></td>
+              <td><span class="req-name" title="包装材料年度采购">包装材料年度采购</span></td>
+              <td><span class="req-category">包装材料</span></td>
+              <td>
+                <div class="tag-list">
+                  <span class="tag-pill">纸箱</span>
+                  <span class="tag-pill">泡沫</span>
+                  <span class="tag-pill">保护膜</span>
+                </div>
+              </td>
+              <td class="cell-center"><span class="status-badge status-badge--done">已完成</span></td>
+              <td><span class="req-date">2026-06-15</span></td>
+              <td class="cell-right">
+                <div class="action-group">
+                  <button type="button" class="action-link">查看</button>
+                  <button type="button" class="action-link">编辑</button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- 第 4 行：进行中 -->
+            <tr>
+              <td class="cell-center"><input type="checkbox" class="req-checkbox" aria-label="选择该需求"></td>
+              <td><span class="req-name" title="精密模具定制需求">精密模具定制需求</span></td>
+              <td><span class="req-category">模具制造</span></td>
+              <td>
+                <div class="tag-list">
+                  <span class="tag-pill">注塑模具</span>
+                  <span class="tag-pill">精密加工</span>
+                </div>
+              </td>
+              <td class="cell-center"><span class="status-badge status-badge--progress">进行中</span></td>
+              <td><span class="req-date">2026-06-10</span></td>
+              <td class="cell-right">
+                <div class="action-group">
+                  <button type="button" class="action-link">查看</button>
+                  <button type="button" class="action-link">编辑</button>
+                  <button type="button" class="action-link action-link--brand">初筛</button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- 第 5 行：草稿（无"初筛"） -->
+            <tr>
+              <td class="cell-center"><input type="checkbox" class="req-checkbox" aria-label="选择该需求"></td>
+              <td><span class="req-name" title="五金件批量采购">五金件批量采购</span></td>
+              <td><span class="req-category">机加工</span></td>
+              <td>
+                <div class="tag-list">
+                  <span class="tag-pill">螺丝</span>
+                  <span class="tag-pill">螺母</span>
+                  <span class="tag-pill">冲压件</span>
+                </div>
+              </td>
+              <td class="cell-center"><span class="status-badge status-badge--draft">草稿</span></td>
+              <td><span class="req-date">2026-07-08</span></td>
+              <td class="cell-right">
+                <div class="action-group">
+                  <button type="button" class="action-link">查看</button>
+                  <button type="button" class="action-link">编辑</button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- 第 6 行：已完成 -->
+            <tr>
+              <td class="cell-center"><input type="checkbox" class="req-checkbox" aria-label="选择该需求"></td>
+              <td><span class="req-name" title="注塑件供应商开发">注塑件供应商开发</span></td>
+              <td><span class="req-category">注塑成型</span></td>
+              <td>
+                <div class="tag-list">
+                  <span class="tag-pill">ABS塑料</span>
+                  <span class="tag-pill">注塑加工</span>
+                </div>
+              </td>
+              <td class="cell-center"><span class="status-badge status-badge--done">已完成</span></td>
+              <td><span class="req-date">2026-05-20</span></td>
+              <td class="cell-right">
+                <div class="action-group">
+                  <button type="button" class="action-link">查看</button>
+                  <button type="button" class="action-link">编辑</button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- 第 7 行：已取消 -->
+            <tr>
+              <td class="cell-center"><input type="checkbox" class="req-checkbox" aria-label="选择该需求"></td>
+              <td><span class="req-name" title="连接器采购需求">连接器采购需求</span></td>
+              <td><span class="req-category">电子元器件</span></td>
+              <td>
+                <div class="tag-list">
+                  <span class="tag-pill">USB接口</span>
+                  <span class="tag-pill">接线端子</span>
+                </div>
+              </td>
+              <td class="cell-center"><span class="status-badge status-badge--cancelled">已取消</span></td>
+              <td><span class="req-date">2026-05-15</span></td>
+              <td class="cell-right">
+                <div class="action-group">
+                  <button type="button" class="action-link">查看</button>
+                  <button type="button" class="action-link">编辑</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 3. 分页 ============ -->
+    <nav class="pagination" aria-label="需求列表分页">
+      <!-- 左侧：总条数 -->
+      <span class="pagination__count">共 24 条</span>
+      <!-- 中间：页码组 -->
+      <div class="pagination__pages">
+        <!-- 上一页：禁用态 -->
+        <button type="button" class="page-btn" disabled aria-label="上一页">
+          <i class="bi bi-chevron-left" aria-hidden="true"></i>
+        </button>
+        <!-- 当前页：激活态 -->
+        <button type="button" class="page-btn page-btn--active" aria-current="page">1</button>
+        <button type="button" class="page-btn">2</button>
+        <button type="button" class="page-btn">3</button>
+        <!-- 下一页 -->
+        <button type="button" class="page-btn" aria-label="下一页">
+          <i class="bi bi-chevron-right" aria-hidden="true"></i>
+        </button>
+      </div>
+    </nav>
+
+  </main>
+
+  <!-- ============================================================
+       页脚 — 全宽，顶部细线，居中弱化文字
+       ============================================================ -->
+  <footer class="shell-footer">
+    <div class="shell-footer__inner">
+      <span>供应商寻源系统 © 2026 · 让采购更高效</span>
+    </div>
+  </footer>
+
+  <!-- ============================================================
+       SLOT: activeNavItem → 激活"需求管理"导航项
+       通过设置 data-active="true" 触发外壳中定义的激活态样式
+       （Teal 文字 + 底部指示线）
+       ============================================================ -->
+  <script>
+    // 将"需求管理"导航项标记为激活态
+    document.querySelector('[data-nav-key="requirement"]').setAttribute('data-active', 'true');
+  </script>
+
+    <style>
+    /* ============================================================
+     * 顶部导航栏样式（继承自 project-shell）
+     * 设计要点：通栏宽度、吸顶定位、白色背景 + 底部细线
+     * ============================================================ */
+
+    /* 导航栏外层容器：全宽 + 吸顶 */
+    .shell-navbar {
+      position: sticky;                          /* 吸顶：滚动时固定在顶部 */
+      top: 0;
+      z-index: 50;                               /* 层级高于页面内容 */
+      width: 100%;
+      background-color: var(--color-surface);    /* 白色背景 */
+      border-bottom: 1px solid var(--color-border); /* 底部细线分隔 */
+    }
+
+    /* 导航栏内部容器：最大宽度 1200px，水平居中 */
+    .shell-navbar__inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      height: 64px;                              /* 导航栏高度 64px */
+      padding: 0 var(--space-8);                 /* 左右内边距 2rem */
+      display: flex;
+      align-items: center;                       /* 垂直居中对齐所有子元素 */
+      gap: var(--space-6);                       /* 各区块间距 1.5rem */
+    }
+
+    /* ---- 左侧 Logo 区域 ---- */
+    .shell-logo {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);                       /* 图标与文字间距 0.5rem */
+      text-decoration: none;
+      flex-shrink: 0;                            /* 不被压缩 */
+    }
+    .shell-logo i {
+      font-size: 24px;                           /* 图标尺寸 24px */
+      color: var(--color-brand);                 /* Teal 主色图标 */
+      line-height: 1;
+    }
+    .shell-logo span {
+      font-size: var(--text-lg);                 /* 1.125rem */
+      font-weight: var(--font-semibold);         /* 600 字重 */
+      color: var(--color-text-primary);          /* 深色文字 */
+      white-space: nowrap;                       /* 不换行 */
+    }
+
+    /* ---- 中间导航链接组 ---- */
+    .shell-nav {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);                       /* 链接间距 0.25rem */
+      flex: 1;                                   /* 占据中间剩余空间 */
+      justify-content: center;                   /* 链接居中排列 */
+    }
+
+    /* 单个导航链接：高度与导航栏一致，便于底部指示线定位 */
+    .shell-nav__link {
+      position: relative;                        /* 为底部指示线 ::after 提供定位基准 */
+      height: 64px;                              /* 与导航栏等高 */
+      padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+      display: inline-flex;
+      align-items: center;                       /* 文字垂直居中 */
+      font-size: var(--text-sm);                 /* 0.875rem */
+      font-weight: var(--font-medium);           /* 500 字重 */
+      color: var(--color-text-secondary);        /* 默认次要文字色 */
+      text-decoration: none;
+      white-space: nowrap;                       /* 不换行 */
+      transition: color 150ms cubic-bezier(.2,.8,.2,1); /* 仅过渡颜色属性 */
+    }
+    /* 悬停：文字变深 */
+    .shell-nav__link:hover {
+      color: var(--color-text-primary);
+    }
+    /* 键盘聚焦：Teal 描边 */
+    .shell-nav__link:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: -4px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* 激活态：Teal 文字（与底部指示线同色，视觉统一） */
+    .shell-nav__link[data-active="true"] {
+      color: var(--color-brand);
+    }
+    /* 激活态底部指示线：2px Teal 横线，覆盖在导航栏底边上 */
+    .shell-nav__link[data-active="true"]::after {
+      content: '';
+      position: absolute;
+      bottom: 0;                                 /* 紧贴导航栏底部 */
+      left: var(--space-4);                      /* 与文字左右对齐 */
+      right: var(--space-4);
+      height: 2px;
+      background-color: var(--color-brand);
+      border-radius: var(--radius-sm);
+    }
+
+    /* ---- 右侧操作区 ---- */
+    .shell-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);                       /* 按钮与头像间距 0.75rem */
+      flex-shrink: 0;
+    }
+
+    /* 主操作按钮："新建需求"（导航栏全局按钮） */
+    .shell-btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);                       /* 图标与文字间距 */
+      height: 36px;                              /* 按钮高度 36px */
+      padding: 0 var(--space-4);                 /* 左右内边距 1rem */
+      font-size: var(--text-sm);                 /* 0.875rem */
+      font-weight: var(--font-medium);
+      font-family: var(--font-sans);
+      color: var(--color-text-on-primary);       /* 白色文字 */
+      background-color: var(--color-brand);      /* Teal 主色背景 */
+      border: none;
+      border-radius: var(--radius-md);           /* 8px 圆角 */
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(.2,.8,.2,1),
+                  transform 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    /* 悬停：颜色加深 + 微上移 */
+    .shell-btn-primary:hover {
+      background-color: var(--color-brand-hover);
+      transform: translateY(-1px);
+    }
+    /* 按下：回弹归位 */
+    .shell-btn-primary:active {
+      transform: translateY(0);
+    }
+    /* 键盘聚焦：Teal 描边 */
+    .shell-btn-primary:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+    }
+    .shell-btn-primary i {
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    /* 用户头像：圆形 + 首字母 */
+    .shell-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-full);         /* 正圆 */
+      background-color: var(--color-brand);      /* Teal 背景 */
+      color: var(--color-text-on-primary);       /* 白色文字 */
+      font-size: var(--text-xs);                 /* 0.75rem */
+      font-weight: var(--font-medium);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .shell-avatar:hover {
+      background-color: var(--color-brand-hover);
+    }
+
+    /* ============================================================
+     * 页面主内容区（继承自 project-shell）
+     * 设计要点：最大宽度 1200px，水平居中，上下留白
+     * ============================================================ */
+    .page-content {
+      max-width: 1200px;
+      margin: 0 auto;                            /* 水平居中 */
+      padding: var(--space-8) var(--space-8);    /* 上下左右 2rem */
+      min-height: calc(100vh - 64px - 60px);     /* 最小高度 = 视口 - 导航栏 - 页脚 */
+    }
+
+    /* 页面标题样式（叶子页面注入 <h1> 时自动继承） */
+    .page-content > h1 {
+      font-size: var(--text-2xl);                /* 1.5rem */
+      font-weight: var(--font-semibold);         /* 600 */
+      color: var(--color-text-primary);
+      line-height: var(--leading-tight);         /* 1.25 */
+      margin-top: 0;
+      margin-bottom: var(--space-6);             /* 标题与内容间距 1.5rem */
+      text-wrap: balance;
+      word-break: keep-all;
+      overflow-wrap: break-word;
+    }
+
+    /* ============================================================
+     * 页脚样式（继承自 project-shell）
+     * ============================================================ */
+    .shell-footer {
+      width: 100%;
+      border-top: 1px solid var(--color-border);
+      background-color: var(--color-surface);
+    }
+    .shell-footer__inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-5) var(--space-8);    /* 上下 1.25rem，左右 2rem */
+      text-align: center;
+      font-size: var(--text-sm);                 /* 0.875rem */
+      color: var(--color-text-muted);            /* 弱化文字色 */
+      white-space: nowrap;
+    }
+
+    /* ============================================================
+     * 需求列表页 — 页面专属样式
+     * ============================================================ */
+
+    /* ---- 1. 筛选栏卡片：白色背景 + 细线边框 + 8px 圆角 ---- */
+    .filter-bar {
+      display: flex;                             /* 左右两栏横向排列 */
+      align-items: center;                       /* 所有控件垂直居中（同一基线） */
+      gap: var(--space-3);                       /* 控件之间间距 0.75rem */
+      background-color: var(--color-surface);    /* 白色背景 */
+      border: 1px solid var(--color-border);     /* 细线边框（border-led 静态表面） */
+      border-radius: var(--radius-md);           /* 8px 圆角 */
+      padding: var(--space-4);                   /* 内边距 1rem */
+      margin-bottom: var(--space-5);             /* 与表格卡片间距 1.25rem */
+      flex-wrap: wrap;                           /* 窄屏时自动换行 */
+    }
+
+    /* 筛选栏左侧：搜索框 + 状态下拉，占据剩余空间 */
+    .filter-bar__left {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);                       /* 控件间距 0.75rem */
+      flex: 1 1 320px;                           /* 弹性伸缩，最小 320px */
+      min-width: 0;                              /* 允许内部内容截断 */
+    }
+
+    /* 筛选栏右侧：新建需求按钮，固定不压缩 */
+    .filter-bar__right {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    /* ---- 搜索输入框：左侧带搜索图标 ---- */
+    .search-input {
+      position: relative;                        /* 为内部图标提供定位基准 */
+      display: inline-flex;
+      align-items: center;
+      width: 280px;                              /* 固定宽度 280px */
+      max-width: 100%;                           /* 窄屏不超出容器 */
+    }
+    /* 搜索图标：绝对定位在输入框左侧 */
+    .search-input > i {
+      position: absolute;
+      left: 12px;                                /* 距左 12px */
+      font-size: 16px;
+      color: var(--color-text-muted);            /* 弱化图标色 */
+      pointer-events: none;                      /* 点击穿透到输入框 */
+    }
+    /* 输入框本体：36px 高，4px 圆角，白底细线 */
+    .search-input input {
+      width: 100%;
+      height: 36px;                              /* 输入框高度 36px */
+      padding: 0 12px 0 36px;                    /* 左侧留出图标空间 */
+      font-size: var(--text-sm);                 /* 0.875rem */
+      font-family: var(--font-sans);
+      color: var(--color-text-primary);
+      background-color: var(--color-surface);    /* 白色背景 */
+      border: 1px solid var(--color-border);     /* 1px 边框 */
+      border-radius: var(--radius-sm);           /* 4px 圆角 */
+      transition: border-color 150ms cubic-bezier(.2,.8,.2,1),
+                  box-shadow 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .search-input input::placeholder {
+      color: var(--color-text-muted);            /* 占位符弱化色 */
+    }
+    .search-input input:hover {
+      border-color: var(--color-neutral-300);    /* 悬停边框加深 */
+    }
+    /* 聚焦：Teal 边框 + 浅 Teal 光环（无模糊大阴影） */
+    .search-input input:focus {
+      outline: none;
+      border-color: var(--color-brand);
+      box-shadow: 0 0 0 2px var(--color-brand-light);
+    }
+
+    /* ---- 状态下拉框：右侧带下拉箭头 ---- */
+    .select-wrapper {
+      position: relative;                        /* 为下拉箭头提供定位基准 */
+      display: inline-flex;
+      align-items: center;
+    }
+    .status-select {
+      height: 36px;                              /* 与搜索框同高 36px */
+      padding: 0 32px 0 12px;                    /* 右侧留出箭头空间 */
+      font-size: var(--text-sm);
+      font-family: var(--font-sans);
+      color: var(--color-text-primary);
+      background-color: var(--color-surface);    /* 白色背景 */
+      border: 1px solid var(--color-border);     /* 1px 边框 */
+      border-radius: var(--radius-sm);           /* 4px 圆角 */
+      cursor: pointer;
+      appearance: none;                          /* 隐藏原生箭头，改用图标 */
+      transition: border-color 150ms cubic-bezier(.2,.8,.2,1),
+                  box-shadow 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .status-select:hover {
+      border-color: var(--color-neutral-300);
+    }
+    .status-select:focus {
+      outline: none;
+      border-color: var(--color-brand);
+      box-shadow: 0 0 0 2px var(--color-brand-light);
+    }
+    /* 下拉箭头图标：绝对定位在右侧 */
+    .select-wrapper > i {
+      position: absolute;
+      right: 10px;
+      font-size: 14px;
+      color: var(--color-text-muted);
+      pointer-events: none;
+    }
+
+    /* ---- 2. 表格卡片：白色背景 + 细线边框 + 8px 圆角 ---- */
+    .table-card {
+      background-color: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);           /* 8px 圆角 */
+      overflow: hidden;                          /* 让圆角裁剪表格边缘 */
+    }
+    /* 表格横向滚动容器：窄屏时表格可水平滚动 */
+    .table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .req-table {
+      width: 100%;
+      border-collapse: collapse;                 /* 合并边框 */
+      font-size: var(--text-sm);                 /* 0.875rem 表格正文 */
+      min-width: 880px;                          /* 保证列宽不被过度压缩 */
+    }
+
+    /* 表头：浅灰背景、小号大写字母、次要文字色 */
+    .req-table thead th {
+      background-color: var(--color-neutral-50); /* neutral-50 背景 */
+      font-size: var(--text-xs);                 /* text-xs */
+      font-weight: var(--font-medium);
+      color: var(--color-text-secondary);        /* 次要文字色 */
+      text-transform: uppercase;                 /* 大写 */
+      letter-spacing: 0.04em;
+      text-align: left;
+      padding: 12px 16px;                        /* 上下 12px 左右 16px */
+      white-space: nowrap;                       /* 表头不换行 */
+      border-bottom: 1px solid var(--color-border);
+    }
+    /* 表头复选框列与状态列居中 */
+    .req-table thead th.col-center {
+      text-align: center;
+    }
+    /* 操作列表头右对齐 */
+    .req-table thead th.col-right {
+      text-align: right;
+    }
+
+    /* 表格正文单元格 */
+    .req-table tbody td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--color-border-light); /* 极浅分隔线 */
+      vertical-align: middle;
+      color: var(--color-text-primary);
+    }
+    /* 最后一行去掉底边线 */
+    .req-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+    /* 行悬停：浅灰背景反馈 */
+    .req-table tbody tr {
+      transition: background-color 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .req-table tbody tr:hover {
+      background-color: var(--color-neutral-50); /* hover bg neutral-50 */
+    }
+
+    /* 复选框：Teal 强调色 */
+    .req-checkbox {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--color-brand);          /* 选中态使用品牌色 */
+      cursor: pointer;
+    }
+    /* 复选框列内容居中 */
+    .cell-center {
+      text-align: center;
+    }
+    /* 操作列内容右对齐 */
+    .cell-right {
+      text-align: right;
+    }
+
+    /* 需求名称单元格：单行截断，防止过长撑高行 */
+    .req-name {
+      display: block;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--color-text-primary);
+      font-weight: var(--font-medium);
+    }
+    /* 类别单元格：单行截断 */
+    .req-category {
+      display: inline-block;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--color-text-secondary);
+    }
+    /* 创建时间：等宽数字，不换行 */
+    .req-date {
+      white-space: nowrap;
+      color: var(--color-text-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- 关键词标签组：紧凑药丸 ---- */
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;                           /* 允许换行，避免溢出 */
+      gap: 4px;                                  /* 0.25rem 间距 */
+      max-width: 220px;
+    }
+    /* 单个标签药丸：text-xs、neutral-100 背景、neutral-600 文字、4px 圆角 */
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      font-size: var(--text-xs);                 /* text-xs 0.75rem */
+      line-height: 1;
+      padding: 2px 6px;                          /* 0.125rem 0.375rem */
+      background-color: var(--color-neutral-100);/* neutral-100 背景 */
+      color: var(--color-neutral-600);           /* neutral-600 文字 */
+      border-radius: var(--radius-sm);           /* 4px 圆角 */
+      white-space: nowrap;                       /* 标签内不换行 */
+    }
+
+    /* ---- 状态徽章 ---- */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: var(--text-xs);
+      line-height: 1;
+      padding: 4px 8px;                          /* 0.25rem 0.5rem */
+      border-radius: var(--radius-sm);           /* 4px 圆角 */
+      font-weight: var(--font-medium);
+      white-space: nowrap;
+    }
+    /* 草稿：neutral-100 背景 + neutral-600 文字 */
+    .status-badge--draft {
+      background-color: var(--color-neutral-100);
+      color: var(--color-neutral-600);
+    }
+    /* 进行中：info-bg 背景 + info 文字 */
+    .status-badge--progress {
+      background-color: var(--state-info-bg);
+      color: var(--state-info);
+    }
+    /* 已完成：success-bg 背景 + success 文字 */
+    .status-badge--done {
+      background-color: var(--state-success-bg);
+      color: var(--state-success);
+    }
+    /* 已取消：error-bg 背景 + error 文字 */
+    .status-badge--cancelled {
+      background-color: var(--state-error-bg);
+      color: var(--state-error);
+    }
+
+    /* ---- 操作链接组：右对齐排列 ---- */
+    .action-group {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;                 /* 右对齐 */
+      gap: 12px;                                 /* 链接间距 0.75rem */
+      font-size: var(--text-sm);
+    }
+    /* 操作链接基础样式：次要文字色 */
+    .action-link {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: var(--text-sm);
+      font-family: var(--font-sans);
+      color: var(--color-text-secondary);        /* 查看/编辑：次要文字色 */
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .action-link:hover {
+      color: var(--color-text-primary);          /* 悬停加深 */
+    }
+    .action-link:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+    /* 初筛：Teal 品牌色（仅进行中状态显示） */
+    .action-link--brand {
+      color: var(--color-brand);
+    }
+    .action-link--brand:hover {
+      color: var(--color-brand-hover);
+    }
+
+    /* ---- 3. 分页：左侧总数 + 中间页码 ---- */
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;            /* 左右两端对齐 */
+      margin-top: var(--space-5);                /* 与表格间距 1.25rem */
+      flex-wrap: wrap;
+      gap: var(--space-4);
+    }
+    /* 左侧总数文字 */
+    .pagination__count {
+      font-size: var(--text-sm);
+      color: var(--color-text-secondary);
+      white-space: nowrap;
+    }
+    /* 中间页码组：居中排列 */
+    .pagination__pages {
+      display: flex;
+      align-items: center;
+      gap: 4px;                                  /* 页码间距 0.25rem */
+      flex: 1;
+      justify-content: center;
+    }
+    /* 单个页码按钮 */
+    .page-btn {
+      min-width: 32px;
+      height: 32px;
+      padding: 0 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--text-sm);
+      color: var(--color-text-secondary);
+      background-color: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);           /* 4px 圆角 */
+      cursor: pointer;
+      text-decoration: none;
+      font-family: var(--font-sans);
+      transition: background-color 150ms cubic-bezier(.2,.8,.2,1),
+                  color 150ms cubic-bezier(.2,.8,.2,1),
+                  border-color 150ms cubic-bezier(.2,.8,.2,1);
+    }
+    .page-btn:hover:not(:disabled):not(.page-btn--active) {
+      background-color: var(--color-neutral-50);
+      color: var(--color-text-primary);
+    }
+    .page-btn:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+    }
+    /* 激活页码：品牌色背景 + 白色文字 + 8px 圆角 */
+    .page-btn--active {
+      background-color: var(--color-brand);
+      color: var(--color-text-on-primary);
+      border-color: var(--color-brand);
+      border-radius: var(--radius-md);           /* 8px 圆角 */
+      cursor: default;
+    }
+    /* 禁用页码（如上一页） */
+    .page-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* ============================================================
+     * 响应式：移动端适配（< 768px）
+     * ============================================================ */
+    @media (max-width: 768px) {
+      .shell-navbar__inner {
+        padding: 0 var(--space-4);
+        gap: var(--space-3);
+      }
+      .shell-logo span {
+        font-size: var(--text-base);
+      }
+      .shell-nav {
+        gap: 0;
+      }
+      .shell-nav__link {
+        padding: 0 var(--space-2);
+        font-size: var(--text-xs);
+      }
+      /* 移动端导航栏按钮只显示加号图标，节省空间 */
+      .shell-btn-primary span {
+        display: none;
+      }
+      .shell-btn-primary {
+        padding: 0 var(--space-3);
+        width: 36px;
+        justify-content: center;
+      }
+      .page-content {
+        padding: var(--space-4);
+      }
+      /* 移动端筛选栏：搜索框占满整行 */
+      .search-input {
+        width: 100%;
+      }
+      .filter-bar__left {
+        flex: 1 1 100%;
+      }
+    }
+
+    /* ============================================================
+     * 无障碍：尊重用户"减弱动画"偏好
+     * ============================================================ */
+    @media (prefers-reduced-motion: reduce) {
+      .shell-nav__link,
+      .shell-btn-primary,
+      .shell-avatar,
+      .search-input input,
+      .status-select,
+      .req-table tbody tr,
+      .action-link,
+      .page-btn {
+        transition-duration: 0.01ms !important;
+      }
+      .shell-btn-primary:hover {
+        transform: none;
+      }
+    }
+  </style>
+</body>
+</html>

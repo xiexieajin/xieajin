@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}AI自动化 - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-robot"></i> AI自动化工作流</h1>
+</div>
+
+{% if not api_configured %}
+<div class="alert alert-warning">
+    <h5><i class="bi bi-exclamation-triangle"></i> DeepSeek API Key 未配置</h5>
+    <p>AI自动化功能需要配置 DeepSeek API Key 才能使用。</p>
+    <hr>
+    <p class="mb-2"><strong>配置步骤：</strong></p>
+    <ol>
+        <li>访问 <a href="https://platform.deepseek.com/" target="_blank">DeepSeek 开放平台</a> 注册账号</li>
+        <li>在"API Keys"页面创建一个新的 API Key</li>
+        <li>打开项目目录下的 <code>config.py</code> 文件</li>
+        <li>把 <code>DEEPSEEK_API_KEY = "sk-xxxx..."</code> 改成你的真实 API Key</li>
+        <li>刷新此页面即可使用</li>
+    </ol>
+</div>
+{% else %}
+<div class="alert alert-success">
+    <i class="bi bi-check-circle"></i> DeepSeek API 已配置，可以使用AI自动化功能
+</div>
+{% endif %}
+
+<div class="row">
+    <div class="col-md-4 mb-3">
+        <div class="step-card {{ '' if api_configured else 'border-secondary text-muted' }}">
+            <div class="step-card__number">1</div>
+            <div class="step-card__icon"><i class="bi bi-chat-text"></i></div>
+            <h5 class="step-card__title">AI解析需求</h5>
+            <p class="step-card__desc">输入需求文本或上传文档，AI自动提取产品信息、采购要求、关键词</p>
+            <a href="{{ url_for('ai_parse_requirement') }}" class="btn btn-primary {{ 'disabled' if not api_configured }}">
+                <i class="bi bi-arrow-right"></i> 开始
+            </a>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-3">
+        <div class="step-card {{ '' if api_configured else 'border-secondary text-muted' }}">
+            <div class="step-card__number">2</div>
+            <div class="step-card__icon"><i class="bi bi-search"></i></div>
+            <h5 class="step-card__title">AI搜索供应商</h5>
+            <p class="step-card__desc">根据需求关键词，AI自动搜索1688等平台找供应商</p>
+            {% if requirements %}
+            <a href="{{ url_for('requirement_list') }}" class="btn btn-success {{ 'disabled' if not api_configured }}">
+                <i class="bi bi-arrow-right"></i> 选择需求
+            </a>
+            {% else %}
+            <span class="text-muted small">需先创建需求</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-3">
+        <div class="step-card {{ '' if api_configured else 'border-secondary text-muted' }}">
+            <div class="step-card__number">3</div>
+            <div class="step-card__icon"><i class="bi bi-shield-check"></i></div>
+            <h5 class="step-card__title">AI自动初筛</h5>
+            <p class="step-card__desc">AI批量做风险排查、资质核实，自动评分判断是否通过</p>
+            {% if requirements %}
+            <a href="{{ url_for('requirement_list') }}" class="btn btn-info text-white {{ 'disabled' if not api_configured }}">
+                <i class="bi bi-arrow-right"></i> 选择需求
+            </a>
+            {% else %}
+            <span class="text-muted small">需先有供应商</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% if requirements %}
+<div class="card mt-4">
+    <div class="card-header"><i class="bi bi-list-check"></i> 已有需求 - 可直接对以下需求执行AI操作</div>
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>产品名称</th>
+                    <th>关键词</th>
+                    <th>供应商数</th>
+                    <th>AI操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for req in requirements %}
+                <tr>
+                    <td><a href="{{ url_for('requirement_detail', id=req.id) }}"><strong>{{ req.product_name }}</strong></a></td>
+                    <td>
+                        {# 关键词是P0-P3的JSON字符串，需要用from_json解析后只显示P0中文关键词 #}
+                        {% if req.keywords %}
+                            {% set kw = req.keywords | from_json %}
+                            {% if kw and kw is mapping and kw.P0 %}
+                                <span class="badge bg-danger">P0</span>
+                                <small>{{ kw.P0.cn }}</small>
+                            {% else %}
+                                {# 兼容旧数据：非JSON格式直接截断显示 #}
+                                <small>{{ req.keywords[:20] }}{% if req.keywords|length > 20 %}...{% endif %}</small>
+                            {% endif %}
+                        {% else %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% set s_count = suppliers_count.get(req.id, 0) %}
+                        <span class="badge bg-secondary">{{ s_count }}</span>
+                    </td>
+                    <td>
+                        <a href="{{ url_for('ai_search_suppliers', req_id=req.id) }}" class="btn btn-sm btn-outline-success">
+                            <i class="bi bi-search"></i> 搜供应商
+                        </a>
+                        {% if s_count > 0 %}
+                        <a href="{{ url_for('ai_auto_screening', req_id=req.id) }}" class="btn btn-sm btn-outline-info">
+                            <i class="bi bi-shield-check"></i> 自动初筛
+                        </a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+
+{% block title %}需求确认 - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0">
+        <i class="bi bi-{{ 'check2-circle' if parsed.confirmed else 'question-circle' }}"></i>
+        需求确认
+    </h1>
+    <a href="{{ url_for('ai_parse_requirement') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> 重新输入
+    </a>
+</div>
+
+{% if parsed.confirmed %}
+<div class="alert alert-success">
+    <i class="bi bi-check-circle"></i>
+    <strong>需求确认完成！</strong>所有必须项已齐全。请检查信息和关键词，确认无误后保存。
+</div>
+
+<form method="POST" action="{{ url_for('ai_save_requirement') }}">
+    <div class="card mb-3">
+        <div class="card-header bg-primary text-white"><i class="bi bi-box"></i> 产品基本信息</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label required">产品名称</label>
+                    <input type="text" class="form-control" name="product_name"
+                           value="{{ parsed.product_name }}" required>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">行业通用别名</label>
+                    <input type="text" class="form-control" name="product_aliases"
+                           value="{{ parsed.product_aliases }}">
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label required">核心功能</label>
+                    <input type="text" class="form-control" name="core_functions"
+                           value="{{ parsed.core_functions }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label required">材质</label>
+                    <input type="text" class="form-control" name="material"
+                           value="{{ parsed.material }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label required">规格尺寸</label>
+                    <input type="text" class="form-control" name="spec_size"
+                           value="{{ parsed.spec_size }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-calculator"></i> 生产条件与市场认证</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">首批采购量</label>
+                    <input type="text" class="form-control" name="first_purchase_qty"
+                           value="{{ parsed.first_purchase_qty }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">可接受最小起订量</label>
+                    <input type="text" class="form-control" name="acceptable_moq"
+                           value="{{ parsed.acceptable_moq }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">最小发货量</label>
+                    <input type="text" class="form-control" name="min_ship_qty"
+                           value="{{ parsed.min_ship_qty }}">
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">可接受生产交期</label>
+                    <input type="text" class="form-control" name="acceptable_lead_time"
+                           value="{{ parsed.acceptable_lead_time }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">目标市场</label>
+                    <input type="text" class="form-control" name="target_market"
+                           value="{{ parsed.target_market }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">认证要求</label>
+                    <input type="text" class="form-control" name="required_certs"
+                           value="{{ parsed.required_certs }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-card-text"></i> 其他要求（选填）</div>
+        <div class="card-body">
+            <label class="form-label text-muted">填写无法归类到上述字段的额外要求，如包装方式、特殊工艺、售后服务等</label>
+            <textarea class="form-control" name="other_requirements" rows="3"
+                      placeholder="例如：独立包装每箱10件、提供3年质保、需要贴牌OEM等">{{ parsed.other_requirements }}</textarea>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-file-text"></i> 需求总结</div>
+        <div class="card-body">
+            <textarea class="form-control" name="requirement_summary" rows="3">{{ parsed.requirement_summary }}</textarea>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header bg-success text-white">
+            <i class="bi bi-key"></i> P0-P3 搜索关键词（用于供应商寻源）
+        </div>
+        <div class="card-body">
+            {% set kw = parsed.keywords %}
+            {% if kw and kw is mapping %}
+            <input type="hidden" name="keywords" value='{{ kw | tojson }}'>
+
+            <div class="mb-3">
+                <span class="badge bg-danger fs-6">P0 最精准匹配</span>
+                <div class="mt-1 p-2 bg-light rounded">
+                    <span class="badge bg-secondary">中文</span> {{ kw.P0.cn if kw.P0 else '-' }}
+                    <span class="badge bg-secondary ms-2">英文</span> {{ kw.P0.en if kw.P0 else '-' }}
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <span class="badge bg-warning text-dark fs-6">P1 高匹配核心产品</span>
+                <div class="mt-1 p-2 bg-light rounded">
+                    <div>P1-1: <span class="badge bg-secondary">中</span>{{ kw.P1_1.cn if kw.P1_1 else '-' }} <span class="badge bg-secondary">英</span>{{ kw.P1_1.en if kw.P1_1 else '-' }}</div>
+                    <div class="mt-1">P1-2: <span class="badge bg-secondary">中</span>{{ kw.P1_2.cn if kw.P1_2 else '-' }} <span class="badge bg-secondary">英</span>{{ kw.P1_2.en if kw.P1_2 else '-' }}</div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <span class="badge bg-info text-dark fs-6">P2 关键特征扩展</span>
+                <div class="mt-1 p-2 bg-light rounded">
+                    <div>P2-1: <span class="badge bg-secondary">中</span>{{ kw.P2_1.cn if kw.P2_1 else '-' }} <span class="badge bg-secondary">英</span>{{ kw.P2_1.en if kw.P2_1 else '-' }}</div>
+                    <div class="mt-1">P2-2: <span class="badge bg-secondary">中</span>{{ kw.P2_2.cn if kw.P2_2 else '-' }} <span class="badge bg-secondary">英</span>{{ kw.P2_2.en if kw.P2_2 else '-' }}</div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <span class="badge bg-success fs-6">P3 模糊扩展</span>
+                <div class="mt-1 p-2 bg-light rounded">
+                    <div>P3-1: <span class="badge bg-secondary">中</span>{{ kw.P3_1.cn if kw.P3_1 else '-' }} <span class="badge bg-secondary">英</span>{{ kw.P3_1.en if kw.P3_1 else '-' }}</div>
+                    <div class="mt-1">P3-2: <span class="badge bg-secondary">中</span>{{ kw.P3_2.cn if kw.P3_2 else '-' }} <span class="badge bg-secondary">英</span>{{ kw.P3_2.en if kw.P3_2 else '-' }}</div>
+                </div>
+            </div>
+            {% else %}
+            <input type="hidden" name="keywords" value='{{ kw }}'>
+            <p class="text-muted">关键词格式异常，原始值：{{ kw }}</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="text-end">
+        <button type="submit" class="btn btn-success btn-lg">
+            <i class="bi bi-check-circle"></i> 确认保存需求
+        </button>
+        <a href="{{ url_for('ai_parse_requirement') }}" class="btn btn-outline-secondary btn-lg">重新解析</a>
+    </div>
+</form>
+
+{% else %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    <strong>需求尚未确认完成！</strong>请补充以下缺失信息，系统不会保存未确认的需求。
+</div>
+
+{% if parsed.questions %}
+<div class="card mb-3 border-warning">
+    <div class="card-header bg-warning text-dark">
+        <i class="bi bi-question-circle"></i> 需要您补充的信息
+    </div>
+    <div class="card-body">
+        <ol class="mb-0">
+            {% for q in parsed.questions %}
+            <li>{{ q }}</li>
+            {% endfor %}
+        </ol>
+    </div>
+</div>
+{% endif %}
+
+<form method="POST" action="{{ url_for('ai_supplement_requirement') }}" id="supplementForm">
+    <input type="hidden" name="original_text" value="{{ original_text }}">
+    <input type="hidden" name="prev_product_name" value="{{ parsed.product_name }}">
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-pencil"></i> 补充/确认信息</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">核心功能
+                        {% if 'core_functions' in parsed.missing_required %}<span class="text-danger">*缺失</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="core_functions"
+                           value="{{ parsed.core_functions }}"
+                           {% if 'core_functions' in parsed.missing_required %}placeholder="必填，请补充"{% endif %}>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">材质
+                        {% if 'material' in parsed.missing_required %}<span class="text-danger">*缺失</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="material"
+                           value="{{ parsed.material }}"
+                           {% if 'material' in parsed.missing_required %}placeholder="必填，请补充"{% endif %}>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">规格尺寸
+                        {% if 'spec_size' in parsed.missing_required %}<span class="text-danger">*缺失</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="spec_size"
+                           value="{{ parsed.spec_size }}"
+                           {% if 'spec_size' in parsed.missing_required %}placeholder="必填，请补充"{% endif %}>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">首批采购量
+                        {% if 'first_purchase_qty' in parsed.missing_optional %}<span class="text-warning">需确认</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="first_purchase_qty"
+                           value="{{ parsed.first_purchase_qty if parsed.first_purchase_qty else '不限制' }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">可接受最小起订量
+                        {% if 'acceptable_moq' in parsed.missing_optional %}<span class="text-warning">需确认</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="acceptable_moq"
+                           value="{{ parsed.acceptable_moq if parsed.acceptable_moq else '不限制' }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">最小发货量
+                        {% if 'min_ship_qty' in parsed.missing_optional %}<span class="text-warning">需确认</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="min_ship_qty"
+                           value="{{ parsed.min_ship_qty if parsed.min_ship_qty else '不限制' }}">
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">目标市场
+                        {% if 'target_market' in parsed.missing_optional %}<span class="text-warning">需确认</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="target_market"
+                           value="{{ parsed.target_market if parsed.target_market else '不限制' }}">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">认证要求
+                        {% if 'required_certs' in parsed.missing_optional %}<span class="text-warning">需确认</span>{% endif %}
+                    </label>
+                    <input type="text" class="form-control" name="required_certs"
+                           value="{{ parsed.required_certs if parsed.required_certs else '无要求' }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="alert alert-info">
+        <i class="bi bi-info-circle"></i>
+        填写完后点击"确认"，AI会再次判断是否信息齐全。标<span class="text-danger">*缺失</span>的为必填项，
+        选填项已默认填"不限制"，如无特殊要求可直接确认。
+    </div>
+
+    <div class="text-end">
+        <button type="submit" class="btn btn-primary btn-lg" id="confirmBtn">
+            <i class="bi bi-check-circle"></i> 确认
+        </button>
+        <a href="{{ url_for('ai_parse_requirement') }}" class="btn btn-outline-secondary btn-lg">重新输入</a>
+    </div>
+</form>
+
+{# 小白讲解：加载遮罩，点击确认后显示，覆盖整个页面，防止用户重复点击和以为卡死 #}
+<div id="loadingOverlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.8); z-index:9999; display:none; align-items:center; justify-content:center;">
+    <div class="text-center">
+        <div class="spinner-border text-primary" style="width:3rem; height:3rem;" role="status">
+            <span class="visually-hidden">加载中...</span>
+        </div>
+        <h5 class="mt-3 text-primary"><i class="bi bi-robot"></i> AI正在重新确认需求，请稍候...</h5>
+        <p class="text-muted">通常需要10-30秒，请勿关闭页面</p>
+    </div>
+</div>
+{% endif %}
+
+{% block scripts %}
+<script>
+/**
+ * 需求二次确认表单提交脚本
+ *
+ * 小白讲解：用户点击"确认"后，AI需要几秒到几十秒来重新判断需求信息是否齐全。
+ * 这期间页面没有任何反馈，用户会以为卡死了。
+ * 这里用JS拦截表单提交，点击后立即显示加载遮罩，让用户知道正在处理。
+ * 表单仍然用普通方式提交（不是AJAX），因为后端返回的是渲染后的新页面。
+ */
+document.getElementById('supplementForm')?.addEventListener('submit', function() {
+    // 禁用确认按钮，防止重复点击
+    const btn = document.getElementById('confirmBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 处理中...';
+    // 显示全屏加载遮罩
+    const overlay = document.getElementById('loadingOverlay');
+    overlay.style.display = 'flex';
+});
+</script>
+{% endblock %}
+{% endblock %}

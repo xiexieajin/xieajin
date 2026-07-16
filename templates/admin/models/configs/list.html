@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}场景配置 - 供应商寻源系统{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-sliders"></i> 场景配置</h1>
+    <a href="{{ url_for('admin_models_index') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回
+    </a>
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    每个AI调用场景有独立的模型参数。修改保存后立即生效，无需重启服务器。
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if configs %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th width="60">ID</th>
+                        <th>场景名称</th>
+                        <th width="140">场景代码</th>
+                        <th width="120">服务商</th>
+                        <th width="180">模型名</th>
+                        <th width="100">思考强度</th>
+                        <th width="80">温度</th>
+                        <th width="100">最大Token</th>
+                        <th width="80">状态</th>
+                        <th width="100">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in configs %}
+                    <tr>
+                        <td>{{ c.id }}</td>
+                        <td><strong>{{ c.scene_name }}</strong></td>
+                        <td><code class="text-muted">{{ c.scene_code }}</code></td>
+                        <td><small>{{ c.provider_name or '—' }}</small></td>
+                        <td><code>{{ c.model_name }}</code></td>
+                        <td>
+                            {% if c.thinking_enabled %}
+                                <span class="badge bg-info">{{ c.thinking_effort or 'high' }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">关闭</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ c.temperature }}</td>
+                        <td>{{ c.max_tokens }}</td>
+                        <td>
+                            {% if c.is_enabled %}
+                            <span class="badge bg-success">启用</span>
+                            {% else %}
+                            <span class="badge bg-warning text-dark">停用</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{{ url_for('admin_config_edit', id=c.id) }}"
+                               class="btn btn-outline-primary btn-sm" title="编辑">
+                                <i class="bi bi-pencil"></i> 编辑
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-4">
+            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+            暂无场景配置
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

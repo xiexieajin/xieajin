@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}添加沟通记录 - {{ supplier.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title"><i class="bi bi-chat-dots"></i> 添加沟通记录</h1>
+    <a href="{{ url_for('supplier_detail', id=supplier.id) }}" class="back-link">
+        <i class="bi bi-arrow-left"></i> 返回详情
+    </a>
+</div>
+
+<div class="alert alert-light border">
+    <strong>供应商：</strong>{{ supplier.name }}
+    {% if supplier.email %}<span class="ms-3"><i class="bi bi-envelope"></i> {{ supplier.email }}</span>{% endif %}
+    {% if supplier.phone %}<span class="ms-3"><i class="bi bi-telephone"></i> {{ supplier.phone }}</span>{% endif %}
+</div>
+
+<form method="POST" action="{{ url_for('communication_create', supplier_id=supplier.id) }}">
+    <div class="card mb-3">
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label required">沟通渠道</label>
+                    <select class="form-select" name="channel">
+                        <option value="微信/企微">微信/企微</option>
+                        <option value="邮件">邮件</option>
+                        <option value="电话">电话</option>
+                        <option value="线下拜访">线下拜访</option>
+                    </select>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">沟通时间</label>
+                    <input type="datetime-local" class="form-control" name="comm_time">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">后续步骤</label>
+                    <input type="text" class="form-control" name="next_step"
+                           placeholder="如：等待对方报价">
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">沟通内容</label>
+                <textarea class="form-control" name="content" rows="6"
+                          placeholder="填写沟通的具体内容..."></textarea>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">沟通结论</label>
+                <input type="text" class="form-control" name="conclusion"
+                       placeholder="如：已收到报价，价格偏高需继续谈判">
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header">
+            <i class="bi bi-file-text"></i> 询价邮件模板参考（可复制使用）
+            <button type="button" class="btn btn-sm btn-outline-primary float-end"
+                    onclick="copyTemplate()">复制模板</button>
+        </div>
+        <div class="card-body">
+            <pre class="bg-light p-3 rounded" id="emailTemplate" style="white-space: pre-wrap; font-size: 0.875rem;">主题：采购合作询价 -【产品名称】
+
+您好！
+我司是一家专注于亚马逊、Temu 等跨境电商平台的电商企业，目前正在开发【产品名称】品类的优质供应商，在了解贵司后，认为与我们的需求较为匹配，特发此邮件进行初步洽谈。
+
+产品需求：（填写产品需求）
+
+请提供以下报价信息：
+1. 产品单价（请提供阶梯报价）
+2. 最小下单量（MOQ）
+3. 最小发货量
+4. 首批建议下单数量
+5. 生产交期（付款后至出货天数）
+
+另请附上：产品图片或规格书、现有认证资质（如有）
+
+如贵司有意向合作，欢迎尽快回复，我们将安排进一步对接。
+
+此致
+[采购方名称] 采购部
+邮箱：[固定邮箱] | 电话：[固定电话]</pre>
+        </div>
+    </div>
+
+    <div class="text-end mt-4">
+        <button type="submit" class="btn btn-primary btn-lg">
+            <i class="bi bi-check-circle"></i> 保存记录
+        </button>
+        <a href="{{ url_for('supplier_detail', id=supplier.id) }}" class="btn btn-outline-secondary btn-lg">取消</a>
+    </div>
+</form>
+
+<script>
+// 复制邮件模板到剪贴板
+function copyTemplate() {
+    const text = document.getElementById('emailTemplate').innerText;
+    navigator.clipboard.writeText(text).then(function() {
+        alert('模板已复制到剪贴板！');
+    });
+}
+</script>
+{% endblock %}

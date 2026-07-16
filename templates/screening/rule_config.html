@@ -1,0 +1,516 @@
+{% extends "base.html" %}
+
+{% block title %}初筛规则配置{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-gear"></i> 初筛规则配置</h1>
+    {% if req_id %}
+    <a href="{{ url_for('ai_auto_screening', req_id=req_id) }}" class="btn btn-outline-primary">
+        <i class="bi bi-arrow-left"></i> 返回AI初筛
+    </a>
+    {% else %}
+    <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> 返回首页
+    </a>
+    {% endif %}
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    系统默认17条规则（11条一票否决 + 6条评分规则），可在此页面启用/禁用规则或修改参数。修改后立即生效，下次初筛将使用新配置。
+</div>
+
+{# ==================== 一票否决规则区 ==================== #}
+<div class="card mb-3">
+    <div class="card-header bg-danger text-white">
+        <i class="bi bi-x-octagon"></i> 一票否决规则（{{ veto_rules|length }}条）
+        <small class="text-white-50">触发任一条直接淘汰，不进入评分</small>
+    </div>
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th width="180">规则名称</th>
+                    <th>说明</th>
+                    <th width="80">状态</th>
+                    <th width="180">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rule in veto_rules %}
+                <tr>
+                    <td><strong>{{ rule.rule_name }}</strong><br><small class="text-muted">{{ rule.rule_code }}</small></td>
+                    <td><small>{{ rule.description }}</small></td>
+                    <td>
+                        {% if rule.is_enabled %}
+                            <span class="badge bg-success">启用</span>
+                        {% else %}
+                            <span class="badge bg-secondary">禁用</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                data-bs-toggle="modal" data-bs-target="#editRuleModal"
+                                data-rule-code="{{ rule.rule_code }}"
+                                data-rule-name="{{ rule.rule_name }}"
+                                data-rule-type="{{ rule.rule_type }}"
+                                data-condition="{{ rule.default_condition }}"
+                                data-action="{{ rule.default_action }}"
+                                data-scoring-logic="{{ rule.scoring_logic or '' }}"
+                                data-max-score="{{ rule.max_score or '' }}">
+                            <i class="bi bi-pencil"></i> 编辑
+                        </button>
+                        <form method="POST" action="{{ url_for('screening_rules_update') }}" class="d-inline">
+                            <input type="hidden" name="rule_code" value="{{ rule.rule_code }}">
+                            <input type="hidden" name="is_enabled" value="{% if not rule.is_enabled %}on{% endif %}">
+                            <button type="submit" class="btn btn-sm {% if rule.is_enabled %}btn-outline-warning{% else %}btn-outline-success{% endif %}">
+                                {% if rule.is_enabled %}禁用{% else %}启用{% endif %}
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{# ==================== 评分规则区 ==================== #}
+<div class="card mb-3">
+    <div class="card-header bg-success text-white">
+        <i class="bi bi-star"></i> 评分规则（{{ score_rules|length }}条，满分100）
+        <small class="text-white-50">未触发一票否决的供应商按此评分</small>
+        {% if score_total == 100 %}
+            <span class="badge bg-light text-success ms-2">当前总分：{{ score_total }}/100 ✓</span>
+        {% else %}
+            <span class="badge bg-danger ms-2">当前总分：{{ score_total }}/100 ✗ 必须等于100！</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th width="180">评分维度</th>
+                    <th>评分逻辑</th>
+                    <th width="80">满分</th>
+                    <th width="80">状态</th>
+                    <th width="180">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rule in score_rules %}
+                <tr>
+                    <td><strong>{{ rule.rule_name }}</strong><br><small class="text-muted">{{ rule.rule_code }}</small></td>
+                    <td><small>{{ rule.scoring_logic or rule.description }}</small></td>
+                    <td><strong>{{ rule.max_score }}</strong>分</td>
+                    <td>
+                        {% if rule.is_enabled %}
+                            <span class="badge bg-success">启用</span>
+                        {% else %}
+                            <span class="badge bg-secondary">禁用</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                data-bs-toggle="modal" data-bs-target="#editRuleModal"
+                                data-rule-code="{{ rule.rule_code }}"
+                                data-rule-name="{{ rule.rule_name }}"
+                                data-rule-type="{{ rule.rule_type }}"
+                                data-condition="{{ rule.default_condition }}"
+                                data-action="{{ rule.default_action }}"
+                                data-scoring-logic="{{ rule.scoring_logic or '' }}"
+                                data-max-score="{{ rule.max_score or '' }}">
+                            <i class="bi bi-pencil"></i> 编辑
+                        </button>
+                        <form method="POST" action="{{ url_for('screening_rules_update') }}" class="d-inline">
+                            <input type="hidden" name="rule_code" value="{{ rule.rule_code }}">
+                            <input type="hidden" name="is_enabled" value="{% if not rule.is_enabled %}on{% endif %}">
+                            <button type="submit" class="btn btn-sm {% if rule.is_enabled %}btn-outline-warning{% else %}btn-outline-success{% endif %}">
+                                {% if rule.is_enabled %}禁用{% else %}启用{% endif %}
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{# ==================== 初筛通过标准区（可编辑） ==================== #}
+{# 小白讲解：通过线/人工确认线以前写死在代码里（75/60），现在业务人员可以直接修改数字。
+   规则说明：总分≥通过线=已通过初筛；人工确认线≤总分<通过线=需人工确认；总分<人工确认线=未通过初筛 #}
+<div class="card mb-3 border-primary">
+    <div class="card-header bg-primary text-white">
+        <i class="bi bi-flag"></i> 初筛通过标准
+        <small class="text-white-50">自定义什么总分属于"通过 / 人工确认 / 未通过"</small>
+    </div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('screening_rules_threshold') }}" id="thresholdForm">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label fw-bold">
+                        <i class="bi bi-check-circle text-success"></i> 通过线
+                    </label>
+                    <div class="input-group">
+                        <span class="input-group-text">总分≥</span>
+                        <input type="number" name="threshold_pass" id="thresholdPass"
+                               class="form-control" min="0" max="100"
+                               value="{{ threshold_pass }}" required>
+                        <span class="input-group-text">分</span>
+                    </div>
+                    <div class="form-text">达到此分判定为<span class="badge bg-success">已通过初筛</span></div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-bold">
+                        <i class="bi bi-question-circle text-warning"></i> 人工确认线
+                    </label>
+                    <div class="input-group">
+                        <span class="input-group-text">总分≥</span>
+                        <input type="number" name="threshold_manual_review" id="thresholdManualReview"
+                               class="form-control" min="0" max="100"
+                               value="{{ threshold_manual_review }}" required>
+                        <span class="input-group-text">分</span>
+                    </div>
+                    <div class="form-text">达到此分但低于通过线判定为<span class="badge bg-warning text-dark">需人工确认</span></div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-bold text-muted">未通过区间</label>
+                    <div class="form-control bg-light" style="min-height:38px;">
+                        总分 &lt; <span id="manualReviewDisplay">{{ threshold_manual_review }}</span> 分
+                    </div>
+                    <div class="form-text">低于人工确认线判定为<span class="badge bg-danger">未通过初筛</span></div>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-check-lg"></i> 保存通过标准
+                    </button>
+                </div>
+            </div>
+            <div class="alert alert-warning mt-3 mb-0">
+                <i class="bi bi-info-circle"></i>
+                <strong>规则说明：</strong>通过线必须大于人工确认线。
+                如不需要人工确认环节，可把人工确认线设为和通过线相同的值（如都设为75），则低于75分一律未通过。
+            </div>
+            <div id="thresholdError" class="alert alert-danger mt-2 mb-0" style="display:none;">
+                <i class="bi bi-exclamation-triangle"></i>
+                <span id="thresholdErrorMsg"></span>
+            </div>
+        </form>
+    </div>
+</div>
+
+{# ==================== 规则编辑模态框 ==================== #}
+<div class="modal fade" id="editRuleModal" tabindex="-1" aria-labelledby="editRuleModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('screening_rules_update') }}" id="editRuleForm">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="editRuleModalLabel">
+                        <i class="bi bi-pencil-square"></i> 编辑规则：<span id="modalRuleName"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" name="rule_code" id="modalRuleCode">
+                    <input type="hidden" name="is_enabled" id="modalIsEnabled" value="on">
+
+                    {# ==================== 一票否决规则编辑区 ==================== #}
+                    <div id="vetoEditSection">
+
+                        {# 注册资本阈值输入框（仅 veto_capital 显示） #}
+                        <div class="mb-3" id="capitalThresholdGroup" style="display:none;">
+                            <label class="form-label fw-bold">
+                                注册资本低于多少万元时触发否决？
+                            </label>
+                            <div class="input-group" style="max-width:300px;">
+                                <span class="input-group-text">注册资本 &lt;</span>
+                                <input type="number" name="capital_threshold" id="capitalThreshold"
+                                       class="form-control" min="0" step="10" placeholder="如 100">
+                                <span class="input-group-text">万元</span>
+                            </div>
+                            <div class="form-text">填入数字，如 100 表示注册资本不足100万的供应商将被淘汰</div>
+                        </div>
+
+                        {# 允许的经营状态多选框（仅 veto_operating_status 显示） #}
+                        <div class="mb-3" id="operatingStatusGroup" style="display:none;">
+                            <label class="form-label fw-bold">
+                                允许的经营状态（勾选的状态视为正常，未勾选的触发否决）
+                            </label>
+                            <div class="d-flex flex-wrap gap-3">
+                                <div class="form-check">
+                                    <input type="checkbox" name="allowed_status" value="存续" id="os_1" class="form-check-input">
+                                    <label for="os_1" class="form-check-label">存续</label>
+                                </div>
+                                <div class="form-check">
+                                    <input type="checkbox" name="allowed_status" value="在业" id="os_2" class="form-check-input">
+                                    <label for="os_2" class="form-check-label">在业</label>
+                                </div>
+                                <div class="form-check">
+                                    <input type="checkbox" name="allowed_status" value="正常" id="os_3" class="form-check-input">
+                                    <label for="os_3" class="form-check-label">正常</label>
+                                </div>
+                                <div class="form-check">
+                                    <input type="checkbox" name="allowed_status" value="开业" id="os_4" class="form-check-input">
+                                    <label for="os_4" class="form-check-label">开业</label>
+                                </div>
+                                <div class="form-check">
+                                    <input type="checkbox" name="allowed_status" value="存续（在营）" id="os_5" class="form-check-input">
+                                    <label for="os_5" class="form-check-label">存续（在营）</label>
+                                </div>
+                            </div>
+                            <div class="form-text">至少勾选一个状态，未勾选的经营状态将触发否决</div>
+                        </div>
+
+                        {# 否决原因输入框（所有否决规则都显示） #}
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">
+                                否决原因提示语
+                                <small class="text-muted">初筛触发否决时显示给业务人员的说明文字</small>
+                            </label>
+                            <input type="text" name="veto_reason" id="vetoReason" class="form-control"
+                                   placeholder="如：注册资本不足100万" maxlength="200">
+                            <div class="form-text">这条文字会显示在初筛结果中，帮助业务人员理解为什么被否决</div>
+                        </div>
+
+                        {# 规则说明（只读展示） #}
+                        <div class="mb-3">
+                            <label class="form-label fw-bold text-muted">规则说明</label>
+                            <div class="form-control bg-light" id="ruleDescription" style="min-height:40px;"></div>
+                        </div>
+                    </div>
+
+                    {# ==================== 评分规则编辑区 ==================== #}
+                    <div id="scoreEditSection" style="display:none;">
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">
+                                满分分值
+                                <small class="text-muted">此项评分的最高分（所有评分规则满分之和应为100）</small>
+                            </label>
+                            <div class="input-group" style="max-width:200px;">
+                                <input type="number" name="max_score" id="modalMaxScore" class="form-control"
+                                       min="0" max="100" placeholder="如 25">
+                                <span class="input-group-text">分</span>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">
+                                评分逻辑说明
+                                <small class="text-muted">用通俗语言描述如何根据数据打分</small>
+                            </label>
+                            <textarea name="scoring_logic" id="modalScoringLogic" class="form-control"
+                                      rows="4" placeholder="如：1000万以上满分25分，500-1000万20分，100-500万15分，100万以下0分"></textarea>
+                        </div>
+                    </div>
+
+                    {# 错误提示区 #}
+                    <div id="errorAlert" class="alert alert-danger mt-3" style="display:none;">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <span id="errorMsg"></span>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg"></i> 保存修改
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+// 小白讲解：这段JavaScript负责规则编辑模态框的交互
+// 根据规则编码（rule_code）显示不同的可视化表单，业务人员不需要接触JSON。
+// 提交时由JavaScript自动把表单值拼装成条件JSON，传给后端。
+
+document.addEventListener('DOMContentLoaded', function() {
+    var editModal = document.getElementById('editRuleModal');
+
+    // ==================== 通过标准表单交互 ====================
+    // 小白讲解：当用户修改人工确认线时，实时更新"未通过区间"显示文字；
+    // 提交时校验"通过线必须大于等于人工确认线"。
+    var thresholdForm = document.getElementById('thresholdForm');
+    var passInput = document.getElementById('thresholdPass');
+    var reviewInput = document.getElementById('thresholdManualReview');
+    var reviewDisplay = document.getElementById('manualReviewDisplay');
+    var thresholdError = document.getElementById('thresholdError');
+    var thresholdErrorMsg = document.getElementById('thresholdErrorMsg');
+
+    function refreshReviewDisplay() {
+        reviewDisplay.textContent = reviewInput.value;
+    }
+
+    function showThresholdError(msg) {
+        thresholdErrorMsg.textContent = msg;
+        thresholdError.style.display = 'block';
+    }
+
+    if (reviewInput) {
+        reviewInput.addEventListener('input', refreshReviewDisplay);
+    }
+
+    if (thresholdForm) {
+        thresholdForm.addEventListener('submit', function(event) {
+            thresholdError.style.display = 'none';
+            var passVal = parseInt(passInput.value, 10);
+            var reviewVal = parseInt(reviewInput.value, 10);
+            if (isNaN(passVal) || passVal < 0 || passVal > 100) {
+                showThresholdError('通过线必须是0-100之间的数字');
+                event.preventDefault();
+                return;
+            }
+            if (isNaN(reviewVal) || reviewVal < 0 || reviewVal > 100) {
+                showThresholdError('人工确认线必须是0-100之间的数字');
+                event.preventDefault();
+                return;
+            }
+            // 小白讲解：通过线必须大于等于人工确认线，否则两个区间会冲突
+            if (passVal < reviewVal) {
+                showThresholdError('通过线(' + passVal + ')不能低于人工确认线(' + reviewVal + ')');
+                event.preventDefault();
+                return;
+            }
+        });
+    }
+
+
+    editModal.addEventListener('show.bs.modal', function(event) {
+        var button = event.relatedTarget;
+
+        var ruleCode = button.getAttribute('data-rule-code');
+        var ruleName = button.getAttribute('data-rule-name');
+        var ruleType = button.getAttribute('data-rule-type');
+        var condition = button.getAttribute('data-condition') || '{}';
+        var action = button.getAttribute('data-action') || '{}';
+        var scoringLogic = button.getAttribute('data-scoring-logic') || '';
+        var maxScore = button.getAttribute('data-max-score') || '';
+
+        // 填充标题和隐藏字段
+        document.getElementById('modalRuleName').textContent = ruleName;
+        document.getElementById('modalRuleCode').value = ruleCode;
+        document.getElementById('modalIsEnabled').value = 'on';
+
+        var vetoSection = document.getElementById('vetoEditSection');
+        var scoreSection = document.getElementById('scoreEditSection');
+        var capitalGroup = document.getElementById('capitalThresholdGroup');
+        var statusGroup = document.getElementById('operatingStatusGroup');
+
+        // 先隐藏所有条件编辑区
+        capitalGroup.style.display = 'none';
+        statusGroup.style.display = 'none';
+
+        if (ruleType === 'veto') {
+            // 一票否决规则
+            vetoSection.style.display = 'block';
+            scoreSection.style.display = 'none';
+
+            // 解析条件JSON
+            var cond = {};
+            try { cond = JSON.parse(condition); } catch(e) { cond = {}; }
+
+            // 解析动作JSON，提取否决原因
+            var act = {};
+            try { act = JSON.parse(action); } catch(e) { act = {}; }
+            document.getElementById('vetoReason').value = act.reason || '';
+
+            // 根据规则编码显示对应的条件编辑控件
+            if (ruleCode === 'veto_capital') {
+                // 注册资本阈值：显示数字输入框
+                capitalGroup.style.display = 'block';
+                document.getElementById('capitalThreshold').value = cond.value || 100;
+            } else if (ruleCode === 'veto_operating_status') {
+                // 经营状态：显示多选框
+                statusGroup.style.display = 'block';
+                var allowedList = cond.value || ['存续', '在业', '正常', '开业', '存续（在营）'];
+                // 取消所有勾选
+                document.querySelectorAll('input[name="allowed_status"]').forEach(function(cb) { cb.checked = false; });
+                // 勾选当前允许的状态
+                allowedList.forEach(function(status) {
+                    var cb = document.querySelector('input[name="allowed_status"][value="' + status + '"]');
+                    if (cb) cb.checked = true;
+                });
+            }
+            // 其他布尔型规则不显示条件编辑控件，只显示否决原因
+
+        } else if (ruleType === 'score') {
+            // 评分规则
+            vetoSection.style.display = 'none';
+            scoreSection.style.display = 'block';
+            document.getElementById('modalMaxScore').value = maxScore || '';
+            document.getElementById('modalScoringLogic').value = scoringLogic || '';
+        }
+
+        // 隐藏错误提示
+        document.getElementById('errorAlert').style.display = 'none';
+    });
+
+    // 表单提交前校验
+    var form = document.getElementById('editRuleForm');
+    form.addEventListener('submit', function(event) {
+        var ruleCode = document.getElementById('modalRuleCode').value;
+        var ruleType = document.getElementById('vetoEditSection').style.display === 'none' ? 'score' : 'veto';
+        var errorAlert = document.getElementById('errorAlert');
+        var errorMsg = document.getElementById('errorMsg');
+
+        function showError(msg) {
+            errorMsg.textContent = msg;
+            errorAlert.style.display = 'block';
+            event.preventDefault();
+        }
+
+        errorAlert.style.display = 'none';
+
+        if (ruleType === 'veto') {
+            // 校验否决原因不为空
+            var reason = document.getElementById('vetoReason').value.trim();
+            if (!reason) {
+                showError('请填写否决原因提示语');
+                return;
+            }
+
+            // 注册资本规则校验阈值
+            if (ruleCode === 'veto_capital') {
+                var threshold = document.getElementById('capitalThreshold').value;
+                if (!threshold || isNaN(threshold) || threshold < 0) {
+                    showError('请填写有效的注册资本阈值（正整数）');
+                    return;
+                }
+            }
+
+            // 经营状态规则校验至少勾选一项
+            if (ruleCode === 'veto_operating_status') {
+                var checked = document.querySelectorAll('input[name="allowed_status"]:checked');
+                if (checked.length === 0) {
+                    showError('请至少勾选一个允许的经营状态');
+                    return;
+                }
+            }
+        } else {
+            // 评分规则校验
+            var maxScoreVal = document.getElementById('modalMaxScore').value.trim();
+            if (!maxScoreVal || isNaN(maxScoreVal) || maxScoreVal < 0 || maxScoreVal > 100) {
+                showError('满分分值必须是0-100之间的数字');
+                return;
+            }
+        }
+    });
+});
+</script>
+
+{# 自动给所有POST表单添加req_id参数，保存规则后能返回AI初筛页 #}
+<script>
+document.querySelectorAll('form[method="POST"]').forEach(function(form) {
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'req_id';
+    input.value = '{{ req_id or "" }}';
+    form.appendChild(input);
+});
+</script>
+{% endblock %}

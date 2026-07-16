@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+
+{% block title %}需求列表 - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-clipboard-check"></i> 采购需求列表</h1>
+    <a href="{{ url_for('ai_parse_requirement') }}" class="btn btn-primary">
+        <i class="bi bi-plus-circle"></i> 创建需求
+    </a>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            {# 小白讲解：下拉式多选筛选组件
+               点击"需求状态"按钮 → 弹出下拉面板 → 勾选选项 → 点击"应用"或外部关闭即筛选
+               按钮显示已选数量徽章，让用户一眼看出当前筛选状态 #}
+            <div class="col-md-4">
+                <label class="form-label small fw-semibold mb-1">需求状态</label>
+                <div class="dropdown">
+                    <button type="button" class="btn btn-outline-primary btn-sm w-100 text-start dropdown-toggle"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        需求状态
+                        {% if current_status_list %}
+                        <span class="badge bg-primary ms-1">{{ current_status_list|length }}</span>
+                        {% endif %}
+                    </button>
+                    <div class="dropdown-menu p-2" style="min-width:220px; max-height:280px; overflow-y:auto;">
+                        <div class="mb-2 d-flex justify-content-between">
+                            <button type="button" class="btn btn-link btn-sm p-0 text-primary" onclick="selectAllStatus(true)">全选</button>
+                            <button type="button" class="btn btn-link btn-sm p-0 text-muted" onclick="selectAllStatus(false)">清除</button>
+                        </div>
+                        {% for st in requirement_statuses %}
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="status" value="{{ st }}"
+                                   id="st_{{ loop.index }}" autocomplete="off"
+                                   {{ 'checked' if st in current_status_list }}
+                                   onchange="updateStatusBadge()">
+                            <label class="form-check-label small" for="st_{{ loop.index }}">{{ st }}</label>
+                        </div>
+                        {% endfor %}
+                        <hr class="my-2">
+                        <button type="submit" class="btn btn-primary btn-sm w-100">
+                            <i class="bi bi-check-lg"></i> 应用筛选
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-5">
+                <label class="form-label small">产品名称</label>
+                <input type="text" class="form-control form-control-sm" name="name_search"
+                       value="{{ current_name_search }}" placeholder="输入产品名称关键词搜索">
+            </div>
+            <div class="col-md-3 d-flex gap-2">
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="bi bi-search"></i> 筛选
+                </button>
+                {% if current_status_list or current_name_search %}
+                <a href="{{ url_for('requirement_list') }}" class="btn btn-sm btn-outline-secondary">
+                    <i class="bi bi-arrow-clockwise"></i> 重置
+                </a>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+// 小白讲解：状态多选下拉的辅助函数，全选/清除/更新徽章计数
+function selectAllStatus(checked) {
+    document.querySelectorAll('input[name="status"]').forEach(cb => cb.checked = checked);
+    updateStatusBadge();
+}
+function updateStatusBadge() {
+    // 这里不需要做任何事，徽章在页面加载时由后端数据渲染，筛选提交后刷新页面即可
+}
+</script>
+
+{% if requirements %}
+<form method="POST" action="{{ url_for('requirement_batch_delete') }}" id="batchForm">
+    <div class="card mb-3" id="batchBar" style="display:none;">
+        <div class="card-body py-2 d-flex align-items-center">
+            <span class="me-3"><i class="bi bi-check2-square"></i> 已选择 <strong id="selCount">0</strong> 项</span>
+            <button type="submit" class="btn btn-sm btn-danger"
+                    onclick="return confirm('确定批量删除选中的需求吗？\n关联的供应商、初筛记录和沟通记录也会一并删除，且不可恢复！')">
+                <i class="bi bi-trash"></i> 批量删除
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary ms-2" onclick="clearAll()">取消选择</button>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th width="40"><input type="checkbox" id="selectAll" onclick="toggleAll(this)"></th>
+                        <th width="50">ID</th>
+                        <th>产品名称</th>
+                        <th>需求关键词</th>
+                        <th>目标市场</th>
+                        <th>供应商数</th>
+                        <th>状态</th>
+                        <th>创建时间</th>
+                        <th width="150">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for req in requirements %}
+                    <tr>
+                        <td><input type="checkbox" name="requirement_ids" value="{{ req.id }}" onclick="onCheck()"></td>
+                        <td>{{ req.id }}</td>
+                        <td>
+                            <a href="{{ url_for('requirement_detail', id=req.id) }}">
+                                <strong>{{ req.product_name }}</strong>
+                            </a>
+                            {% if req.product_aliases %}<br><small class="text-muted">{{ req.product_aliases }}</small>{% endif %}
+                        </td>
+                        <td>
+                            {% if req.keywords %}
+                                {% set kw = req.keywords | from_json %}
+                                {% if kw and kw is mapping and kw.P0 %}
+                                    <span class="badge bg-danger">P0</span>
+                                    <small>{{ kw.P0.cn }}</small>
+                                {% else %}
+                                    <small>{{ req.keywords[:20] }}{% if req.keywords|length > 20 %}...{% endif %}</small>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ req.target_market or '-' }}</td>
+                        <td>
+                            <span class="badge bg-success">{{ req.supplier_count }}</span>
+                        </td>
+                        <td>
+                            {% if req.status == '需求确认中' %}
+                                <span class="badge bg-warning">{{ req.status }}</span>
+                            {% elif req.status == '寻源中' %}
+                                <span class="badge bg-info">{{ req.status }}</span>
+                            {% elif req.status == '已完成' %}
+                                <span class="badge bg-success">{{ req.status }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ req.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td><small>{{ req.created_at }}</small></td>
+                        <td>
+                            <a href="{{ url_for('requirement_detail', id=req.id) }}" class="action-link" title="查看">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                            <a href="{{ url_for('requirement_edit', id=req.id) }}" class="action-link" title="编辑">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            {# 小白讲解：删除按钮不能再用内嵌form（HTML禁止form嵌套，会被浏览器拆坏）
+                               改成普通button，把删除地址和产品名存在data属性里，点击后由JS提交到页面底部那个隐藏的deleteForm #}
+                            <button type="button" class="btn btn-sm btn-outline-danger" title="删除"
+                                    data-delete-url="{{ url_for('requirement_delete', id=req.id) }}"
+                                    data-delete-name="{{ req.product_name }}"
+                                    onclick="deleteItem(this)">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</form>
+{# 小白讲解：隐藏的删除表单，放在batchForm外面避免form嵌套（HTML禁止form互相嵌套）
+   删除按钮点击后，JS把action设为对应删除地址再提交这个空表单 #}
+<form id="deleteForm" method="POST" action=""></form>
+<script>
+// 小白讲解：删除按钮点击处理 - 从data属性读取删除地址和产品名，确认后提交隐藏表单
+function deleteItem(btn) {
+    var name = btn.dataset.deleteName;
+    if (!confirm('确定删除需求【' + name + '】吗？\n\n会同时删除关联的供应商、初筛记录和沟通记录，且不可恢复！')) return;
+    var form = document.getElementById('deleteForm');
+    form.action = btn.dataset.deleteUrl;
+    form.submit();
+}
+function toggleAll(master) {
+    document.querySelectorAll('input[name="requirement_ids"]').forEach(cb => cb.checked = master.checked);
+    onCheck();
+}
+function onCheck() {
+    const checks = document.querySelectorAll('input[name="requirement_ids"]:checked');
+    document.getElementById('selCount').textContent = checks.length;
+    document.getElementById('batchBar').style.display = checks.length > 0 ? '' : 'none';
+    const all = document.querySelectorAll('input[name="requirement_ids"]');
+    document.getElementById('selectAll').checked = all.length > 0 && checks.length === all.length;
+}
+function clearAll() {
+    document.querySelectorAll('input[name="requirement_ids"]').forEach(cb => cb.checked = false);
+    document.getElementById('selectAll').checked = false;
+    onCheck();
+}
+</script>
+{% else %}
+<div class="empty-state">
+    <div class="empty-state__icon"><i class="bi bi-inbox"></i></div>
+    <div class="empty-state__title">暂无采购需求</div>
+    <div class="empty-state__desc">点击上方"创建需求"按钮开始</div>
+</div>
+{% endif %}
+{% endblock %}

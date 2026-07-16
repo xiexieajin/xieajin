@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block title %}{% if edit %}编辑供应商{% else %}添加供应商{% endif %} - 供应商寻源系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title">
+        <i class="bi bi-{% if edit %}pencil-square{% else %}plus-circle{% endif %}"></i>
+        {% if edit %}编辑供应商信息{% else %}添加供应商{% endif %}
+    </h1>
+    <a href="{{ url_for('supplier_list') }}" class="back-link">
+        <i class="bi bi-arrow-left"></i> 返回列表
+    </a>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<form method="POST" action="{{ url_for('supplier_edit', id=data.id) if edit else url_for('supplier_create') }}">
+    {% if not edit %}
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-link"></i> 关联需求</div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label required">关联采购需求</label>
+                <select class="form-select" name="requirement_id" required>
+                    <option value="">请选择需求</option>
+                    {% for req in requirements %}
+                    <option value="{{ req.id }}" {{ 'selected' if data and data.requirement_id == req.id }}>
+                        {{ req.product_name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-building"></i> 基本信息</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label required">供应商名称</label>
+                    <input type="text" class="form-control" name="name"
+                           value="{{ data.name if data else '' }}" required>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">主营产品</label>
+                    <input type="text" class="form-control" name="main_product"
+                           value="{{ data.main_product if data else '' }}">
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">供应商简介</label>
+                <textarea class="form-control" name="intro" rows="2">{{ data.intro if data else '' }}</textarea>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">工厂地址</label>
+                <input type="text" class="form-control" name="factory_address"
+                       value="{{ data.factory_address if data else '' }}">
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-telephone"></i> 联系方式</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">邮箱</label>
+                    <input type="email" class="form-control" name="email"
+                           value="{{ data.email if data else '' }}">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">电话</label>
+                    <input type="text" class="form-control" name="phone"
+                           value="{{ data.phone if data else '' }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-award"></i> 资质与开发阶段</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">经营状态</label>
+                    <select class="form-select" name="operating_status">
+                        {% set current_status = data.operating_status if data else '存续' %}
+                        <option value="存续" {{ 'selected' if current_status == '存续' }}>存续</option>
+                        <option value="注销" {{ 'selected' if current_status == '注销' }}>注销</option>
+                        <option value="吊销" {{ 'selected' if current_status == '吊销' }}>吊销</option>
+                        <option value="停业" {{ 'selected' if current_status == '停业' }}>停业</option>
+                    </select>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">成立时间</label>
+                    <input type="text" class="form-control" name="establish_date"
+                           value="{{ data.establish_date if data else '' }}"
+                           placeholder="如：2015-03-12">
+                </div>
+                {% if edit %}
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">开发阶段</label>
+                    <select class="form-select" name="dev_stage">
+                        {% set current_stage = data.dev_stage if data else '已寻源待初筛' %}
+                        {% for stage in stages %}
+                        <option value="{{ stage }}" {{ 'selected' if current_stage == stage }}>
+                            {{ stage }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% else %}
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">来源</label>
+                    <select class="form-select" name="source">
+                        {% set current_source = data.source if data else '手动添加' %}
+                        <option value="手动添加" {{ 'selected' if current_source == '手动添加' }}>手动添加</option>
+                        <option value="1688" {{ 'selected' if current_source == '1688' }}>1688</option>
+                        <option value="Made-in-China" {{ 'selected' if current_source == 'Made-in-China' }}>Made-in-China</option>
+                        <option value="广交会" {{ 'selected' if current_source == '广交会' }}>广交会</option>
+                    </select>
+                </div>
+                {% endif %}
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <div class="form-check">
+                        <input type="checkbox" class="form-check-input" name="has_cross_border_exp" value="1"
+                               {{ 'checked' if data and data.has_cross_border_exp else '' }}>
+                        <label class="form-check-label">有跨境电商经验</label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="text-end mt-4">
+        <button type="submit" class="btn btn-{% if edit %}primary{% else %}success{% endif %} btn-lg">
+            <i class="bi bi-check-circle"></i> {% if edit %}保存修改{% else %}添加供应商{% endif %}
+        </button>
+        <a href="{{ url_for('supplier_list') }}" class="btn btn-outline-secondary btn-lg">取消</a>
+    </div>
+</form>
+{% endblock %}

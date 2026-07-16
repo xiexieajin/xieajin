@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}编辑场景配置 - 供应商寻源系统{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-pencil"></i> 编辑场景配置</h1>
+    <a href="{{ url_for('admin_config_list') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回列表
+    </a>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <form method="POST">
+                    <!-- 场景名称（只读） -->
+                    <div class="mb-3">
+                        <label class="form-label">场景名称</label>
+                        <input type="text" class="form-control" value="{{ config.scene_name }}" disabled>
+                        <small class="text-muted">场景代码：<code>{{ config.scene_code }}</code>（不可修改）</small>
+                    </div>
+
+                    <!-- 模型名 -->
+                    <div class="mb-3">
+                        <label class="form-label">模型名称 <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" name="model_name"
+                               value="{{ config.model_name }}" required>
+                        <small class="text-muted">如 deepseek-v4-pro、deepseek-v4-flash、glm-4v-flash</small>
+                    </div>
+
+                    <!-- 思考模式 -->
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" name="thinking_enabled" id="thinking_enabled"
+                               {% if config.thinking_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="thinking_enabled">启用思考模式</label>
+                        <small class="text-muted d-block">仅DeepSeek类模型有效，启用后AI会先推理再回复（更准但更慢）</small>
+                    </div>
+
+                    <!-- 思考强度 -->
+                    <div class="mb-3">
+                        <label class="form-label">思考强度</label>
+                        <select class="form-select" name="thinking_effort">
+                            <option value="high" {{ 'selected' if config.thinking_effort == 'high' or not config.thinking_effort }}>high（默认，平衡速度与准确度）</option>
+                            <option value="max" {{ 'selected' if config.thinking_effort == 'max' }}>max（最强推理，最慢最准）</option>
+                            <option value="medium" {{ 'selected' if config.thinking_effort == 'medium' }}>medium（中等）</option>
+                            <option value="low" {{ 'selected' if config.thinking_effort == 'low' }}>low（最快，准确度降低）</option>
+                        </select>
+                        <small class="text-muted">思考模式关闭时此项不生效</small>
+                    </div>
+
+                    <!-- 温度 -->
+                    <div class="mb-3">
+                        <label class="form-label">温度（temperature）</label>
+                        <input type="number" class="form-control" name="temperature"
+                               value="{{ config.temperature }}" step="0.1" min="0" max="2">
+                        <small class="text-muted">0=确定性输出，2=最随机。思考模式下忽略此参数</small>
+                    </div>
+
+                    <!-- 最大Token -->
+                    <div class="mb-3">
+                        <label class="form-label">最大输出Token</label>
+                        <input type="number" class="form-control" name="max_tokens"
+                               value="{{ config.max_tokens }}" min="256" max="32768" step="256">
+                        <small class="text-muted">控制AI回复的最大长度，过小可能截断，过大浪费费用</small>
+                    </div>
+
+                    <!-- 超时时间 -->
+                    <div class="mb-3">
+                        <label class="form-label">超时时间（秒）</label>
+                        <input type="number" class="form-control" name="timeout_seconds"
+                               value="{{ config.timeout_seconds }}" min="10" max="600" step="10">
+                        <small class="text-muted">AI调用超时时间，思考模式max建议300秒</small>
+                    </div>
+
+                    <!-- 启用状态 -->
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" name="is_enabled" id="is_enabled"
+                               {% if config.is_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="is_enabled">启用此场景</label>
+                        <small class="text-muted d-block">停用后，相关AI功能将不可用</small>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg"></i> 保存
+                    </button>
+                    <a href="{{ url_for('admin_config_list') }}" class="btn btn-outline-secondary">
+                        取消
+                    </a>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 侧边场景说明 -->
+    <div class="col-md-4">
+        <div class="card bg-light">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-info-circle"></i> 场景说明</h6>
+                <hr>
+                <p class="small mb-2"><strong>{{ config.scene_name }}</strong></p>
+                <p class="small mb-0 text-muted">
+                    {% if config.scene_code == 'req_parse' %}
+                        解析用户输入的需求文本/文档/图片，提取核心功能、材质、规格等结构化信息
+                    {% elif config.scene_code == 'keyword_gen' %}
+                        根据已确认的需求生成P0-P3分级搜索关键词及变体
+                    {% elif config.scene_code == 'auto_screening' %}
+                        对供应商做风险排查和资质核实并评分
+                    {% elif config.scene_code == 'supplier_translate' %}
+                        把MCP返回的英文公司名/关键词翻译成中文
+                    {% elif config.scene_code == 'supplier_filter_v2' %}
+                        从搜索结果中筛选符合条件的供应商（批量50家）
+                    {% elif config.scene_code == 'vision_ocr' %}
+                        智谱GLM-4V图片识别，把产品图片转成文字描述
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
