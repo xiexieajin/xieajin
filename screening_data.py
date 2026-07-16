@@ -252,6 +252,19 @@ def query_supplier_full_data(company_name, client=None):
                 break
 
         if not matched:
+            # 精确同名失败：如果是英文公司名，且天眼查返回了"英文名匹配"标识，
+            # 说明天眼查已经用英文名匹配到了对应的中文名公司，直接采用，不再做相似度比较。
+            # 小白讲解：初筛阶段如果供应商名是英文（例如MIC来源已被替换或保留英文），
+            # 天眼查会用英文名匹配到中文公司，并在"匹配类型"字段标注"英文名匹配"。
+            # 此时中文名和英文名字符串完全不同，相似度比较必然失败，必须直接采用天眼查的匹配结果。
+            for company in companies:
+                if company.get("match_type", "") == "英文名匹配":
+                    matched = company
+                    result["tyc_match_status"] = "english_name_match"
+                    print(f"[天眼查] 英文名匹配采用：'{company_name}' → '{company.get('name', '')}'")
+                    break
+
+        if not matched:
             # 精确匹配失败，做相似度校验
             best_ratio = 0
             best_company = None

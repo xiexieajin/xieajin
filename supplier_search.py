@@ -1158,6 +1158,10 @@ class TianyanchaClient:
                 "status": _get_cell("登记状态"),
                 "legal_person": _get_cell("法定代表人"),
                 "registered_capital": capital,
+                # 匹配类型：天眼查会告诉我们是怎么匹配到这家公司的，
+                # 例如"英文名匹配"表示用英文名查到了对应的中文名公司。
+                # 这个字段对MIC等英文公司名的匹配非常关键，后面匹配逻辑会用到。
+                "match_type": _get_cell("匹配类型"),
             })
         return companies
 
@@ -1991,7 +1995,18 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                 if company.get("name", "").strip() == name:
                     matched_company = company
                     break
-            # 2. 精确匹配失败：做公司名相似度校验，相似度>=0.6 才采用
+            # 2. 精确同名失败：如果是英文公司名，且天眼查返回了"英文名匹配"标识，
+            #    说明天眼查已经用英文名匹配到了对应的中文名公司，直接采用，不再做相似度比较。
+            #    小白讲解：MIC（Made-in-China）来的供应商都是英文名，天眼查自己会做英文→中文的匹配，
+            #    并在"匹配类型"字段里标注"英文名匹配"。这种情况下中文名和英文名字符串完全不同，
+            #    用相似度比较必然失败，所以必须直接采用天眼查的匹配结果。
+            if not matched_company:
+                for company in companies:
+                    if company.get("match_type", "") == "英文名匹配":
+                        matched_company = company
+                        print(f"天眼查英文名匹配采用：'{name}' → '{company.get('name', '')}'")
+                        break
+            # 3. 上面都没匹配上：做公司名相似度校验，相似度>=0.6 才采用
             if not matched_company and companies:
                 best_ratio = 0
                 best_company = None
