@@ -81,7 +81,16 @@ def _build_sort_query(field, current_order_by, current_sort):
 @app.before_request
 def before_request():
     """每次请求前：连接数据库、加载当前登录用户、做路由权限检查（Flask 自动调用）"""
-    g.db = get_db()
+    # 健康检查端点：不需要数据库连接，直接放行
+    if request.endpoint == "health":
+        return
+
+    try:
+        g.db = get_db()
+    except Exception as e:
+        print(f"[before_request] 数据库连接失败: {e}")
+        return "数据库连接失败，请稍后重试", 500
+
     g.current_user = None
     g.user_id = None
     # 小白讲解：从session中取user_id，查用户信息存入g.current_user供后续使用
