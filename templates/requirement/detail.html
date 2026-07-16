@@ -95,16 +95,20 @@
                     <div>
                         <div class="info-grid__label">状态</div>
                         <div class="info-grid__value">
-                            {# 小白讲解：需求状态徽章颜色
-                               已完成=成功(绿)、寻源中=进行中(蓝)、需求确认中=初筛阶段(黄)、其他=次要(灰) #}
+                            {# 小白讲解：5种需求状态用不同颜色徽章区分阶段
+                               黄=待开始 蓝=寻源 深蓝=初筛 灰=沟通 绿=完成 #}
                             {% if requirement.status == '需求确认中' %}
-                                <span class="badge bg-warning">{{ requirement.status }}</span>
+                                <span class="badge bg-warning text-dark">{{ requirement.status }}</span>
                             {% elif requirement.status == '寻源中' %}
-                                <span class="badge bg-info">{{ requirement.status }}</span>
+                                <span class="badge bg-info text-dark">{{ requirement.status }}</span>
+                            {% elif requirement.status == '初筛中' %}
+                                <span class="badge bg-primary">{{ requirement.status }}</span>
+                            {% elif requirement.status == '沟通中' %}
+                                <span class="badge bg-secondary">{{ requirement.status }}</span>
                             {% elif requirement.status == '已完成' %}
                                 <span class="badge bg-success">{{ requirement.status }}</span>
                             {% else %}
-                                <span class="badge bg-secondary">{{ requirement.status }}</span>
+                                <span class="badge bg-light text-dark">{{ requirement.status }}</span>
                             {% endif %}
                         </div>
                     </div>
@@ -166,6 +170,21 @@
             </div>
             <div class="card-body p-0">
                 {% if suppliers %}
+                {# 小白讲解：供应商阶段分布，一眼看出该需求当前进展到哪一步
+                   例如"已寻源待初筛 5 / 已通过初筛 3 / 沟通中 2"说明在初筛阶段 #}
+                <div class="px-3 py-2 border-bottom bg-light">
+                    <small class="text-muted d-block mb-1">供应商阶段分布</small>
+                    <div class="d-flex flex-wrap gap-1">
+                        {% for stage in supplier_stages %}
+                        {% set cnt = stage_stats.get(stage, 0) %}
+                        {% if cnt > 0 %}
+                        <span class="badge {% if stage == '已合作' %}bg-success{% elif stage == '已通过初筛' %}bg-warning text-dark{% elif stage == '沟通中' %}bg-info text-dark{% elif stage == '未通过初筛' %}bg-danger{% else %}bg-secondary{% endif %}">
+                            {{ stage }} {{ cnt }}
+                        </span>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
                 <div class="list-group list-group-flush">
                     {% for s in suppliers %}
                     <a href="{{ url_for('supplier_detail', id=s.id) }}" class="list-group-item list-group-item-action">

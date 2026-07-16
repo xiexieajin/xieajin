@@ -16,7 +16,7 @@ import queue
 import threading
 from functools import wraps
 import db
-from db import get_db, now_str, SUPPLIER_STAGES, REQUIREMENT_STATUSES, hash_password, verify_password
+from db import get_db, now_str, SUPPLIER_STAGES, REQUIREMENT_STATUSES, hash_password, verify_password, recalc_requirement_status
 from config import is_api_configured, is_vision_configured
 # 小白讲解：导入model_config模块用于启动时加载配置和修改后热更新
 import model_config
@@ -398,8 +398,16 @@ def requirement_detail(id):
     """, (id, *uid_params))
     suppliers = cursor.fetchall()
 
+    # 统计各开发阶段的供应商数量，让详情页一眼看出"该需求当前在哪个阶段"
+    stage_stats = {}
+    for s in suppliers:
+        stage = s["dev_stage"] or "未知"
+        stage_stats[stage] = stage_stats.get(stage, 0) + 1
+
     return render_template("requirement/detail.html",
-                           requirement=requirement, suppliers=suppliers)
+                           requirement=requirement, suppliers=suppliers,
+                           stage_stats=stage_stats, supplier_stages=SUPPLIER_STAGES,
+                           requirement_statuses=REQUIREMENT_STATUSES)
 
 
 @app.route("/requirements/<int:id>/edit", methods=["GET", "POST"])
@@ -439,20 +447,15 @@ def requirement_edit(id):
         """, (*data.values(), now_str(), id, *uid_params))
 
         # 需求状态变更时联动调整关联供应商的开发阶段（同样加uid过滤，避免改到别人的供应商）
+        # 小白讲解：手动改需求状态时，只在"已完成"做收尾（把还没初筛的供应商标记为未通过）。
+        # 其他状态不强行改供应商阶段——需求状态主要由供应商进度自动推断（见 recalc_requirement_status）。
         new_status = data["status"]
         if new_status == "已完成":
-            # 需求标记完成时：未通过初筛或无合作意向的供应商标记为"未通过初筛"
+            # 需求标记完成时：还没初筛的供应商收尾为"未通过初筛"，已通过/沟通中/已合作的保留
             uid_sql, uid_params = _uid_clause()
             cursor.execute(f"""
                 UPDATE suppliers SET dev_stage='未通过初筛', updated_at=%s
-                WHERE requirement_id=%s AND dev_stage IN ('已寻源待初筛') {uid_sql}
-            """, (now_str(), id, *uid_params))
-        elif new_status == "需求确认中":
-            # 需求退回确认中：所有供应商重置为"已寻源待初筛"
-            uid_sql, uid_params = _uid_clause()
-            cursor.execute(f"""
-                UPDATE suppliers SET dev_stage='已寻源待初筛', updated_at=%s
-                WHERE requirement_id=%s {uid_sql}
+                WHERE requirement_id=%s AND dev_stage = '已寻源待初筛' {uid_sql}
             """, (now_str(), id, *uid_params))
 
         g.db.commit()
@@ -466,7 +469,8 @@ def requirement_edit(id):
     if not requirement:
         return "需求不存在", 404
 
-    return render_template("requirement/form.html", data=requirement, edit=True)
+    return render_template("requirement/form.html", data=requirement, edit=True,
+                           requirement_statuses=REQUIREMENT_STATUSES)
 
 
 @app.route("/requirement/delete/<int:id>", methods=["POST"])
@@ -769,6 +773,8 @@ def supplier_create():
               data["main_product"], establish_years, data["establish_date"],
               data["operating_status"], data["has_cross_border_exp"],
               data["source"], now_str(), now_str(), g.user_id))
+        # 手动新增了供应商（默认"已寻源待初筛"），需求状态应推进到"寻源中"
+        recalc_requirement_status(cursor, data["requirement_id"])
         g.db.commit()
 
         return redirect(url_for("supplier_detail", id=cursor.lastrowid))
@@ -835,6 +841,11 @@ def supplier_edit(id):
               data["phone"], data["main_product"], establish_years, data["establish_date"],
               data["operating_status"], data["has_cross_border_exp"], data["dev_stage"],
               now_str(), id, *uid_params))
+        # 供应商开发阶段可能被手动改了，重新推断所属需求的状态
+        cursor.execute("SELECT requirement_id FROM suppliers WHERE id=%s", (id,))
+        _row = cursor.fetchone()
+        if _row:
+            recalc_requirement_status(cursor, _row["requirement_id"])
         g.db.commit()
 
         flash("供应商信息已更新", "success")
@@ -863,10 +874,11 @@ def supplier_delete(id):
     """
     cursor = g.db.cursor()
 
-    # 确认供应商存在（加uid过滤，普通用户只能删自己的）
+    # 确认供应商存在并取其所属需求ID（加uid过滤，普通用户只能删自己的）
     uid_sql, uid_params = _uid_clause()
-    cursor.execute(f"SELECT id FROM suppliers WHERE id = %s {uid_sql}", (id, *uid_params))
-    if not cursor.fetchone():
+    cursor.execute(f"SELECT id, requirement_id FROM suppliers WHERE id = %s {uid_sql}", (id, *uid_params))
+    sup_row = cursor.fetchone()
+    if not sup_row:
         flash("供应商不存在，无法删除", "danger")
         return redirect(url_for("supplier_list"))
 
@@ -878,6 +890,8 @@ def supplier_delete(id):
     # 删除供应商（加uid过滤，suppliers表有user_id列）
     uid_sql, uid_params = _uid_clause()
     cursor.execute(f"DELETE FROM suppliers WHERE id = %s {uid_sql}", (id, *uid_params))
+    # 供应商删了，所属需求的状态可能需要回退（如最后一个供应商被删→需求回到"需求确认中"）
+    recalc_requirement_status(cursor, sup_row["requirement_id"])
     g.db.commit()
 
     flash("供应商及其关联数据已删除", "success")
@@ -910,9 +924,15 @@ def supplier_batch_delete():
         return redirect(url_for("supplier_list"))
 
     cursor = g.db.cursor()
+    # 先查出这些供应商所属的需求ID（去重），删除后要重新推断这些需求的状态
+    placeholders = ",".join("%s" for _ in supplier_ids)
+    uid_sql, uid_params = _uid_clause()
+    cursor.execute(f"SELECT DISTINCT requirement_id FROM suppliers WHERE id IN ({placeholders}) {uid_sql}",
+                   (*supplier_ids, *uid_params))
+    affected_req_ids = [row["requirement_id"] for row in cursor.fetchall()]
+
     # 小白讲解：screenings/communications/audit_logs表没有user_id列，不加uid过滤。
     # supplier_id已唯一关联当前用户的供应商，不会误删。必须先删子表再删主表（外键约束）。
-    placeholders = ",".join("%s" for _ in supplier_ids)
     cursor.execute(f"DELETE FROM screening_audit_logs WHERE supplier_id IN ({placeholders})",
                    tuple(supplier_ids))
     cursor.execute(f"DELETE FROM screenings WHERE supplier_id IN ({placeholders})",
@@ -922,6 +942,9 @@ def supplier_batch_delete():
     uid_sql, uid_params = _uid_clause()
     cursor.execute(f"DELETE FROM suppliers WHERE id IN ({placeholders}) {uid_sql}",
                    (*supplier_ids, *uid_params))
+    # 批量删除后，重新推断每个受影响需求的状态
+    for rid in affected_req_ids:
+        recalc_requirement_status(cursor, rid)
     g.db.commit()
 
     flash(f"已批量删除 {len(supplier_ids)} 家供应商", "success")
@@ -994,6 +1017,8 @@ def screening_create(supplier_id):
         uid_sql, uid_params = _uid_clause()
         cursor.execute(f"UPDATE suppliers SET dev_stage=%s, updated_at=%s WHERE id=%s {uid_sql}",
                        (new_stage, now_str(), supplier_id, *uid_params))
+        # 供应商阶段变了，重新推断所属需求的状态（初筛完→需求可能进入"初筛中"）
+        recalc_requirement_status(cursor, supplier["requirement_id"])
         g.db.commit()
 
         return redirect(url_for("supplier_detail", id=supplier_id))
@@ -1091,6 +1116,8 @@ def screening_edit(supplier_id):
         uid_sql, uid_params = _uid_clause()
         cursor.execute(f"UPDATE suppliers SET dev_stage=%s, updated_at=%s WHERE id=%s {uid_sql}",
                        (new_stage, now_str(), supplier_id, *uid_params))
+        # 供应商阶段变了，重新推断所属需求的状态
+        recalc_requirement_status(cursor, supplier["requirement_id"])
         g.db.commit()
 
         return redirect(url_for("supplier_detail", id=supplier_id))
@@ -1282,7 +1309,7 @@ def ai_save_requirement():
 
     按需求确认SKILL逻辑：
     - 查重：按产品名称查，已存在则更新，不存在则新增
-    - 状态写为"已确认"
+    - 状态写为"寻源中"（需求已确认，准备开始寻源）
     - keywords存为P0-P3的JSON字符串
     """
     import json
@@ -1335,7 +1362,7 @@ def ai_save_requirement():
                 product_aliases=%s, core_functions=%s, material=%s, spec_size=%s,
                 first_purchase_qty=%s, acceptable_moq=%s, min_ship_qty=%s,
                 acceptable_lead_time=%s, target_market=%s, required_certs=%s,
-                requirement_summary=%s, keywords=%s, customization_req=%s, status='已确认', updated_at=%s
+                requirement_summary=%s, keywords=%s, customization_req=%s, status='寻源中', updated_at=%s
             WHERE id=%s {uid_sql}
         """, (data["product_aliases"], data["core_functions"], data["material"],
               data["spec_size"], data["first_purchase_qty"], data["acceptable_moq"],
@@ -1353,7 +1380,7 @@ def ai_save_requirement():
              first_purchase_qty, acceptable_moq, min_ship_qty, acceptable_lead_time,
              target_market, required_certs, requirement_summary, keywords, customization_req,
              status, created_at, updated_at, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '已确认', %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '寻源中', %s, %s, %s)
         """, (data["product_name"], data["product_aliases"], data["core_functions"],
               data["material"], data["spec_size"], data["first_purchase_qty"],
               data["acceptable_moq"], data["min_ship_qty"], data["acceptable_lead_time"],
@@ -1452,6 +1479,8 @@ def ai_search_suppliers(req_id):
                       s.get("has_cross_border_exp", 0),
                       now_str(), now_str(), user_id))
                 saved_count += 1
+            # 新增了供应商（都是"已寻源待初筛"），需求状态应从"需求确认中"推进到"寻源中"
+            recalc_requirement_status(cur, req_id)
             conn.commit()
 
             result = {

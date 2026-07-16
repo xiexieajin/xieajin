@@ -21,8 +21,15 @@ from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DAT
 # 供应商开发阶段（对应工作流5个阶段的第4步"供应商开发"）
 SUPPLIER_STAGES = ["已寻源待初筛", "已通过初筛", "沟通中", "已合作", "未通过初筛"]
 
-# 需求状态
-REQUIREMENT_STATUSES = ["需求确认中", "已确认", "已完成"]
+# 需求状态（5种，按业务流程顺序排列，与供应商开发阶段联动）
+# 小白讲解：需求状态会根据该需求下供应商的整体进度自动推断，取"最靠后"的阶段。
+# 对应关系：
+#   需求确认中 → 无供应商
+#   寻源中     → 有供应商，且全部是"已寻源待初筛"
+#   初筛中     → 出现"已通过初筛"或"未通过初筛"
+#   沟通中     → 出现"沟通中"
+#   已完成     → 出现"已合作"（终态，一旦设为已完成不会自动回退）
+REQUIREMENT_STATUSES = ["需求确认中", "寻源中", "初筛中", "沟通中", "已完成"]
 
 # ==================== 用户系统相关常量 ====================
 # 初始管理员账号（首次启动时自动创建，用户要求固定为此账号）
@@ -63,6 +70,68 @@ def now_str():
     """返回当前时间的字符串格式（如"2026-07-15 14:30:00"）"""
     from datetime import datetime
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def recalc_requirement_status(cursor, requirement_id):
+    """
+    根据需求下所有供应商的开发阶段分布，重新推断并更新需求状态。
+
+    小白讲解：需求状态不是写死的，而是看这个需求下的供应商整体走到哪一步了。
+    取"最靠后"的阶段作为需求状态。规则：
+      - 有"已合作"                → 已完成
+      - 当前已是"已完成"          → 已完成（终态，不自动回退，要回退需用户手动改）
+      - 有"沟通中"                → 沟通中
+      - 有"已通过初筛"或"未通过初筛" → 初筛中
+      - 有"已寻源待初筛"          → 寻源中
+      - 无供应商                  → 保持当前状态（不回退）
+        原因："需求确认中"和"寻源中"的差别在于需求是否已确认，不在于有没有供应商。
+        AI确认保存会设为"寻源中"，此时还没供应商；不应被本函数回退成"需求确认中"。
+
+    参数：
+        cursor: 已打开的数据库游标（pymysql DictCursor）
+        requirement_id: 需求ID
+    返回：新的状态字符串；需求不存在时返回 None
+    """
+    cursor.execute("SELECT status FROM requirements WHERE id=%s", (requirement_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    current_status = row["status"]
+
+    # 统计该需求下各开发阶段的供应商数量
+    cursor.execute(
+        "SELECT dev_stage, COUNT(*) AS cnt FROM suppliers WHERE requirement_id=%s GROUP BY dev_stage",
+        (requirement_id,)
+    )
+    stage_counts = {r["dev_stage"]: int(r["cnt"]) for r in cursor.fetchall()}
+
+    has_cooperated = stage_counts.get("已合作", 0) > 0
+    has_communicating = stage_counts.get("沟通中", 0) > 0
+    has_screened = (stage_counts.get("已通过初筛", 0) + stage_counts.get("未通过初筛", 0)) > 0
+    has_pending = stage_counts.get("已寻源待初筛", 0) > 0
+    total_suppliers = sum(stage_counts.values())
+
+    if has_cooperated:
+        new_status = "已完成"
+    elif current_status == "已完成":
+        # 已完成是终态：不因供应商变化自动回退，用户手动改回才生效
+        new_status = "已完成"
+    elif has_communicating:
+        new_status = "沟通中"
+    elif has_screened:
+        new_status = "初筛中"
+    elif has_pending or total_suppliers > 0:
+        new_status = "寻源中"
+    else:
+        # 无供应商：保持当前状态（不回退，区分"需求确认中"和"寻源中"）
+        new_status = current_status or "需求确认中"
+
+    if new_status != current_status:
+        cursor.execute(
+            "UPDATE requirements SET status=%s, updated_at=%s WHERE id=%s",
+            (new_status, now_str(), requirement_id)
+        )
+    return new_status
 
 
 # ==================== 密码哈希工具（用Python标准库，无需安装bcrypt）====================
@@ -165,7 +234,7 @@ def init_db():
         customization_req   TEXT,                              -- 定制化要求（长文本）
         requirement_summary TEXT,                              -- AI生成的完整需求总结（长文本）
         keywords            TEXT,                              -- AI生成的P0-P3关键词（JSON格式，可能很长）
-        status              VARCHAR(50) DEFAULT '需求确认中', -- 状态：需求确认中/已确认/已完成
+        status              VARCHAR(50) DEFAULT '需求确认中', -- 状态：需求确认中/寻源中/初筛中/沟通中/已完成
         created_at          TEXT NOT NULL,
         updated_at          TEXT NOT NULL
     )

@@ -133,14 +133,20 @@ function updateStatusBadge() {
                             <span class="badge bg-success">{{ req.supplier_count }}</span>
                         </td>
                         <td>
+                            {# 小白讲解：5种需求状态用不同颜色徽章区分阶段
+                               黄=待开始 蓝=寻源 深蓝=初筛 灰=沟通 绿=完成 #}
                             {% if req.status == '需求确认中' %}
-                                <span class="badge bg-warning">{{ req.status }}</span>
+                                <span class="badge bg-warning text-dark">{{ req.status }}</span>
                             {% elif req.status == '寻源中' %}
-                                <span class="badge bg-info">{{ req.status }}</span>
+                                <span class="badge bg-info text-dark">{{ req.status }}</span>
+                            {% elif req.status == '初筛中' %}
+                                <span class="badge bg-primary">{{ req.status }}</span>
+                            {% elif req.status == '沟通中' %}
+                                <span class="badge bg-secondary">{{ req.status }}</span>
                             {% elif req.status == '已完成' %}
                                 <span class="badge bg-success">{{ req.status }}</span>
                             {% else %}
-                                <span class="badge bg-secondary">{{ req.status }}</span>
+                                <span class="badge bg-light text-dark">{{ req.status }}</span>
                             {% endif %}
                         </td>
                         <td><small>{{ req.created_at }}</small></td>

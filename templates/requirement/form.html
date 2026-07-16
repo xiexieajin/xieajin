@@ -125,22 +125,58 @@
                 <textarea class="form-control" name="requirement_summary" rows="3"
                           placeholder="完整的需求描述，用于后续供应商搜索">{{ data.requirement_summary if data else '' }}</textarea>
             </div>
-            <div class="mb-3">
-                <label class="form-label">需求关键词</label>
-                <input type="text" class="form-control" name="keywords"
-                       value="{{ data.keywords if data else '' }}"
-                       placeholder="用于搜索供应商的关键词，逗号分隔。如：蓝牙音箱,防水,便携">
-            </div>
+
+            {# 小白讲解：关键词按 P0-P3 分级分开编辑，每个关键词分中文/英文两栏
+               提交时由底部JS把所有输入框收集成JSON，写入隐藏域 keywords，后端存储格式不变 #}
+            {% if data and data.keywords %}
+                {% set kw = data.keywords | from_json %}
+            {% else %}
+                {% set kw = none %}
+            {% endif %}
+            {# 兼容旧数据：如果是逗号分隔的纯字符串（非JSON），塞到 P0 中文栏 #}
+            {% set legacy_text = (data.keywords if data and data.keywords and not kw else '') %}
+
+            <label class="form-label">需求关键词（P0-P3 分级）</label>
+            <input type="hidden" name="keywords" id="id_keywords">
+            <table class="table table-sm table-borderless align-middle mb-2">
+                <thead class="table-light">
+                    <tr><th width="100">分级</th><th>中文关键词</th><th>英文关键词</th></tr>
+                </thead>
+                <tbody id="kwTable">
+                    {% for key, label, badge_cls in [
+                        ['P0','P0 最精准','bg-danger'],
+                        ['P1_1','P1-1','bg-warning text-dark'],
+                        ['P1_2','P1-2','bg-warning text-dark'],
+                        ['P2_1','P2-1','bg-info text-dark'],
+                        ['P2_2','P2-2','bg-info text-dark'],
+                        ['P3_1','P3-1','bg-success'],
+                        ['P3_2','P3-2','bg-success']
+                    ] %}
+                    {% set item = kw[key] if kw else none %}
+                    <tr>
+                        <td><span class="badge {{ badge_cls }}">{{ label }}</span></td>
+                        <td><input type="text" class="form-control form-control-sm kw-cn" data-key="{{ key }}"
+                                   value="{{ item.cn if item else (legacy_text if key == 'P0' else '') }}"
+                                   placeholder="中文关键词"></td>
+                        <td><input type="text" class="form-control form-control-sm kw-en" data-key="{{ key }}"
+                                   value="{{ item.en if item else '' }}"
+                                   placeholder="英文关键词"></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <small class="text-muted">P0 最精准匹配；P1 高匹配核心产品；P2 关键特征扩展；P3 模糊扩展。留空则不保存该级。</small>
+
             {% if edit %}
-            <div class="mb-3">
+            <div class="mt-3">
                 <label class="form-label">需求状态</label>
                 <select class="form-select" name="status">
                     {% set current_status = data.status if data else '需求确认中' %}
-                    <option value="需求确认中" {{ 'selected' if current_status == '需求确认中' }}>需求确认中</option>
-                    <option value="寻源中" {{ 'selected' if current_status == '寻源中' }}>寻源中</option>
-                    <option value="已完成" {{ 'selected' if current_status == '已完成' }}>已完成</option>
+                    {% for st in requirement_statuses %}
+                    <option value="{{ st }}" {{ 'selected' if current_status == st }}>{{ st }}</option>
+                    {% endfor %}
                 </select>
-                <small class="text-muted">标记"已完成"时，未初筛的供应商将自动设为"未通过初筛"</small>
+                <small class="text-muted">需求状态通常由系统根据供应商进度自动更新。手动标记"已完成"时，未初筛的供应商将自动设为"未通过初筛"。</small>
             </div>
             {% endif %}
         </div>
@@ -153,4 +189,29 @@
         <a href="{{ url_for('requirement_list') }}" class="btn btn-outline-secondary btn-lg">取消</a>
     </div>
 </form>
+
+<script>
+// 小白讲解：表单提交前，把P0-P3各行的中文/英文输入框收集成JSON，写到隐藏域keywords
+// 这样后端拿到的还是原来的JSON字符串格式，存储和后续搜索逻辑都不用改
+(function() {
+    var form = document.querySelector('form');
+    form.addEventListener('submit', function() {
+        var obj = {};
+        document.querySelectorAll('#kwTable tr').forEach(function(tr) {
+            var cnInput = tr.querySelector('.kw-cn');
+            var enInput = tr.querySelector('.kw-en');
+            if (!cnInput && !enInput) return;
+            var key = (cnInput || enInput).dataset.key;
+            var cn = cnInput ? cnInput.value.trim() : '';
+            var en = enInput ? enInput.value.trim() : '';
+            // 中文或英文任一有值就保存该级；都空则跳过（不存该级）
+            if (cn || en) {
+                obj[key] = { cn: cn, en: en };
+            }
+        });
+        // 全部为空时存空字符串，和旧行为一致（避免存"{}"影响后续搜索）
+        document.getElementById('id_keywords').value = Object.keys(obj).length ? JSON.stringify(obj) : '';
+    });
+})();
+</script>
 {% endblock %}
