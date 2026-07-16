@@ -1,0 +1,6 @@
+[build]
+# Railpack 自动检测Python项目，指定启动命令
+[deploy]
+startCommand = "python app.py"
+healthcheckPath = "/health"
+restartPolicyType = "always"

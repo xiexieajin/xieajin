@@ -62,8 +62,8 @@ def extract_urls(text):
     seen = set()
     urls = []
     for url in matches:
-        # 去掉末尾可能带的中英文标点（句号、逗号、括号等，避免污染URL）
-        clean_url = url.rstrip(".,);:!?。，；：）】》」』\"'")
+        # 去掉末尾可能带的中英文标点和反引号（Markdown代码块标记，避免污染URL）
+        clean_url = url.rstrip(".,);:!?。，；：）】》」』\"'`")
         if clean_url not in seen:
             seen.add(clean_url)
             urls.append(clean_url)
@@ -77,23 +77,34 @@ def fetch_url_content(url):
     小白讲解：访问用户给的链接，把网页下载下来，去掉导航栏、广告、脚本等无关内容，
     只保留正文文字，这样AI拿到的是干净的产品/规格信息，不会被网页杂讯干扰。
 
-    处理步骤：
-    1. 用requests下载网页HTML
-    2. 用BeautifulSoup解析HTML结构
-    3. 删除script、style、nav、footer等非正文标签
-    4. 提取纯文本，压缩多余空行
-    5. 截断到_MAX_CONTENT_PER_URL字数以内
+    针对亚马逊等有反爬机制的网站，做了三层保障：
+    1. 用完整的浏览器请求头伪装（User-Agent + Accept + Referer等）
+    2. 如果正文太短（说明被反爬拦截），尝试从URL本身提取产品关键词线索
+    3. 把URL链接也一并保留给AI，让AI至少知道用户参考的是哪个产品
 
     参数：
         url: 要抓取的网页链接
 
-    返回：网页正文文字（字符串）。抓取失败时返回空字符串，不抛异常，避免中断主流程。
+    返回：网页正文文字（字符串）。抓取失败时返回带失败说明的短文本，不抛异常，避免中断主流程。
     """
     try:
-        # 下载网页，带上浏览器身份标识，设置超时
+        # 完整的浏览器请求头伪装，降低被反爬拦截的概率
+        # （亚马逊等网站会检查Accept、Accept-Language、Referer等头部，缺失会被识别为机器人）
+        headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+        }
         resp = requests.get(
             url,
-            headers={"User-Agent": _USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
+            headers=headers,
             timeout=_FETCH_TIMEOUT,
             allow_redirects=True,
         )
@@ -121,6 +132,12 @@ def fetch_url_content(url):
         # 压缩连续空行为最多2个换行
         text = re.sub(r"\n{3,}", "\n\n", text)
 
+        # 反爬兜底：如果正文太短（少于200字），很可能是被反爬拦截了（如亚马逊的"continue shopping"页）
+        # 此时尝试从URL路径本身提取产品关键词线索，至少让AI知道用户参考的是什么产品
+        if len(text.strip()) < 200:
+            url_hint = _extract_product_hint_from_url(url)
+            text = f"（该网站有反爬机制，无法直接抓取正文）\n参考URL: {url}\nURL产品线索: {url_hint}"
+
         # 组装：标题 + 正文
         if title:
             text = f"【网页标题】{title}\n\n【正文内容】\n{text}"
@@ -132,8 +149,42 @@ def fetch_url_content(url):
         return text
 
     except Exception as e:
-        # 抓取失败不中断主流程，返回带失败说明的短文本，方便后续日志记录
-        return f"【抓取失败】{url} - 原因: {str(e)[:100]}"
+        # 抓取失败不中断主流程，返回带失败说明的短文本，并附上URL产品线索
+        url_hint = _extract_product_hint_from_url(url)
+        return f"【抓取失败】{url} - 原因: {str(e)[:100]}\nURL产品线索: {url_hint}"
+
+
+def _extract_product_hint_from_url(url):
+    """
+    从URL路径中提取产品关键词线索
+
+    小白讲解：当网站有反爬机制抓不到正文时，URL路径里往往藏有产品信息。
+    比如亚马逊链接 .../Muwuele-Overbed-Adjustable-Hospital-Standing/dp/B0DWJ5FY8P/...
+    我们把"Muwuele-Overbed-Adjustable-Hospital-Standing"这段提取出来，用横线拆成关键词，
+    至少能让AI知道用户参考的产品大概是什么。
+
+    参数：
+        url: 网页链接
+
+    返回：从URL路径提取的产品关键词字符串（用空格分隔）。提取不到则返回"无"。
+    """
+    try:
+        # 去掉查询参数（?后面的部分），只看路径部分
+        path = url.split("?")[0]
+        # 用斜杠分割路径，找出最长的段落（通常是产品标题的slug）
+        segments = path.split("/")
+        # 过滤掉短段落和纯数字/字母代码（如dp、B0DWJ5FY8P这类ASIN码）
+        candidates = []
+        for seg in segments:
+            # 段落要够长，且包含横线（产品标题slug用横线连接单词）
+            if len(seg) > 8 and "-" in seg:
+                # 把横线连接的标题拆成单词，过滤掉纯数字段
+                words = [w for w in seg.split("-") if w and not w.isdigit() and len(w) > 1]
+                if words:
+                    candidates.append(" ".join(words))
+        return candidates[0] if candidates else "无"
+    except Exception:
+        return "无"
 
 
 def fetch_urls_from_text(text):
