@@ -99,8 +99,9 @@ def fetch_url_content(url):
 
         if not html:
             # 两种方式都失败，走URL线索兜底
-            url_hint = _extract_product_hint_from_url(url)
-            return f"（该网站有反爬机制，无法直接抓取正文）\n参考URL: {url}\nURL产品线索: {url_hint}"
+            # 小白讲解：以前只返回一句"反爬无法抓取"，AI看到不知道怎么提取。
+            # 现在把URL线索伪装成亚马逊产品页的结构化格式，AI就能按同样逻辑提取。
+            return _build_url_hint_product_info(url)
 
         # 用BeautifulSoup解析HTML
         soup = BeautifulSoup(html, "html.parser", from_encoding="utf-8")
@@ -128,8 +129,7 @@ def fetch_url_content(url):
 
         # 反爬兜底：如果正文太短（少于200字），很可能是被反爬拦截了
         if len(text.strip()) < 200:
-            url_hint = _extract_product_hint_from_url(url)
-            text = f"（该网站有反爬机制，无法直接抓取正文）\n参考URL: {url}\nURL产品线索: {url_hint}"
+            return _build_url_hint_product_info(url)
 
         # 组装：标题 + 正文
         if title:
@@ -346,6 +346,42 @@ def _extract_product_hint_from_url(url):
         return candidates[0] if candidates else "无"
     except Exception:
         return "无"
+
+
+def _build_url_hint_product_info(url):
+    """
+    当无法抓取亚马逊网页正文时，用URL路径中的关键词线索拼成结构化产品信息
+
+    小白讲解：这是兜底方案。当亚马逊反爬拦截（curl不可用+requests被挡）时，
+    网页正文拿不到，但从URL路径里能提取产品关键词（如"Overbed-Adjustable-Hospital"）。
+    把这些关键词伪装成和_extract_amazon_product_info一样的格式块，
+    AI就能按同样的提取逻辑处理，不会因为格式不匹配而忽略这些线索。
+
+    参数：
+        url: 亚马逊产品页链接
+    返回：伪装成亚马逊提取格式的结构化文本
+    """
+    url_hint = _extract_product_hint_from_url(url)
+
+    # 把URL线索关键词按空格拆成单个词，帮AI更容易识别产品属性
+    # 例如 "Muwuele Overbed Adjustable Hospital Standing" →
+    #      ["Muwuele", "Overbed", "Adjustable", "Hospital", "Standing"]
+    hint_words = url_hint.split() if url_hint and url_hint != "无" else []
+
+    # 构造和亚马逊提取格式一致的输出
+    parts = []
+    if hint_words:
+        # 产品标题用URL线索拼成，加上[URL线索]标记让AI知道数据来源
+        parts.append(f"【产品标题】{url_hint}（来源：URL路径提取，产品页正文无法直接获取）")
+        # 把关键词列成产品特性，方便AI逐项分析
+        parts.append("【产品特性 - 从URL路径关键词提取】")
+        for word in hint_words:
+            parts.append(f"- 关键词：{word}")
+    else:
+        parts.append(f"【产品标题】URL路径无法提取有效关键词，请参考完整链接")
+    parts.append(f"【参考来源】{url}")
+
+    return "\n".join(parts)
 
 
 def _is_amazon_url(url):
@@ -646,6 +682,14 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 - 技术规格/产品参数：从中提取精确的尺寸、重量、材质等参数
 - 产品描述：补充提取其他产品特征
 提取时请综合网页内容与用户文字描述，网页中的产品信息优先级较高（因为是实际产品参考）。
+
+【重要：URL线索模式处理】
+如果网页内容区块中出现"URL路径提取"或"URL路径关键词"等字样，说明系统无法获取产品页全文，
+只从URL路径中提取了关键词线索。这种情况下：
+- 产品标题：使用URL线索中的产品关键词作为产品名称（这些关键词来自亚马逊产品页的URL标题段，是真实产品名）
+- 核心功能/材质/规格：从URL关键词中推断，无法推断的留空（不要编造）
+- 确认状态：所有能从URL线索推断的字段都正常填写，无法推断的必须字段标记为missing
+- 不要因为"无法抓取正文"就把整个需求放弃，URL线索中的关键词是有效的产品参考信息
 如果网页内容提示"非亚马逊链接"或"仅支持亚马逊链接"，请在other_requirements中提醒用户改贴亚马逊产品链接。
 
 【提取规则】
