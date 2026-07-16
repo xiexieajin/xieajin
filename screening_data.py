@@ -334,6 +334,7 @@ def query_supplier_full_data(company_name, client=None):
 
     except Exception as e:
         result["error"] = str(e)
+        print(f"[初筛] 天眼查查询异常({company_name}): {e}")
     finally:
         if own_client:
             pass  # 连接由GC回收，无需显式关闭

@@ -988,22 +988,34 @@ class TianyanchaClient:
         if not self.mcp_url:
             print("天眼查MCP地址未配置，跳过调用（请在管理中心配置tianyancha服务商的base_url）")
             return None
-        resp = requests.post(self.mcp_url, headers=self.headers, json=payload, timeout=30)
+        try:
+            resp = requests.post(self.mcp_url, headers=self.headers, json=payload, timeout=30)
 
-        # 通知类消息没有响应体
-        if msg_id is None:
+            # 检查HTTP状态码：非2xx时记录错误并返回None（之前无此检查，401等情况会抛JSON解析异常）
+            if resp.status_code >= 400:
+                print(f"天眼查MCP返回HTTP {resp.status_code}: {resp.text[:300]}")
+                return None
+
+            # 通知类消息没有响应体
+            if msg_id is None:
+                return None
+
+            # 解析响应（可能是JSON或SSE格式）
+            ct = resp.headers.get("content-type", "")
+            if "event-stream" in ct:
+                for line in resp.text.split("\n"):
+                    if line.startswith("data: ") and line[6:].strip():
+                        return json.loads(line[6:].strip())
+            else:
+                if resp.text.strip():
+                    return resp.json()
             return None
-
-        # 解析响应（可能是JSON或SSE格式）
-        ct = resp.headers.get("content-type", "")
-        if "event-stream" in ct:
-            for line in resp.text.split("\n"):
-                if line.startswith("data: ") and line[6:].strip():
-                    return json.loads(line[6:].strip())
-        else:
-            if resp.text.strip():
-                return resp.json()
-        return None
+        except requests.exceptions.RequestException as e:
+            print(f"天眼查MCP请求失败({method}): {e}")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"天眼查MCP响应解析失败({method}): {e}")
+            return None
 
     def initialize(self):
         """初始化MCP连接，获取session ID"""
