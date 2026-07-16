@@ -72,28 +72,29 @@ def extract_urls(text):
 
 def fetch_url_content(url):
     """
-    抓取单个网页的正文内容
+    抓取单个网页的正文内容（专门针对亚马逊产品页优化）
 
-    小白讲解：访问用户给的链接，把网页下载下来，去掉导航栏、广告、脚本等无关内容，
-    只保留正文文字，这样AI拿到的是干净的产品/规格信息，不会被网页杂讯干扰。
+    小白讲解：访问用户给的亚马逊链接，把网页下载下来，重点提取产品采购寻源需要的信息：
+    产品标题、品牌、材质、尺寸规格、产品特性（About this item）、技术参数等。
+    去掉导航栏、广告、脚本等无关内容，让AI拿到干净的产品信息。
 
-    针对亚马逊等有反爬机制的网站，做了三层保障：
-    1. 用完整的浏览器请求头伪装（User-Agent + Accept + Referer等）
-    2. 如果正文太短（说明被反爬拦截），尝试从URL本身提取产品关键词线索
-    3. 把URL链接也一并保留给AI，让AI至少知道用户参考的是哪个产品
+    针对亚马逊反爬机制，做了以下处理：
+    1. 用完整的浏览器请求头伪装，Accept-Language用英文优先（调研证实英文请求头更稳定）
+    2. 优先提取亚马逊专用元素（productTitle、feature-bullets、productDetails等）
+    3. 如果被反爬拦截（正文太短），从URL路径提取产品关键词作为兜底线索
 
     参数：
-        url: 要抓取的网页链接
+        url: 要抓取的亚马逊产品页链接
 
     返回：网页正文文字（字符串）。抓取失败时返回带失败说明的短文本，不抛异常，避免中断主流程。
     """
     try:
-        # 完整的浏览器请求头伪装，降低被反爬拦截的概率
-        # （亚马逊等网站会检查Accept、Accept-Language、Referer等头部，缺失会被识别为机器人）
+        # 完整的浏览器请求头伪装
+        # 关键：Accept-Language用en-US英文优先，亚马逊对中文请求头反爬更严格
         headers = {
             "User-Agent": _USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",  # 英文优先，亚马逊反爬更宽松
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
@@ -111,29 +112,34 @@ def fetch_url_content(url):
         # 检查是否下载成功（非2xx状态码视为失败）
         resp.raise_for_status()
 
-        # 用BeautifulSoup解析HTML（不指定编码，让库自动从meta标签判断）
+        # 用BeautifulSoup解析HTML
         soup = BeautifulSoup(resp.content, "html.parser", from_encoding=resp.apparent_encoding)
 
         # 删除所有非正文标签（脚本、样式、导航、页脚、头部、侧边栏等）
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe", "form"]):
             tag.decompose()
 
-        # 优先取网页标题（产品名/规格页标题很有价值）
+        # 优先取网页标题（亚马逊标题含完整产品名+规格+颜色等关键信息）
         title = soup.title.get_text(strip=True) if soup.title else ""
 
-        # 提取正文文本：优先用<main>或<article>标签，没有就取<body>
-        main = soup.find("main") or soup.find("article") or soup.body or soup
-        # 用分隔符把各块文字拼起来，并压缩连续空白
-        text = main.get_text(separator="\n", strip=True)
-        # 兜底清理：用正则删除残留的<style>...</style>和<script>...</script>文本
-        # （部分网页的style标签内容会被get_text误当正文提取，需要额外清理）
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
-        # 压缩连续空行为最多2个换行
-        text = re.sub(r"\n{3,}", "\n\n", text)
+        # 亚马逊专用信息提取：优先抓取产品采购寻源需要的关键区域
+        # 这些是亚马逊产品页的标准元素ID/class，包含最有价值的产品信息
+        product_info = _extract_amazon_product_info(soup)
 
-        # 反爬兜底：如果正文太短（少于200字），很可能是被反爬拦截了（如亚马逊的"continue shopping"页）
-        # 此时尝试从URL路径本身提取产品关键词线索，至少让AI知道用户参考的是什么产品
+        if product_info:
+            # 成功提取到亚马逊专用信息，直接用结构化内容
+            text = product_info
+        else:
+            # 通用提取：优先用<main>或<article>标签，没有就取<body>
+            main = soup.find("main") or soup.find("article") or soup.body or soup
+            text = main.get_text(separator="\n", strip=True)
+            # 兜底清理残留的<style>/<script>文本
+            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+
+        # 反爬兜底：如果正文太短（少于200字），很可能是被反爬拦截了
+        # 此时从URL路径本身提取产品关键词线索，至少让AI知道用户参考的是什么产品
         if len(text.strip()) < 200:
             url_hint = _extract_product_hint_from_url(url)
             text = f"（该网站有反爬机制，无法直接抓取正文）\n参考URL: {url}\nURL产品线索: {url_hint}"
@@ -152,6 +158,107 @@ def fetch_url_content(url):
         # 抓取失败不中断主流程，返回带失败说明的短文本，并附上URL产品线索
         url_hint = _extract_product_hint_from_url(url)
         return f"【抓取失败】{url} - 原因: {str(e)[:100]}\nURL产品线索: {url_hint}"
+
+
+def _extract_amazon_product_info(soup):
+    """
+    从亚马逊产品页HTML中提取采购寻源需要的关键产品信息
+
+    小白讲解：亚马逊产品页有标准的结构，产品标题、品牌、特性、规格表都在固定的HTML元素里。
+    这个函数专门把这些有价值的元素一个个找出来，拼成结构化文本给AI，
+    比通用提取更精准，能拿到：产品标题、品牌、About this item卖点、技术规格表等。
+
+    提取的关键区域（按采购寻源价值排序）：
+    1. 产品标题（#productTitle / #title）- 含完整产品名+规格+颜色
+    2. 品牌信息（#bylineInfo / a#bylineInfo）- 品牌名
+    3. 产品特性（#feature-bullets）- About this item 卖点，常含材质/尺寸/功能
+    4. 产品详情表（#productDetails_techSpec_section / #detailBulletsWrapper）- 规格参数表
+    5. 产品描述（#productDescription）- 详细描述
+
+    参数：
+        soup: BeautifulSoup解析后的HTML对象
+
+    返回：结构化的产品信息文本。提取不到任何信息时返回空字符串（回退到通用提取）。
+    """
+    sections = []
+
+    # 1. 产品标题（亚马逊最重要的字段，含完整产品名+尺寸+材质+颜色等）
+    title_elem = soup.find(id="productTitle") or soup.find(id="title")
+    if title_elem:
+        product_title = title_elem.get_text(strip=True)
+        if product_title:
+            sections.append(f"【产品标题】{product_title}")
+
+    # 2. 品牌信息（找供应商时品牌是有价值的参考）
+    brand_elem = soup.find(id="bylineInfo") or soup.select_one("a#bylineInfo")
+    if brand_elem:
+        brand_text = brand_elem.get_text(strip=True)
+        # 去掉"Visit the xxx Store"等前缀，只留品牌名
+        brand_text = re.sub(r"(?i)visit\s+the\s+", "", brand_text)
+        brand_text = re.sub(r"(?i)\s+store$", "", brand_text)
+        brand_text = re.sub(r"(?i)^brand:\s*", "", brand_text)
+        if brand_text:
+            sections.append(f"【品牌】{brand_text}")
+
+    # 3. 产品特性/卖点（About this item，常含材质、尺寸、功能等寻源关键信息）
+    feature_elem = soup.find(id="feature-bullets")
+    if feature_elem:
+        # 提取每个卖点条目
+        bullets = feature_elem.find_all("li", class_=re.compile(".*", re.I))
+        features = []
+        for b in bullets:
+            txt = b.get_text(strip=True)
+            # 过滤掉空的和"Show more"等无意义内容
+            if txt and len(txt) > 3 and "show more" not in txt.lower() and "show less" not in txt.lower():
+                features.append(f"- {txt}")
+        if features:
+            sections.append("【产品特性 About this item】\n" + "\n".join(features))
+
+    # 4. 产品详情/技术规格表（含尺寸、重量、材质等精确参数）
+    # 亚马逊有两种规格表格式：table格式和bullet格式
+    tech_spec = soup.find(id="productDetails_techSpec_section_1") or soup.find(id="productDetails_techSpec_section_2")
+    if tech_spec:
+        rows = tech_spec.find_all("tr")
+        specs = []
+        for row in rows:
+            cells = row.find_all(["th", "td"])
+            if len(cells) >= 2:
+                key = cells[0].get_text(strip=True)
+                val = cells[1].get_text(strip=True)
+                if key and val:
+                    specs.append(f"- {key}: {val}")
+        if specs:
+            sections.append("【技术规格 Product Details】\n" + "\n".join(specs))
+
+    # bullet格式的规格表
+    detail_bullets = soup.find(id="detailBulletsWrapper_feature_div") or soup.find(id="detailBullets_feature_div")
+    if detail_bullets:
+        bullets = detail_bullets.find_all("li")
+        specs2 = []
+        for b in bullets:
+            txt = b.get_text(separator=" ", strip=True)
+            # 清理多余空白
+            txt = re.sub(r"\s+", " ", txt)
+            if txt and len(txt) > 3:
+                specs2.append(f"- {txt}")
+        if specs2:
+            sections.append("【产品参数 Product Information】\n" + "\n".join(specs2[:20]))  # 限制条数避免太长
+
+    # 5. 产品详细描述
+    desc_elem = soup.find(id="productDescription")
+    if desc_elem:
+        desc_text = desc_elem.get_text(separator="\n", strip=True)
+        desc_text = re.sub(r"\n{2,}", "\n", desc_text)
+        if desc_text and len(desc_text) > 10:
+            # 描述可能很长，截断到2000字
+            if len(desc_text) > 2000:
+                desc_text = desc_text[:2000] + "..."
+            sections.append(f"【产品描述】\n{desc_text}")
+
+    # 组装所有提取到的区域
+    if sections:
+        return "\n\n".join(sections)
+    return ""
 
 
 def _extract_product_hint_from_url(url):
@@ -187,37 +294,75 @@ def _extract_product_hint_from_url(url):
         return "无"
 
 
+def _is_amazon_url(url):
+    """
+    判断一个URL是否为亚马逊链接
+
+    小白讲解：系统只支持抓取亚马逊产品页，这个函数用来过滤非亚马逊链接。
+    支持 amazon.com（美国站）、amazon.cn（中国站）、amazon.co.jp（日本站）等各区域站点。
+
+    参数：
+        url: 网页链接
+
+    返回：是亚马逊链接返回True，否则返回False
+    """
+    url_lower = url.lower()
+    # 亚马逊各区域站点的域名特征
+    amazon_domains = ["amazon.com", "amazon.cn", "amazon.co.jp", "amazon.co.uk",
+                      "amazon.de", "amazon.fr", "amazon.it", "amazon.es",
+                      "amazon.ca", "amazon.com.au", "amazon.com.mx", "amazon.in"]
+    for domain in amazon_domains:
+        if domain in url_lower:
+            return True
+    return False
+
+
 def fetch_urls_from_text(text):
     """
     从文本中找出所有URL并批量抓取网页内容，合并成一段给AI分析用的文本
 
     小白讲解：这是给parse_requirement调用的总入口。
-    它先找出文本里所有网页链接，然后一个一个去抓取，最后把所有网页内容拼成一段文字返回。
-    如果没有URL就返回空字符串（不影响原有解析流程）。
+    它先找出文本里所有网页链接，然后过滤出亚马逊链接（系统只支持亚马逊），
+    一个一个去抓取产品页内容，最后把所有网页内容拼成一段文字返回。
+    如果没有URL或没有亚马逊URL就返回空字符串（不影响原有解析流程）。
 
     参数：
         text: 用户输入的需求描述文本（可能包含URL）
 
-    返回：拼接好的网页正文文本。无URL时返回空字符串。
+    返回：拼接好的网页正文文本。无亚马逊URL时返回空字符串。
           所有网页内容合计超过_MAX_TOTAL_WEB_CONTENT字数则截断。
     """
     urls = extract_urls(text)
     if not urls:
         return ""
 
-    # 逐个抓取网页内容
+    # 过滤：只保留亚马逊链接（系统只支持抓取亚马逊产品页）
+    amazon_urls = [u for u in urls if _is_amazon_url(u)]
+    non_amazon_urls = [u for u in urls if not _is_amazon_url(u)]
+
+    # 如果有非亚马逊链接，给AI一条提示，让AI告知用户只支持亚马逊
+    hint = ""
+    if non_amazon_urls and not amazon_urls:
+        hint = "（提示：用户贴了非亚马逊链接，但系统仅支持亚马逊链接抓取，请在追问中提醒用户改贴亚马逊产品链接）"
+        return hint
+
     chunks = []
     total_len = 0
-    for idx, url in enumerate(urls, start=1):
+    # 逐个抓取亚马逊产品页内容
+    for idx, url in enumerate(amazon_urls, start=1):
         content = fetch_url_content(url)
         # 用分隔标记区分不同网页的内容，方便AI识别
-        chunk = f"--- 网页{idx}：{url} ---\n{content}"
+        chunk = f"--- 亚马逊产品页{idx}：{url} ---\n{content}"
         chunks.append(chunk)
         total_len += len(chunk)
         # 达到总字数上限就停止抓取（避免抓太多撑爆AI上下文）
         if total_len >= _MAX_TOTAL_WEB_CONTENT:
             chunks.append(f"\n...(已达到网页内容总字数上限，后续网页不再抓取)")
             break
+
+    # 如果还有非亚马逊链接，附上提示
+    if non_amazon_urls:
+        chunks.append(f"\n（提示：检测到 {len(non_amazon_urls)} 个非亚马逊链接已忽略，系统仅支持亚马逊链接）")
 
     return "\n\n".join(chunks)
 
@@ -438,6 +583,16 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 
 用户输入：
 {full_text}
+
+【网页内容处理指引】
+如果输入中包含"网页内容"或"亚马逊产品页"区块，这是从亚马逊产品页自动抓取的信息，请重点从中提取采购寻源相关字段：
+- 产品标题：提取完整产品名，包含材质、尺寸、颜色、功能等关键信息
+- 品牌：记录品牌名作为参考
+- 产品特性（About this item）：从中提取核心功能、材质、尺寸规格等
+- 技术规格/产品参数：从中提取精确的尺寸、重量、材质等参数
+- 产品描述：补充提取其他产品特征
+提取时请综合网页内容与用户文字描述，网页中的产品信息优先级较高（因为是实际产品参考）。
+如果网页内容提示"非亚马逊链接"或"仅支持亚马逊链接"，请在other_requirements中提醒用户改贴亚马逊产品链接。
 
 【提取规则】
 必须确认项（缺一不可，缺失时对应字段留空并标记missing）：
