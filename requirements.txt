@@ -4,6 +4,9 @@ Flask==3.0.3
 # HTTP请求库（调用大模型API用）
 requests==2.32.3
 
+# HTML解析库（AI解析网页内容用）
+beautifulsoup4==4.12.3
+
 # 文档解析库
 PyPDF2==3.0.1          # 读取PDF文档
 openpyxl==3.1.5        # 读取Excel文档
