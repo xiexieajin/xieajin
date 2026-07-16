@@ -103,7 +103,7 @@ def before_request():
     # ==================== 路由权限统一检查（白名单机制）====================
     # 小白讲解：不需要给每个路由单独加装饰器，在这里统一判断。
     # 公开路由白名单：未登录也能访问
-    public_endpoints = {"login", "logout", "static"}
+    public_endpoints = {"login", "logout", "static", "health"}
     endpoint = request.endpoint
     # 静态文件和公开路由放行
     if endpoint is None or endpoint in public_endpoints:
@@ -2178,6 +2178,12 @@ def admin_platform_edit(id):
         return redirect(url_for("admin_platform_list"))
     return render_template("admin/platforms/form.html", platform=platform)
 
+
+# ==================== 健康检查接口（Railway等云平台需要200 OK响应）====================
+@app.route("/health")
+def health():
+    """返回200 OK让Railway知道应用正常运行，不做任何登录验证"""
+    return "OK", 200
 
 # ==================== 数据库初始化 ====================
 # 必须放在模块顶层而不是 if __name__ == "__main__" 里
