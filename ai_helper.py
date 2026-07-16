@@ -17,7 +17,158 @@ import json
 import base64
 import requests
 import re
+from bs4 import BeautifulSoup
 from model_config import get_model_config, get_provider
+
+
+# ==================== 网页内容抓取（供AI分析用） ====================
+
+# 小白讲解：匹配文本里的网页链接（http或https开头），用于自动识别用户在需求描述里贴的URL
+_URL_REGEX = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+
+# 单个网页正文最多保留这么多字符，避免网页太长撑爆AI的上下文窗口
+_MAX_CONTENT_PER_URL = 8000
+
+# 所有网页正文合并后的总字数上限，超出则截断（保护AI上下文，避免token浪费）
+_MAX_TOTAL_WEB_CONTENT = 20000
+
+# 抓取网页时的请求超时时间（秒），超时就放弃这个网页，不卡住整个解析流程
+_FETCH_TIMEOUT = 10
+
+# 模拟正常浏览器的身份标识（有些网站会拒绝没有User-Agent的请求）
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+def extract_urls(text):
+    """
+    从一段文本中提取所有网页链接（URL）
+
+    小白讲解：用户在需求描述里可能随手贴了几个网页链接，
+    这个函数用正则表达式把这些链接一个一个找出来，返回去重后的列表。
+
+    参数：
+        text: 用户输入的文本（可能包含0个或多个URL）
+
+    返回：URL字符串列表（已去重，保持出现顺序）
+    """
+    if not text:
+        return []
+    # 找出所有匹配的URL
+    matches = _URL_REGEX.findall(text)
+    # 去重并保持顺序（用dict的key天然去重）
+    seen = set()
+    urls = []
+    for url in matches:
+        # 去掉末尾可能带的中英文标点（句号、逗号、括号等，避免污染URL）
+        clean_url = url.rstrip(".,);:!?。，；：）】》」』\"'")
+        if clean_url not in seen:
+            seen.add(clean_url)
+            urls.append(clean_url)
+    return urls
+
+
+def fetch_url_content(url):
+    """
+    抓取单个网页的正文内容
+
+    小白讲解：访问用户给的链接，把网页下载下来，去掉导航栏、广告、脚本等无关内容，
+    只保留正文文字，这样AI拿到的是干净的产品/规格信息，不会被网页杂讯干扰。
+
+    处理步骤：
+    1. 用requests下载网页HTML
+    2. 用BeautifulSoup解析HTML结构
+    3. 删除script、style、nav、footer等非正文标签
+    4. 提取纯文本，压缩多余空行
+    5. 截断到_MAX_CONTENT_PER_URL字数以内
+
+    参数：
+        url: 要抓取的网页链接
+
+    返回：网页正文文字（字符串）。抓取失败时返回空字符串，不抛异常，避免中断主流程。
+    """
+    try:
+        # 下载网页，带上浏览器身份标识，设置超时
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
+            timeout=_FETCH_TIMEOUT,
+            allow_redirects=True,
+        )
+        # 检查是否下载成功（非2xx状态码视为失败）
+        resp.raise_for_status()
+
+        # 用BeautifulSoup解析HTML（不指定编码，让库自动从meta标签判断）
+        soup = BeautifulSoup(resp.content, "html.parser", from_encoding=resp.apparent_encoding)
+
+        # 删除所有非正文标签（脚本、样式、导航、页脚、头部、侧边栏等）
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe", "form"]):
+            tag.decompose()
+
+        # 优先取网页标题（产品名/规格页标题很有价值）
+        title = soup.title.get_text(strip=True) if soup.title else ""
+
+        # 提取正文文本：优先用<main>或<article>标签，没有就取<body>
+        main = soup.find("main") or soup.find("article") or soup.body or soup
+        # 用分隔符把各块文字拼起来，并压缩连续空白
+        text = main.get_text(separator="\n", strip=True)
+        # 兜底清理：用正则删除残留的<style>...</style>和<script>...</script>文本
+        # （部分网页的style标签内容会被get_text误当正文提取，需要额外清理）
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        # 压缩连续空行为最多2个换行
+        text = re.sub(r"\n{3,}", "\n\n", text)
+
+        # 组装：标题 + 正文
+        if title:
+            text = f"【网页标题】{title}\n\n【正文内容】\n{text}"
+
+        # 截断超长内容，保护AI上下文
+        if len(text) > _MAX_CONTENT_PER_URL:
+            text = text[:_MAX_CONTENT_PER_URL] + "\n...(网页内容过长已截断)"
+
+        return text
+
+    except Exception as e:
+        # 抓取失败不中断主流程，返回带失败说明的短文本，方便后续日志记录
+        return f"【抓取失败】{url} - 原因: {str(e)[:100]}"
+
+
+def fetch_urls_from_text(text):
+    """
+    从文本中找出所有URL并批量抓取网页内容，合并成一段给AI分析用的文本
+
+    小白讲解：这是给parse_requirement调用的总入口。
+    它先找出文本里所有网页链接，然后一个一个去抓取，最后把所有网页内容拼成一段文字返回。
+    如果没有URL就返回空字符串（不影响原有解析流程）。
+
+    参数：
+        text: 用户输入的需求描述文本（可能包含URL）
+
+    返回：拼接好的网页正文文本。无URL时返回空字符串。
+          所有网页内容合计超过_MAX_TOTAL_WEB_CONTENT字数则截断。
+    """
+    urls = extract_urls(text)
+    if not urls:
+        return ""
+
+    # 逐个抓取网页内容
+    chunks = []
+    total_len = 0
+    for idx, url in enumerate(urls, start=1):
+        content = fetch_url_content(url)
+        # 用分隔标记区分不同网页的内容，方便AI识别
+        chunk = f"--- 网页{idx}：{url} ---\n{content}"
+        chunks.append(chunk)
+        total_len += len(chunk)
+        # 达到总字数上限就停止抓取（避免抓太多撑爆AI上下文）
+        if total_len >= _MAX_TOTAL_WEB_CONTENT:
+            chunks.append(f"\n...(已达到网页内容总字数上限，后续网页不再抓取)")
+            break
+
+    return "\n\n".join(chunks)
 
 
 def call_deepseek(messages, scene_code, temperature=None, json_mode=False, max_tokens=None, effort=None):
@@ -215,7 +366,15 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
     if file_content:
         full_text += f"\n\n文档内容：\n{file_content}"
 
-    # 第三步：合并用户补充的信息（追问第二轮用）
+    # 第三步：抓取用户在需求描述里贴的网页链接，把网页正文加入分析文本
+    # 小白讲解：DeepSeek本身没有联网能力，所以由我们的代码先把网页内容抓下来，
+    # 再把正文文本喂给AI，这样AI就能"看到"网页里的产品规格、参数等信息了。
+    # 没有贴URL时返回空字符串，不影响原有流程。
+    web_content = fetch_urls_from_text(full_text)
+    if web_content:
+        full_text += f"\n\n网页内容：\n{web_content}"
+
+    # 第四步：合并用户补充的信息（追问第二轮用）
     if previous_data:
         supplement_text = "用户补充确认的信息：\n"
         for k, v in previous_data.items():

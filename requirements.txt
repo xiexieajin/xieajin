@@ -13,3 +13,9 @@ python-docx==1.2.0     # 读取Word文档
 
 # MySQL 数据库驱动（从SQLite迁移到MySQL，解决并发写入锁问题）
 pymysql==1.1.1
+
+# 环境变量管理（从.env文件加载密钥配置，不上传到GitHub）
+python-dotenv==1.0.1
+
+# 生产级WSGI服务器（替代Werkzeug开发服务器，支持SSE流式响应实时推送）
+waitress==3.0.0
