@@ -16,7 +16,7 @@
 import json
 import pymysql
 import traceback
-from db import now_str, recalc_requirement_status
+from db import now_str, recalc_requirement_status  # recalc 用于初筛完成后自动更新需求状态
 from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 from screening_rules import get_active_rules, evaluate_condition, parse_condition, get_rule_template
 from screening_data import (
