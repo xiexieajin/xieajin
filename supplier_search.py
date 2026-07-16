@@ -1138,12 +1138,21 @@ class TianyanchaClient:
                     capital = cells[5]
                     if re.match(r"^\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?$", capital):
                         capital = ""  # 是日期格式，置空避免脏数据
+                    # 从原始行文本中提取匹配类型（天眼查用英文名搜索时会在表格中标注）
+                    # 小白讲解：fallback路径也必须解析match_type，否则MIC英文公司名
+                    # 后续的"英文名匹配"逻辑永远无法触发，全部走not_found
+                    match_type = ""
+                    if "英文名匹配" in line:
+                        match_type = "英文名匹配"
+                    elif "精确同名" in line:
+                        match_type = "精确同名"
                     companies.append({
                         "name": cells[1],
                         "credit_code": cells[2],
                         "status": cells[3],
                         "legal_person": cells[4],
                         "registered_capital": capital,
+                        "match_type": match_type,
                     })
                 continue
 
@@ -1436,7 +1445,10 @@ def _extract_core_name(name):
             core = core[:-len(suffix)]
             break
     # 去掉地域前缀（如"广东省""深圳市""浙江"等），只留字号
-    core = re.sub(r'^[\u4e00-\u9fa5]{2,4}(?:省|市|区|县)', '', core)
+    # 小白讲解：去掉 ^ （起始锚定），改为全局匹配所有地域层级。
+    # 公司名可能有多层地域如"广东省深圳市龙岗区"，需要全部剥离，
+    # 否则字号比较时残留的"龙岗区"会干扰匹配。
+    core = re.sub(r'[\u4e00-\u9fa5]{2,4}(?:省|市|区|县)', '', core)
     return core.strip().lower()
 
 
@@ -2019,6 +2031,10 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                         print(f"天眼查英文名匹配采用：'{name}' → '{company.get('name', '')}'")
                         break
             # 3. 上面都没匹配上：做公司名相似度校验，相似度>=0.6 才采用
+            # 小白讲解：SequenceMatcher只看字符重叠，不认得公司"字号"才是唯一标识。
+            # "深圳市鼎盛科技有限公司"和"深圳市鼎盛电子科技有限公司"相似度~0.64，
+            # 但完全是两家公司！所以0.6匹配后必须加字号校验：
+            # 把地域前缀和组织形式后缀都去掉，比较剩余字号是否实质性相同。
             if not matched_company and companies:
                 best_ratio = 0
                 best_company = None
@@ -2031,8 +2047,14 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                         best_ratio = ratio
                         best_company = company
                 if best_company and best_ratio >= 0.6:
-                    matched_company = best_company
-                else:
+                    # 字号校验：剥离地域+组织形式后比较核心字号
+                    cand_core = _extract_core_name(best_company.get("name", ""))
+                    orig_core = _extract_core_name(name)
+                    if cand_core and orig_core and (cand_core in orig_core or orig_core in cand_core):
+                        matched_company = best_company
+                    else:
+                        print(f"天眼查字号不匹配({name})，候选字号'{cand_core}'≠'{orig_core}'，相似度{best_ratio:.0%}，拒绝采用")
+                if not matched_company:
                     print(f"天眼查未匹配({name})，最高相似度{best_ratio:.0%}")
 
             if matched_company:

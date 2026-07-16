@@ -244,22 +244,61 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
              f"天眼查MCP search_companies + get_company_basic_profile，匹配状态：{match_status}",
              "success" if match_status != "not_found" else "uncertain", user_id)
 
-    # 天眼查匹配失败：直接进入人工确认
+    # 天眼查匹配失败：跳过规则评估，直接给0分
+    # 小白讲解：之前这里写死"需人工确认"并直接return，导致已关闭人工确认的
+    # 配置完全不生效。但也不能简单地走规则评估——因为basic_info为空{}，
+    # 26-29行会退而求其次取supplier表里的旧数据（可能是过时/错误的数据），
+    # 拿着不可靠的数据跑评分等于"假评估"。正确做法：
+    # → 总分直接给0（数据源不可用，无法评分）
+    # → 结论由阈值配置决定：设了人工确认线就"需人工确认"，没设就"未通过初筛"
     if match_status == "not_found":
-        _write_screening_result(supplier, run_id, user_id,
-                                conclusion="需人工确认",
-                                reason="天眼查未找到同名企业，无法核实工商信息",
-                                scores={}, tyc_data=tyc_data)
-        log_task(run_id, supplier_id, "conclusion", "初筛结论",
+        log_task(run_id, supplier_id, "tyc_not_found", "天眼查主体未匹配",
+                 {"company_name": company_name},
                  {"match_status": "not_found"},
-                 {"conclusion": "需人工确认", "reason": "天眼查未找到同名企业"},
-                 "天眼查无匹配，进入人工确认", "uncertain", user_id)
+                 "天眼查未找到同名企业，无法核实工商信息，跳过规则评估",
+                 "uncertain", user_id)
+
+        # 跳过否决规则和评分规则，直接给0分
+        total_score = 0
+        scores = {}
+        veto_triggered = False
+
+        # 走正常的结论生成逻辑（与任务16一致）
+        pass_threshold, manual_review_threshold = _get_thresholds()
+        if total_score >= pass_threshold:
+            conclusion = "已通过初筛"
+            reason = f"天眼查未找到企业但总分{total_score}≥{pass_threshold}，放过"
+        elif manual_review_threshold > 0 and total_score >= manual_review_threshold:
+            conclusion = "需人工确认"
+            reason = f"天眼查未找到企业，总分{total_score}在人工确认区间"
+        else:
+            conclusion = "未通过初筛"
+            reason = "天眼查未找到同名企业，无法核实工商信息，评分为0"
+
+        log_task(run_id, supplier_id, "conclusion", "初筛结论",
+                 {"match_status": "not_found", "total_score": total_score},
+                 {"conclusion": conclusion, "reason": reason,
+                  "scores": scores, "total_score": total_score},
+                 "天眼查无匹配，跳过规则评估", "success", user_id)
+
+        _write_screening_result(
+            supplier, run_id, user_id,
+            conclusion=conclusion, reason=reason,
+            scores=scores, total_score=total_score,
+            veto_triggered=False, veto_reason="",
+            tyc_data=tyc_data, basic_info={},
+            contact_audit={"completeness": "none", "has_valid_phone": False,
+                           "has_valid_email": False, "has_valid_contact": False},
+            capital_wan=None, establish_date="", operating_status="工商数据未匹配",
+            business_scope="", match_status="not_found"
+        )
+
         _push_progress(progress_queue,
                        type="supplier_done",
                        current=idx,
                        supplier_name=company_name,
-                       conclusion="需人工确认",
-                       total_score=0,
+                       conclusion=conclusion,
+                       total_score=total_score,
                        veto_triggered=False)
         return
 

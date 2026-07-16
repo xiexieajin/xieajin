@@ -21,7 +21,7 @@ import re
 import time
 import difflib
 import requests
-from supplier_search import TianyanchaClient
+from supplier_search import TianyanchaClient, _extract_core_name
 
 
 class ScreeningDataClient(TianyanchaClient):
@@ -197,6 +197,33 @@ class ScreeningDataClient(TianyanchaClient):
 
 # ==================== 初筛专用高层查询函数 ====================
 
+def _verify_brand_name(orig_name, cand_name):
+    """
+    字号校验：确认两家公司是否是同一家（防止SequenceMatcher误匹配不同公司）
+
+    小白讲解：中国公司名结构是[地域][字号][行业][组织形式]。
+    字号才是公司的唯一标识。"深圳市鼎盛科技有限公司"和"深圳市鼎盛电子科技有限公司"
+    相似度很高，但字号"鼎盛科技"≠"鼎盛电子科技"，完全是两家公司！
+
+    校验逻辑：
+    1. 剥离地域前缀和组织形式后缀，提取核心字号
+    2. 如果一方的字号包含另一方 → 同一家公司（如"浩盈"⊆"浩盈家具"）
+    3. 否则 → 不同公司，拒绝匹配
+
+    参数：
+        orig_name: 原始搜索名
+        cand_name: 天眼查返回的候选公司名
+    返回：True=同一家公司，False=不同公司
+    """
+    orig_core = _extract_core_name(orig_name)
+    cand_core = _extract_core_name(cand_name)
+    if not orig_core or not cand_core:
+        # 有一方提取不到字号（如纯英文名），无法校验，保守返回True
+        return True
+    # 一方包含另一方即视为同一字号
+    return orig_core in cand_core or cand_core in orig_core
+
+
 def query_supplier_full_data(company_name, client=None):
     """
     查询供应商的完整初筛数据（基础信息+风险+资质+商标+专利）
@@ -239,6 +266,7 @@ def query_supplier_full_data(company_name, client=None):
         # 小白讲解：与AI搜索流程保持一致的严格匹配逻辑——
         # 先精确同名匹配，找不到再用相似度≥0.6校验，防止取到错误公司数据
         companies = client.search_companies(company_name)
+
         if not companies:
             result["tyc_match_status"] = "not_found"
             return result
@@ -266,6 +294,8 @@ def query_supplier_full_data(company_name, client=None):
 
         if not matched:
             # 精确匹配失败，做相似度校验
+            # 小白讲解：SequenceMatcher只看字符重叠，必须加字号校验防止张冠李戴。
+            # 剥离地域前缀和组织形式后缀后，比较核心字号是否实质性相同。
             best_ratio = 0
             best_company = None
             for company in companies:
@@ -277,8 +307,14 @@ def query_supplier_full_data(company_name, client=None):
                     best_ratio = ratio
                     best_company = company
             if best_company and best_ratio >= 0.6:
-                matched = best_company
-                result["tyc_match_status"] = "partial_match"
+                if _verify_brand_name(company_name, best_company.get("name", "")):
+                    matched = best_company
+                    result["tyc_match_status"] = "partial_match"
+                else:
+                    # 相似度够但字号不匹配，判定为不同公司
+                    print(f"[天眼查] 字号不匹配({company_name})，候选'{best_company.get('name','')}'，拒绝采用")
+                    result["tyc_match_status"] = "not_found"
+                    return result
             else:
                 # 相似度太低，判定为未匹配（不采用错误数据）
                 print(f"[天眼查] 未匹配({company_name})，最高相似度{best_ratio:.0%}")
