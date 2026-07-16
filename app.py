@@ -2211,18 +2211,16 @@ if __name__ == "__main__":
     # 这里只负责启动 Web 服务器
     print("=" * 50)
     print("供应商寻源系统启动中...")
-    print("请在浏览器打开: http://localhost:5000")
-    print("=" * 50)
-    # 用 waitress 生产级 WSGI 服务器替代 Werkzeug 开发服务器
-    # 原因：Werkzeug 3.x 开发服务器会缓冲流式响应数据，导致 SSE 消息无法实时推送给浏览器
-    # waitress 的 send_bytes=1 让每个字节立即发送，不被缓冲
-    # threads=8 支持多线程，让 SSE 长连接不会阻塞其他请求
-    from waitress import serve
     # 云端部署检测：有PORT环境变量（Railway自动注入）→ 监听0.0.0.0供外部访问
-    # 本地开发：没有PORT → 用127.0.0.1:5000
     import os as _os
     port = int(_os.environ.get("PORT", "5000"))
-    # Railway/Koyeb/Render 等云平台会自动注入PORT变量，本地开发没有
     host = "0.0.0.0" if _os.environ.get("PORT") else "127.0.0.1"
     print(f"[启动] 监听地址: {host}:{port}")
-    serve(app, host=host, port=port, threads=8, send_bytes=1)
+    print("=" * 50)
+    # 云端用 Flask 内置开发服务器（Railway 兼容性最好）
+    # 本地建议手动切到 waitress：python -c "from waitress import serve; from app import app; serve(app, host='127.0.0.1', port=5000)"
+    if _os.environ.get("PORT"):
+        app.run(host=host, port=port, debug=False)
+    else:
+        from waitress import serve
+        serve(app, host=host, port=port, threads=8, send_bytes=1)
