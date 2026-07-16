@@ -2179,12 +2179,21 @@ def admin_platform_edit(id):
     return render_template("admin/platforms/form.html", platform=platform)
 
 
-if __name__ == "__main__":
-    # 启动前先初始化数据库（创建表）
+# ==================== 数据库初始化 ====================
+# 必须放在模块顶层而不是 if __name__ == "__main__" 里
+# 原因：Railway等云平台用 gunicorn app:app 启动，__name__ 不是 "__main__"，
+# 导致 init_db() 不被执行，数据库全是空表。移到顶层后无论什么方式启动都会建表。
+# try包裹防止数据库还没配好时启动就崩溃（Railway添加MySQL后才生效）。
+try:
     db.init_db()
-    # 小白讲解：启动时从数据库加载AI配置到内存，让ai_helper和supplier_search能快速读取
+    # 从数据库加载AI配置到内存，让ai_helper和supplier_search能快速读取
     model_config.load_model_configs_from_db()
-    # 启动 Flask 开发服务器
+except Exception as e:
+    print(f"[启动] 数据库初始化失败（可能还未配置MySQL）: {e}")
+
+if __name__ == "__main__":
+    # 本地开发直接运行 python app.py 时，数据库已在上面初始化过了
+    # 这里只负责启动 Web 服务器
     print("=" * 50)
     print("供应商寻源系统启动中...")
     print("请在浏览器打开: http://localhost:5000")
