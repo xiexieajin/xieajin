@@ -12,7 +12,9 @@ python-docx==1.2.0     # 读取Word文档
 # 密码哈希：使用Python标准库hashlib.pbkdf2_hmac，无需额外安装bcrypt
 
 # MySQL 数据库驱动（从SQLite迁移到MySQL，解决并发写入锁问题）
+# cryptography 是 MySQL 8.0+ 默认 caching_sha2_password 认证所必需的
 pymysql==1.1.1
+cryptography==44.0.0
 
 # 环境变量管理（从.env文件加载密钥配置，不上传到GitHub）
 python-dotenv==1.0.1
