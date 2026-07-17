@@ -21,6 +21,66 @@
     系统默认17条规则（11条一票否决 + 6条评分规则），可在此页面启用/禁用规则或修改参数。修改后立即生效，下次初筛将使用新配置。
 </div>
 
+{# ==================== 模板管理区（保存当前配置为模板 + 查看已保存模板） ==================== #}
+{# 小白讲解：这里可以把当前调好的规则配置"打包"存成一个模板，起个名字（如"严格模式"）。
+   存好的模板所有用户都能在初筛前选择使用。不需要的模板可以删除。
+   模板包含完整配置：17条规则参数 + 通过线阈值，是完整快照。 #}
+<div class="card mb-3 border-info">
+    <div class="card-header bg-info text-white">
+        <i class="bi bi-files"></i> 规则模板管理
+        <small class="text-white-50">把当前配置打包成模板，初筛前可选用；模板所有用户共享</small>
+    </div>
+    <div class="card-body">
+        {# 保存当前配置为模板 #}
+        {# 小白讲解：保存模板时同时把当前通过线值一起提交，这样改了通过线不用先单独保存通过线。 #}
+        <form method="POST" action="{{ url_for('screening_rules_template_save') }}" class="row g-2 align-items-end mb-3" id="saveTemplateForm">
+            <div class="col-md-4">
+                <label class="form-label fw-bold">保存当前配置为模板</label>
+                <input type="text" name="template_name" class="form-control" placeholder="输入模板名，如：严格模式" required maxlength="50">
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-info w-100">
+                    <i class="bi bi-box-arrow-down"></i> 保存为模板
+                </button>
+            </div>
+            <div class="col-12">
+                <div class="form-text">保存时会校验启用评分规则总分=100，不满足会提示去调整。模板将包含当前所有规则参数 + 通过线阈值。</div>
+            </div>
+            {# 隐藏字段：提交时用JS从通过线输入框同步当前值，保存模板时一并写入 #}
+            <input type="hidden" name="threshold_pass" id="tplThresholdPass" value="{{ threshold_pass }}">
+            <input type="hidden" name="threshold_manual_review" id="tplThresholdManualReview" value="{{ threshold_manual_review }}">
+        </form>
+
+        <hr>
+
+        {# 已保存模板列表 #}
+        <div class="fw-bold mb-2">
+            <i class="bi bi-list-ul"></i> 已保存模板
+            {% if templates %}<span class="badge bg-secondary">{{ templates|length }}个</span>{% endif %}
+        </div>
+        {% if templates %}
+        <div class="list-group">
+            {% for t in templates %}
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-file-earmark-text text-info"></i> {{ t }}</span>
+                <form method="POST" action="{{ url_for('screening_rules_template_delete') }}" class="d-inline"
+                      onsubmit="return confirm('确定删除模板「{{ t }}」吗？删除后初筛页将不再显示此模板。');">
+                    <input type="hidden" name="template_name" value="{{ t }}">
+                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                        <i class="bi bi-trash"></i> 删除
+                    </button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-muted small">
+            <i class="bi bi-info-circle"></i> 暂无已保存的模板。调整好规则参数后，在上方输入模板名保存。
+        </div>
+        {% endif %}
+    </div>
+</div>
+
 {# ==================== 一票否决规则区 ==================== #}
 <div class="card mb-3">
     <div class="card-header bg-danger text-white">
@@ -150,61 +210,6 @@
         你可以先逐条修改规则满分（单条保存不会被拦截），调整到总分=100后再
         <strong>保存为模板</strong> 或 <strong>开始初筛</strong>（这两个操作会强制校验总分=100）。
     {% endif %}
-</div>
-
-{# ==================== 模板管理区（保存当前配置为模板 + 查看已保存模板） ==================== #}
-{# 小白讲解：这里可以把当前调好的规则配置"打包"存成一个模板，起个名字（如"严格模式"）。
-   存好的模板所有用户都能在初筛前选择使用。不需要的模板可以删除。 #}
-<div class="card mb-3 border-info">
-    <div class="card-header bg-info text-white">
-        <i class="bi bi-files"></i> 规则模板管理
-        <small class="text-white-50">把当前配置打包成模板，初筛前可选用；模板所有用户共享</small>
-    </div>
-    <div class="card-body">
-        {# 保存当前配置为模板 #}
-        <form method="POST" action="{{ url_for('screening_rules_template_save') }}" class="row g-2 align-items-end mb-3">
-            <div class="col-md-4">
-                <label class="form-label fw-bold">保存当前配置为模板</label>
-                <input type="text" name="template_name" class="form-control" placeholder="输入模板名，如：严格模式" required maxlength="50">
-            </div>
-            <div class="col-md-3">
-                <button type="submit" class="btn btn-info w-100">
-                    <i class="bi bi-box-arrow-down"></i> 保存为模板
-                </button>
-            </div>
-            <div class="col-12">
-                <div class="form-text">保存时会校验启用评分规则总分=100，不满足会提示去调整。</div>
-            </div>
-        </form>
-
-        <hr>
-
-        {# 已保存模板列表 #}
-        <div class="fw-bold mb-2">
-            <i class="bi bi-list-ul"></i> 已保存模板
-            {% if templates %}<span class="badge bg-secondary">{{ templates|length }}个</span>{% endif %}
-        </div>
-        {% if templates %}
-        <div class="list-group">
-            {% for t in templates %}
-            <div class="list-group-item d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-file-earmark-text text-info"></i> {{ t }}</span>
-                <form method="POST" action="{{ url_for('screening_rules_template_delete') }}" class="d-inline"
-                      onsubmit="return confirm('确定删除模板「{{ t }}」吗？删除后初筛页将不再显示此模板。');">
-                    <input type="hidden" name="template_name" value="{{ t }}">
-                    <button type="submit" class="btn btn-sm btn-outline-danger">
-                        <i class="bi bi-trash"></i> 删除
-                    </button>
-                </form>
-            </div>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="text-muted small">
-            <i class="bi bi-info-circle"></i> 暂无已保存的模板。调整好规则参数后，在上方输入模板名保存。
-        </div>
-        {% endif %}
-    </div>
 </div>
 
 {# ==================== 初筛通过标准区（可编辑） ==================== #}
@@ -422,6 +427,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (reviewInput) {
         reviewInput.addEventListener('input', refreshReviewDisplay);
+    }
+
+    // 小白讲解：保存模板表单提交前，把通过线输入框的当前值同步到隐藏字段。
+    // 这样用户改了通过线数字后，不用先点"保存通过标准"按钮，直接点"保存为模板"就能把最新通过线一并存进模板。
+    var saveTemplateForm = document.getElementById('saveTemplateForm');
+    if (saveTemplateForm) {
+        saveTemplateForm.addEventListener('submit', function() {
+            var passInputEl = document.getElementById('thresholdPass');
+            var reviewInputEl = document.getElementById('thresholdManualReview');
+            var tplPass = document.getElementById('tplThresholdPass');
+            var tplReview = document.getElementById('tplThresholdManualReview');
+            if (passInputEl && tplPass) tplPass.value = passInputEl.value;
+            if (reviewInputEl && tplReview) tplReview.value = reviewInputEl.value;
+        });
     }
 
     if (thresholdForm) {

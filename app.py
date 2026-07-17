@@ -2069,12 +2069,27 @@ def screening_rules_threshold():
 @app.route("/screening/rules/template/save", methods=["POST"])
 def screening_rules_template_save():
     """保存当前规则配置为模板（完整快照：含阈值/满分/通过线/启用状态）"""
-    from screening_rules import save_as_template, list_rule_templates, get_score_rules
+    from screening_rules import save_as_template, list_rule_templates, get_score_rules, update_rule_template
     req_id = request.form.get("req_id", "") or request.args.get("req_id", "")
     template_name = request.form.get("template_name", "").strip()
     if not template_name:
         flash("请输入模板名称", "danger")
         return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+
+    # 小白讲解：如果表单带了通过线值（从保存模板表单的隐藏字段来的），
+    # 先更新数据库的通过线，这样保存模板时读到的是最新通过线。
+    # 解决"用户改了通过线但没单独点保存通过标准"的问题。
+    tpl_pass = request.form.get("threshold_pass", type=int)
+    tpl_review = request.form.get("threshold_manual_review", type=int)
+    if tpl_pass is not None and tpl_review is not None:
+        if tpl_pass < 0 or tpl_pass > 100 or tpl_review < 0 or tpl_review > 100:
+            flash("通过线/人工确认线必须是0-100之间的数字", "danger")
+            return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+        if tpl_pass < tpl_review:
+            flash(f"通过线({tpl_pass})不能低于人工确认线({tpl_review})", "danger")
+            return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+        update_rule_template("threshold_pass", {"max_score": tpl_pass})
+        update_rule_template("threshold_manual_review", {"max_score": tpl_review})
 
     # 小白讲解：保存模板前强制校验"所有启用的评分规则满分总和=100"。
     # 原因：单条规则保存时允许临时≠100（方便逐步调整），但模板是完整配置快照，
@@ -2092,6 +2107,8 @@ def screening_rules_template_save():
     # 小白讲解：读取当前全局表所有规则的完整参数（不只是 is_enabled），
     # 包括条件表达式 condition、满分值 max_score、通过线阈值，全部快照存为模板。
     # 这样保存的模板是一份完整独立配置，加载时能完整还原初筛规则。
+    # 注意：通过线（threshold_pass/threshold_manual_review）也在 list_rule_templates() 返回的规则里，
+    # 它们的 max_score 就是通过线数值，会被存到 custom_score_cap，加载时 _get_thresholds(template_name) 读取。
     rules = list_rule_templates()
     rule_overrides = []
     for r in rules:
@@ -2105,11 +2122,11 @@ def screening_rules_template_save():
             "rule_code": r["rule_code"],
             "is_enabled": r["is_enabled"],
             "custom_condition": cond,                  # 条件（如注册资本阈值100万）
-            "custom_score_cap": r.get("max_score"),    # 满分值（通过线/评分上限都存在这个字段）
+            "custom_score_cap": r.get("max_score"),    # 满分值（评分规则满分 / 通过线数值都存在这个字段）
         })
 
     count = save_as_template(g.user_id, template_name, rule_overrides)
-    flash(f"模板「{template_name}」已保存（{count}条规则，含完整参数，总分{score_total}）", "success")
+    flash(f"模板「{template_name}」已保存（{count}条规则，含完整参数+通过线阈值，总分{score_total}）", "success")
     return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
 
 
