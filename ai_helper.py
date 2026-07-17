@@ -438,6 +438,110 @@ def _extract_amazon_product_info(soup):
     return ""
 
 
+def _detect_url_platform(url):
+    """
+    识别URL所属电商平台，返回平台信息（用于反爬场景下的针对性引导）
+
+    小白讲解：不同电商平台的反爬强度和URL结构都不同。
+    这个函数根据URL域名识别平台，返回：
+    - platform: 平台中文名（如"天猫""京东"）
+    - is_anti_crawl: 是否强反爬（True=系统大概率抓不到内容）
+    - item_id: 从URL提取的商品ID（如果有的话）
+    - suggestion: 给用户的针对性建议
+
+    参数：url 网页链接
+    返回：dict，包含 platform/is_anti_crawl/item_id/suggestion 四个字段
+    """
+    from urllib.parse import urlparse, parse_qs
+    import re as _re
+
+    # 小白讲解：从URL路径里提取第一段纯数字（商品ID）
+    # 例如 "/100012345.html" → "100012345"，"/product/100012345.html" → "100012345"
+    # 这样避免把"item""product""offer"等路径段当成ID
+    def _extract_first_digits_fn(path_str):
+        if not path_str:
+            return None
+        m = _re.search(r'(\d{4,})', path_str)
+        return m.group(1) if m else None
+
+    url_lower = url.lower()
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path or ""
+    query = parse_qs(parsed.query)
+
+    # 各平台识别规则（按用户实际可能贴的顺序）
+    # 每条：(域名关键词列表, 平台名, 是否强反爬, 商品ID提取函数, 建议)
+    rules = [
+        # 天猫/淘宝：强反爬+SPA，基本抓不到
+        (["detail.tmall.com", "item.taobao.com"], "天猫/淘宝", True,
+         lambda: query.get("id", [None])[0],
+         "天猫/淘宝商品页有强反爬+需要登录，系统无法自动抓取。建议：1) 改用京东/亚马逊商品链接；2) 上传产品图片或规格书；3) 直接用关键词描述产品。"),
+        # 京东：PC版部分能抓到，但SPA居多
+        (["item.jd.com", "item.m.jd.com"], "京东", True,
+         lambda: _extract_first_digits_fn(path),
+         "京东商品页是SPA单页应用，可能抓不到完整信息。建议：1) 上传产品图片；2) 手动补充产品名称和规格；3) 改用亚马逊链接。"),
+        # 拼多多：强反爬+需要登录
+        (["yangkeduo.com", "pinduoduo.com", "mobile.yangkeduo.com"], "拼多多", True,
+         lambda: query.get("goods_id", [None])[0],
+         "拼多多商品页需要登录/APP内打开，系统无法抓取。建议：1) 在拼多多APP查看商品后手动补充；2) 上传产品图片；3) 用关键词描述。"),
+        # 1688：有反爬但比天猫轻，有时能抓到
+        (["detail.1688.com", "offer.1688.com", "m.1688.com"], "1688", True,
+         lambda: _extract_first_digits_fn(path),
+         "1688商品页有反爬但通常可抓到部分信息。如抓取失败建议：1) 直接用产品关键词在本系统搜索1688供应商；2) 上传产品图片。"),
+        # 速卖通：国际站，反爬中等
+        (["aliexpress.com", "m.aliexpress.com"], "速卖通", True,
+         lambda: _extract_first_digits_fn(path),
+         "速卖通商品页反爬中等。建议：1) 上传产品图片；2) 手动补充产品规格；3) 用关键词描述。"),
+        # 亚马逊：通常能用curl抓到
+        (["amazon.com", "amazon.cn", "amazon.co.jp", "amazon.co.uk", "amazon.de",
+          "amazon.fr", "amazon.it", "amazon.es", "amazon.ca", "amazon.com.au",
+          "amazon.com.mx", "amazon.in"], "亚马逊", False,
+         lambda: None,  # 亚马逊用slug提取，这里不提取ID
+         "亚马逊商品页系统通常能抓到，如果失败请上传产品图片。"),
+        # 沃尔玛：通常能抓到
+        (["walmart.com", "walmart.cn"], "沃尔玛", False,
+         lambda: _extract_first_digits_fn(path),
+         "沃尔玛商品页通常可抓取，如果失败请上传产品图片。"),
+        # eBay：通常能抓到
+        (["ebay.com", "ebay.cn"], "eBay", False,
+         lambda: None,
+         "eBay商品页通常可抓取，如果失败请上传产品图片。"),
+        # 小红书：强反爬+SPA
+        (["xiaohongshu.com", "xhslink.com"], "小红书", True,
+         lambda: path.strip("/").split("/")[-1] if path else None,
+         "小红书商品页有强反爬+需要登录。建议：1) 上传产品图片；2) 用关键词描述。"),
+        # 抖音/抖店：强反爬+需要登录
+        (["douyin.com", "haodanku.com"], "抖音", True,
+         lambda: None,
+         "抖音商品页需要登录或APP内打开。建议：1) 上传产品图片；2) 用关键词描述。"),
+    ]
+
+    # 通用识别：遍历规则匹配域名
+    for domains, platform, is_anti, id_fn, suggestion in rules:
+        for d in domains:
+            if d in host:
+                # 提取商品ID（异常时返回None）
+                try:
+                    item_id = id_fn()
+                except Exception:
+                    item_id = None
+                return {
+                    "platform": platform,
+                    "is_anti_crawl": is_anti,
+                    "item_id": item_id,
+                    "suggestion": suggestion,
+                }
+
+    # 未识别平台：保守标记为未知，建议手动补充
+    return {
+        "platform": "未知平台",
+        "is_anti_crawl": True,  # 未知平台保守按反爬处理
+        "item_id": None,
+        "suggestion": "未识别该链接所属平台，可能存在反爬。如抓取失败建议：1) 上传产品图片或规格书；2) 直接用关键词描述产品需求。",
+    }
+
+
 def _extract_product_hint_from_url(url):
     """
     从URL路径中提取产品关键词线索
@@ -473,36 +577,46 @@ def _extract_product_hint_from_url(url):
 
 def _build_url_hint_product_info(url):
     """
-    当无法抓取亚马逊网页正文时，用URL路径中的关键词线索拼成结构化产品信息
+    当无法抓取网页正文时，用URL线索拼成结构化产品信息（带平台识别）
 
-    小白讲解：这是兜底方案。当亚马逊反爬拦截（curl不可用+requests被挡）时，
-    网页正文拿不到，但从URL路径里能提取产品关键词（如"Overbed-Adjustable-Hospital"）。
-    把这些关键词伪装成和_extract_amazon_product_info一样的格式块，
-    AI就能按同样的提取逻辑处理，不会因为格式不匹配而忽略这些线索。
+    小白讲解：这是兜底方案。当反爬拦截（curl/requests都被挡）时，
+    网页正文拿不到，但从URL里能提取两类线索：
+    1. 平台信息：识别这是天猫/京东/拼多多等，告诉AI该平台反爬特点
+    2. 商品ID/URL slug：让AI至少知道用户参考的是哪个商品
 
     参数：
-        url: 亚马逊产品页链接
-    返回：伪装成亚马逊提取格式的结构化文本
+        url: 商品页链接
+    返回：结构化文本，包含平台/商品ID/反爬状态/建议
     """
-    url_hint = _extract_product_hint_from_url(url)
+    # 1. 识别平台
+    platform_info = _detect_url_platform(url)
+    platform = platform_info["platform"]
+    item_id = platform_info["item_id"]
+    is_anti = platform_info["is_anti_crawl"]
+    suggestion = platform_info["suggestion"]
 
-    # 把URL线索关键词按空格拆成单个词，帮AI更容易识别产品属性
-    # 例如 "Muwuele Overbed Adjustable Hospital Standing" →
-    #      ["Muwuele", "Overbed", "Adjustable", "Hospital", "Standing"]
+    # 2. 从URL路径提取关键词线索（亚马逊等有slug的平台能拿到）
+    url_hint = _extract_product_hint_from_url(url)
     hint_words = url_hint.split() if url_hint and url_hint != "无" else []
 
-    # 构造和亚马逊提取格式一致的输出
+    # 3. 拼装结构化文本
     parts = []
+
+    # 平台信息块（让AI知道这是什么平台、反爬状态如何）
+    parts.append(f"【链接平台】{platform}")
+    if item_id:
+        parts.append(f"【商品ID】{item_id}")
+    parts.append(f"【反爬状态】{'强反爬，系统无法自动抓取商品详情' if is_anti else '通常可抓取，但本次可能失败'}")
+    parts.append(f"【系统建议】{suggestion}")
+
+    # URL线索关键词块（如果能从slug提取到）
     if hint_words:
-        # 产品标题用URL线索拼成，加上[URL线索]标记让AI知道数据来源
-        parts.append(f"【产品标题】{url_hint}（来源：URL路径提取，产品页正文无法直接获取）")
-        # 把关键词列成产品特性，方便AI逐项分析
-        parts.append("【产品特性 - 从URL路径关键词提取】")
+        parts.append(f"【产品关键词线索】{url_hint}（来源：URL路径提取）")
+        parts.append("【关键词拆解】")
         for word in hint_words:
-            parts.append(f"- 关键词：{word}")
-    else:
-        parts.append(f"【产品标题】URL路径无法提取有效关键词，请参考完整链接")
-    parts.append(f"【参考来源】{url}")
+            parts.append(f"- {word}")
+
+    parts.append(f"【完整链接】{url}")
 
     return "\n".join(parts)
 
@@ -900,7 +1014,10 @@ JSON格式（只返回JSON）：
     if not parsed.get("confirmed"):
         parsed["requirement_summary"] = ""
         parsed["keywords"] = ""
-        parsed["questions"] = _generate_questions(parsed)
+        # 小白讲解：把用户输入的URL一起传过去，便于生成平台针对性的追问
+        # 例如天猫链接会提示"改用京东/亚马逊链接"，京东会提示"上传产品图片"等
+        user_urls = extract_urls(full_text)
+        parsed["questions"] = _generate_questions(parsed, user_urls=user_urls)
         if progress_callback:
             progress_callback("step_done", "✅ 解析完成（需要补充信息），正在整理结果...", "running")
         return parsed
@@ -917,12 +1034,21 @@ JSON格式（只返回JSON）：
     return parsed
 
 
-def _generate_questions(parsed):
+def _generate_questions(parsed, user_urls=None):
     """
     根据缺失项生成追问问题（给用户看的中文问题）
 
     必须项缺失：必须追问
     需确认项缺失：追问，提示可以回复"不限制/无要求"
+
+    小白讲解：如果传了 user_urls，会识别每个链接所属平台，
+    在追问前加一条"反爬说明"问题，让用户知道为什么字段为空、该怎么补救。
+    例如天猫链接会提示"该链接反爬无法自动抓取，建议改用京东/亚马逊链接或上传图片"。
+
+    参数：
+        parsed: AI解析结果字典
+        user_urls: 用户输入中提取的URL列表（可选）
+    返回：追问问题字符串列表
     """
     questions = []
     field_names = {
@@ -939,6 +1065,23 @@ def _generate_questions(parsed):
         "acceptable_lead_time": "可接受生产交期",
         "other_requirements": "其他要求",
     }
+
+    # 如果有URL且识别到强反爬平台，先加一条针对性提示问题
+    # 小白讲解：这条问题告诉用户"为什么字段都是空的"，并给出可操作建议
+    if user_urls:
+        for url in user_urls[:3]:  # 最多看前3个链接
+            platform_info = _detect_url_platform(url)
+            if platform_info["is_anti_crawl"]:
+                platform = platform_info["platform"]
+                item_id = platform_info.get("item_id")
+                suggestion = platform_info["suggestion"]
+                # 拼装一条醒目的提示问题
+                id_hint = f"（商品ID: {item_id}）" if item_id else ""
+                questions.append(
+                    f"⚠️ 您贴的{platform}链接{id_hint}有强反爬，系统无法自动提取商品信息。{suggestion}"
+                )
+                # 只提示一次，避免多个链接重复刷屏
+                break
 
     # 必须项缺失
     for field in parsed.get("missing_required", []):

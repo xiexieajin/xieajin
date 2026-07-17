@@ -195,7 +195,7 @@
         <div class="card-header"><i class="bi bi-pencil"></i> 补充/确认信息</div>
         <div class="card-body">
             <div class="row">
-                <div class="col-md-4 mb-3">
+                <div class="col-md-3 mb-3">
                     <label class="form-label">产品名称
                         {% if 'product_name' in parsed.missing_required %}<span class="text-danger">*缺失</span>{% endif %}
                     </label>
@@ -203,7 +203,7 @@
                            value="{{ parsed.product_name }}"
                            {% if 'product_name' in parsed.missing_required %}placeholder="必填，请补充"{% endif %}>
                 </div>
-                <div class="col-md-4 mb-3">
+                <div class="col-md-3 mb-3">
                     <label class="form-label">核心功能
                         {% if 'core_functions' in parsed.missing_required %}<span class="text-danger">*缺失</span>{% endif %}
                     </label>
@@ -211,7 +211,7 @@
                            value="{{ parsed.core_functions }}"
                            {% if 'core_functions' in parsed.missing_required %}placeholder="必填，请补充"{% endif %}>
                 </div>
-                <div class="col-md-4 mb-3">
+                <div class="col-md-3 mb-3">
                     <label class="form-label">材质
                         {% if 'material' in parsed.missing_required %}<span class="text-danger">*缺失</span>{% endif %}
                     </label>
@@ -219,7 +219,7 @@
                            value="{{ parsed.material }}"
                            {% if 'material' in parsed.missing_required %}placeholder="必填，请补充"{% endif %}>
                 </div>
-                <div class="col-md-4 mb-3">
+                <div class="col-md-3 mb-3">
                     <label class="form-label">规格尺寸
                         {% if 'spec_size' in parsed.missing_required %}<span class="text-danger">*缺失</span>{% endif %}
                     </label>
