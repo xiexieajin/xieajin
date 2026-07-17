@@ -127,47 +127,78 @@ def update_rule_template(rule_code, updates):
 
 # ==================== 规则实例管理（用于初筛执行）====================
 
-def get_active_rules(user_id=None):
+def get_active_rules(user_id=None, template_name=None):
     """
     获取当前启用的规则集（供初筛引擎使用）
 
-    小白讲解：初筛引擎执行时，先调用这个函数拿到所有"启用"的规则。
-    如果用户保存过自定义规则实例，就用实例的参数；否则用默认模板的参数。
+    小白讲解：初筛引擎执行时调用这个函数拿规则。
+    - 如果传了 template_name，就用用户保存的模板参数（覆盖默认规则）
+    - 没传 template_name，就用全局默认规则（screening_rule_templates 表的当前配置）
 
-    参数：user_id 用户ID（暂未使用，预留数据隔离）
+    参数：
+        user_id: 用户ID（暂未使用，预留数据隔离）
+        template_name: 模板名称，传了就用该模板的参数覆盖默认规则
     返回：规则字典列表，每个字典包含合并后的条件/分值/启用状态
     """
     conn = _get_db_connection()
     cursor = conn.cursor()
-    # 当前直接从模板表读取启用的规则（用户自定义实例的功能在模板保存/加载中处理）
+    # 永远从模板表读取所有规则作为基础（包含 is_enabled=0 的，因为模板可能改了启用状态）
     cursor.execute("""
         SELECT * FROM screening_rule_templates
-        WHERE is_enabled = 1
         ORDER BY sort_order ASC
     """)
     rows = cursor.fetchall()
     conn.close()
 
+    # 如果传了模板名，加载模板实例，按 rule_code 建索引，用于覆盖默认参数
+    template_instances = {}
+    if template_name:
+        instances = load_template(user_id, template_name)
+        template_instances = {inst["rule_code"]: inst for inst in instances}
+
     # 把sqlite3.Row转成字典，并解析JSON字段
     rules = []
     for row in rows:
         rule = dict(row)
-        # 解析条件JSON
-        try:
-            rule["default_condition"] = json.loads(row["default_condition"])
-        except (json.JSONDecodeError, TypeError):
-            rule["default_condition"] = {}
+        rule_code = rule["rule_code"]
+
+        # 如果有模板实例覆盖，用模板的参数
+        if rule_code in template_instances:
+            inst = template_instances[rule_code]
+            # 启用状态用模板的
+            rule["is_enabled"] = inst.get("is_enabled", rule.get("is_enabled", 1))
+            # 条件用模板的自定义条件（如果有），否则保持默认
+            if inst.get("custom_condition"):
+                rule["default_condition"] = inst["custom_condition"]
+                if isinstance(rule["default_condition"], str):
+                    try:
+                        rule["default_condition"] = json.loads(rule["default_condition"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            # 满分值/通过线用模板的（如果有）
+            if inst.get("custom_score_cap") is not None:
+                rule["max_score"] = inst["custom_score_cap"]
+
+        # 解析条件JSON（如果还不是dict）
+        if isinstance(rule.get("default_condition"), str):
+            try:
+                rule["default_condition"] = json.loads(rule["default_condition"])
+            except (json.JSONDecodeError, TypeError):
+                rule["default_condition"] = {}
         # 解析动作JSON
         try:
-            rule["default_action"] = json.loads(row["default_action"])
+            rule["default_action"] = json.loads(row["default_action"]) if isinstance(row.get("default_action"), str) else (row.get("default_action") or {})
         except (json.JSONDecodeError, TypeError):
             rule["default_action"] = {}
         # 解析天眼查工具列表
         try:
-            rule["tyc_commands"] = json.loads(row["tyc_commands"])
+            rule["tyc_commands"] = json.loads(row["tyc_commands"]) if isinstance(row.get("tyc_commands"), str) else (row.get("tyc_commands") or [])
         except (json.JSONDecodeError, TypeError):
             rule["tyc_commands"] = []
-        rules.append(rule)
+
+        # 只返回启用的规则（模板可能禁用了某些规则）
+        if rule.get("is_enabled"):
+            rules.append(rule)
     return rules
 
 
@@ -229,19 +260,23 @@ def save_as_template(user_id, template_name, rule_overrides):
     return count
 
 
-def list_user_templates(user_id):
+def list_user_templates(user_id=None):
     """
-    列出用户保存的所有规则模板名称
+    列出所有已保存的规则模板名称（所有用户共享，可共用）
 
+    小白讲解：模板是"可共用配置"——管理员保存的模板，所有用户在初筛前都能选。
+    所以这里不按 user_id 过滤，返回所有模板名。user_id 参数保留只是为了向后兼容。
+
+    参数：user_id 已废弃（模板共享），保留参数仅为兼容旧调用
     返回：模板名称列表（去重），如 ["严格模式", "宽松模式"]
     """
     conn = _get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT DISTINCT template_name FROM screening_rule_instances
-        WHERE user_id = %s AND requirement_id IS NULL AND template_name != ''
+        WHERE requirement_id IS NULL AND template_name != ''
         ORDER BY template_name
-    """, (user_id,))
+    """)
     rows = cursor.fetchall()
     conn.close()
     return [row["template_name"] for row in rows]

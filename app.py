@@ -1781,6 +1781,10 @@ def ai_auto_screening(req_id):
     # 小白讲解：把user_id存到局部变量，避免后台线程访问g对象（g是请求级的，请求结束后失效）
     current_user_id = g.user_id
 
+    # 小白讲解：读取前端选择的规则模板名（用户在初筛页下拉框选的）。
+    # 空字符串表示用全局默认规则，非空表示用该模板保存的规则参数初筛。
+    template_name = (request.form.get("template_name") or "").strip() or None
+
     # 小白讲解：迁移到MySQL后，不再需要手动关闭g.db释放锁（MySQL支持并发读写）。
     # 只需提交当前事务即可。后台线程用独立连接写入，不会与主请求冲突。
     g.db.commit()
@@ -1791,8 +1795,9 @@ def ai_auto_screening(req_id):
             from screening_engine import run_screening
             # 小白讲解：后台线程不在Flask请求上下文中，需要用app.app_context()创建应用上下文
             # 否则db.get_db()等依赖Flask上下文的函数会报"Working outside of application context"
+            # template_name 透传给初筛引擎，用于加载模板的规则参数和通过线阈值。
             with app.app_context():
-                run_screening(req_id, current_user_id, progress_queue)
+                run_screening(req_id, current_user_id, progress_queue, template_name=template_name)
         except Exception as e:
             progress_queue.put({"type": "error", "message": f"初筛引擎失败：{str(e)}"})
 
@@ -2053,24 +2058,34 @@ def screening_rules_threshold():
 
 @app.route("/screening/rules/template/save", methods=["POST"])
 def screening_rules_template_save():
-    """保存当前规则配置为模板"""
+    """保存当前规则配置为模板（完整快照：含阈值/满分/通过线/启用状态）"""
     from screening_rules import save_as_template, list_rule_templates
     template_name = request.form.get("template_name", "").strip()
     if not template_name:
         flash("请输入模板名称", "danger")
         return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
 
-    # 读取当前所有规则作为模板内容
+    # 小白讲解：读取当前全局表所有规则的完整参数（不只是 is_enabled），
+    # 包括条件表达式 condition、满分值 max_score、通过线阈值，全部快照存为模板。
+    # 这样保存的模板是一份完整独立配置，加载时能完整还原初筛规则。
     rules = list_rule_templates()
     rule_overrides = []
     for r in rules:
+        # 解析条件JSON（list_rule_templates返回的default_condition是字符串，需解析为dict再存）
+        import json as _json
+        try:
+            cond = _json.loads(r["default_condition"]) if r.get("default_condition") else None
+        except Exception:
+            cond = None
         rule_overrides.append({
             "rule_code": r["rule_code"],
             "is_enabled": r["is_enabled"],
+            "custom_condition": cond,                  # 条件（如注册资本阈值100万）
+            "custom_score_cap": r.get("max_score"),    # 满分值（通过线/评分上限都存在这个字段）
         })
 
     count = save_as_template(g.user_id, template_name, rule_overrides)
-    flash(f"模板「{template_name}」已保存（{count}条规则）", "success")
+    flash(f"模板「{template_name}」已保存（{count}条规则，含完整参数）", "success")
     return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
 
 

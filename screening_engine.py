@@ -46,13 +46,15 @@ def _get_db_connection():
     return conn
 
 
-def _get_thresholds():
+def _get_thresholds(template_name=None):
     """
     从数据库读取初筛通过标准配置（通过线、人工确认线）
 
-    小白讲解：这两个阈值以前是写死在代码里的（75和60），现在改成从数据库读取，
-    业务部门可以在规则配置页直接修改数字，不需要改代码。
+    小白讲解：这两个阈值以前是写死在代码里的（75和60），现在改成从数据库读取。
+    - 如果传了 template_name，就从用户保存的模板实例里读通过线（用模板配置初筛）
+    - 没传 template_name，就用全局默认表 screening_rule_templates 的配置
 
+    参数：template_name 模板名称，传了就用模板里保存的通过线阈值
     返回：(pass_threshold, manual_review_threshold)
         pass_threshold: 总分≥此值则"已通过初筛"，默认75
         manual_review_threshold: 总分≥此值但<pass_threshold则"需人工确认"，默认60
@@ -63,6 +65,21 @@ def _get_thresholds():
         review_rule = get_rule_template("threshold_manual_review")
         pass_threshold = pass_rule.get("max_score", 75) if pass_rule else 75
         manual_review_threshold = review_rule.get("max_score", 60) if review_rule else 60
+
+        # 小白讲解：如果传了模板名，用模板里保存的通过线覆盖全局默认值。
+        # 模板实例的 custom_score_cap 字段存的是用户保存模板时通过线的快照值。
+        if template_name:
+            try:
+                from screening_rules import load_template
+                instances = load_template(None, template_name)
+                for inst in instances:
+                    if inst.get("rule_code") == "threshold_pass" and inst.get("custom_score_cap") is not None:
+                        pass_threshold = inst["custom_score_cap"]
+                    elif inst.get("rule_code") == "threshold_manual_review" and inst.get("custom_score_cap") is not None:
+                        manual_review_threshold = inst["custom_score_cap"]
+            except Exception as _e:
+                print(f"[警告] 加载模板通过线失败({_e})，使用全局默认值")
+
         # 防止配置错误：用户把人工确认线设成0表示"不要人工确认"
         # 0会导致 total_score>=0 永远成立，所有供应商变成"需人工确认"，必须截断为正常值
         if manual_review_threshold <= 0:
@@ -92,7 +109,7 @@ def _push_progress(queue, **kwargs):
     queue.put(kwargs)
 
 
-def run_screening(requirement_id, user_id, progress_queue=None):
+def run_screening(requirement_id, user_id, progress_queue=None, template_name=None):
     """
     初筛主入口 - 对某需求下所有待初筛供应商执行完整初筛流程
 
@@ -101,8 +118,9 @@ def run_screening(requirement_id, user_id, progress_queue=None):
 
     参数：
         requirement_id: 需求ID
-        user_id: 执行初筛的用户ID（数据隔离）
+        user_id: 执行初筛的用户ID（数据归属）
         progress_queue: 进度队列（供前端SSE展示），None则不推送
+        template_name: 规则模板名称，传了就用该模板的规则参数初筛，没传用全局默认规则
 
     返回：审计报告字典，包含 run_id / statistics / suppliers / anomalies
     """
@@ -111,13 +129,16 @@ def run_screening(requirement_id, user_id, progress_queue=None):
                    type="progress", step=0, total=3,
                    desc=f"正在加载初筛规则...")
 
-    rules = get_active_rules(user_id=user_id)
+    # 小白讲解：传 template_name 时用模板保存的规则参数（阈值/满分/通过线/启用状态），
+    # 没传时用全局默认规则（screening_rule_templates 表当前配置）。
+    rules = get_active_rules(user_id=user_id, template_name=template_name)
     veto_rules = [r for r in rules if r["rule_type"] == "veto"]
     score_rules = [r for r in rules if r["rule_type"] == "score"]
 
     _push_progress(progress_queue,
                    type="progress", step=1, total=3,
-                   desc=f"已加载{len(veto_rules)}条否决规则 + {len(score_rules)}条评分规则")
+                   desc=f"已加载{len(veto_rules)}条否决规则 + {len(score_rules)}条评分规则"
+                        + (f"（模板：{template_name}）" if template_name else "（默认配置）"))
 
     # ==================== 任务2：读取待初筛供应商 ====================
     # 小白讲解：这里不再用 user_id 过滤供应商，只按 requirement_id 过滤。
@@ -176,9 +197,10 @@ def run_screening(requirement_id, user_id, progress_queue=None):
         try:
             # 小白讲解：传 owner_user_id 而非操作人 user_id，
             # 这样写 screenings/audit_logs 时归属到需求所有者名下，用户能看到完整记录。
+            # template_name 透传给单供应商初筛，用于加载模板的通过线阈值。
             _screen_one_supplier(
                 supplier_dict, veto_rules, score_rules,
-                run_id, owner_user_id, progress_queue, idx
+                run_id, owner_user_id, progress_queue, idx, template_name=template_name
             )
         except Exception as e:
             # 单个供应商失败不影响其他供应商
@@ -218,7 +240,7 @@ def run_screening(requirement_id, user_id, progress_queue=None):
     return report
 
 
-def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, progress_queue, idx=0):
+def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, progress_queue, idx=0, template_name=None):
     """
     处理单个供应商的完整初筛流程
 
@@ -444,8 +466,9 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
                      "success", user_id)
 
     # ==================== 任务16：生成初筛结论 ====================
-    # 小白讲解：通过线/人工确认线从数据库读取，业务部门可在规则配置页修改
-    pass_threshold, manual_review_threshold = _get_thresholds()
+    # 小白讲解：通过线/人工确认线从数据库读取，业务部门可在规则配置页修改。
+    # 如果用了模板，从模板实例读通过线（template_name 透传过来）。
+    pass_threshold, manual_review_threshold = _get_thresholds(template_name=template_name)
     if veto_triggered:
         conclusion = "未通过初筛"
         reason = f"触发一票否决[{veto_rule_code}]：{veto_reason}"
