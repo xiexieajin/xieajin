@@ -548,31 +548,34 @@ def _seed_initial_data(cursor, conn):
         conn.commit()
         print(f"[初始化] 已创建初始管理员账号：{INITIAL_ADMIN_USERNAME}")
 
-    # ---------- 2. AI服务提供商预置 ----------
-    cursor.execute("SELECT COUNT(*) as cnt FROM ai_providers")
-    if cursor.fetchone()["cnt"] == 0:
-        # 从 config.py 读取现有配置值迁移到数据库
-        from config import (DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
-                            ZHIPU_API_KEY, ZHIPU_BASE_URL,
-                            TYC_MCP_URL, TYC_MCP_AUTH,
-                            ALI_1688_AK)
-        now = now_str()
-        providers = [
-            ("DeepSeek", "deepseek", "ai_model", DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY),
-            ("智谱AI", "zhipu", "ai_model", ZHIPU_BASE_URL, ZHIPU_API_KEY),
-            ("1688", "ali1688", "search_platform", "https://api.1688.com", ALI_1688_AK),
-            ("中国制造网", "madeinchina", "search_platform", "https://mcp.chexb.com/sse", ""),
-            ("天眼查", "tianyancha", "data_api", TYC_MCP_URL, TYC_MCP_AUTH),
-            ("Jina Reader", "jina_reader", "data_api", "https://r.jina.ai", ""),
-            ("Firecrawl", "firecrawl", "data_api", "https://api.firecrawl.dev/v1", ""),
-        ]
-        for name, code, ptype, url, key in providers:
+    # ---------- 2. AI服务提供商预置（支持增量补录） ----------
+    # 从 config.py 读取现有配置值迁移到数据库
+    from config import (DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
+                        ZHIPU_API_KEY, ZHIPU_BASE_URL,
+                        TYC_MCP_URL, TYC_MCP_AUTH,
+                        ALI_1688_AK)
+    now = now_str()
+    providers = [
+        ("DeepSeek", "deepseek", "ai_model", DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY),
+        ("智谱AI", "zhipu", "ai_model", ZHIPU_BASE_URL, ZHIPU_API_KEY),
+        ("1688", "ali1688", "search_platform", "https://api.1688.com", ALI_1688_AK),
+        ("中国制造网", "madeinchina", "search_platform", "https://mcp.chexb.com/sse", ""),
+        ("天眼查", "tianyancha", "data_api", TYC_MCP_URL, TYC_MCP_AUTH),
+        ("Jina Reader", "jina_reader", "data_api", "https://r.jina.ai", ""),
+        ("Firecrawl", "firecrawl", "data_api", "https://api.firecrawl.dev/v1", ""),
+    ]
+    # 小白讲解：逐个检查是否已存在，不存在才插入（INSERT IGNORE）
+    # 这样老用户升级时也能自动补录新增的服务商
+    for name, code, ptype, url, key in providers:
+        cursor.execute("SELECT id FROM ai_providers WHERE provider_code = %s", (code,))
+        if not cursor.fetchone():
             cursor.execute("""
                 INSERT INTO ai_providers (provider_name, provider_code, provider_type, base_url, api_key, is_enabled, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, 1, %s, %s)
             """, (name, code, ptype, url, key, now, now))
-        conn.commit()
-        print("[初始化] 已预置7个AI服务提供商")
+            print(f"[初始化] 新增服务商：{name}（{code}）")
+    conn.commit()
+    print("[初始化] AI服务提供商检查完成")
 
     # ---------- 3. AI模型场景配置预置（7个场景）----------
     cursor.execute("SELECT COUNT(*) as cnt FROM ai_model_configs")
