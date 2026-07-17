@@ -63,13 +63,24 @@
             {% for t in templates %}
             <div class="list-group-item d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-file-earmark-text text-info"></i> {{ t }}</span>
-                <form method="POST" action="{{ url_for('screening_rules_template_delete') }}" class="d-inline"
-                      onsubmit="return confirm('确定删除模板「{{ t }}」吗？删除后初筛页将不再显示此模板。');">
-                    <input type="hidden" name="template_name" value="{{ t }}">
-                    <button type="submit" class="btn btn-sm btn-outline-danger">
-                        <i class="bi bi-trash"></i> 删除
-                    </button>
-                </form>
+                <div class="d-flex gap-2">
+                    {# 小白讲解：使用按钮=把该模板的配置应用为当前默认规则，覆盖现有配置。
+                       点使用后规则配置页会刷新成该模板的参数，下次初筛默认就用这套配置。 #}
+                    <form method="POST" action="{{ url_for('screening_rules_template_apply') }}" class="d-inline"
+                          onsubmit="return confirm('将把模板「{{ t }}」的配置应用为当前默认规则（覆盖现有规则参数和通过线）。确定使用？');">
+                        <input type="hidden" name="template_name" value="{{ t }}">
+                        <button type="submit" class="btn btn-sm btn-outline-success">
+                            <i class="bi bi-check2-circle"></i> 使用
+                        </button>
+                    </form>
+                    <form method="POST" action="{{ url_for('screening_rules_template_delete') }}" class="d-inline"
+                          onsubmit="return confirm('确定删除模板「{{ t }}」吗？删除后初筛页将不再显示此模板。');">
+                        <input type="hidden" name="template_name" value="{{ t }}">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i> 删除
+                        </button>
+                    </form>
+                </div>
             </div>
             {% endfor %}
         </div>

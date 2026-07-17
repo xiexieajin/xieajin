@@ -2154,6 +2154,33 @@ def screening_rules_template_delete():
     return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
 
 
+@app.route("/screening/rules/template/apply", methods=["POST"])
+def screening_rules_template_apply():
+    """
+    使用模板：把已保存模板的规则参数应用为当前默认配置
+
+    小白讲解：管理员在规则配置页点模板后面的"使用"按钮时调用这个路由。
+    做法：把模板里的规则参数（启用状态/条件/满分值/通过线）写回默认规则表，
+    覆盖当前默认配置。应用后规则配置页表格会立即显示该模板的参数，
+    下次初筛即使用户不在AI初筛页选模板，也会用这套配置。
+    注意：应用会覆盖现有默认配置，请在确认提示里告知用户。
+    """
+    from screening_rules import apply_template_to_default
+    req_id = request.form.get("req_id", "") or request.args.get("req_id", "")
+    template_name = request.form.get("template_name", "").strip()
+    if not template_name:
+        flash("未指定要使用的模板", "danger")
+        return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+
+    applied = apply_template_to_default(template_name)
+    if applied > 0:
+        flash(f"模板「{template_name}」已应用为当前默认配置（共{applied}条规则，含通过线阈值）。"
+              f"规则配置页已刷新为该模板参数，下次初筛将默认使用此配置。", "success")
+    else:
+        flash(f"模板「{template_name}」不存在或没有可应用的规则", "warning")
+    return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+
+
 @app.route("/screening/rules/audit/<run_id>")
 def screening_audit_detail(run_id):
     """审计日志详情页 - 查看某次初筛运行的完整执行过程"""

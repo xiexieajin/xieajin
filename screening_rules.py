@@ -233,6 +233,15 @@ def save_as_template(user_id, template_name, rule_overrides):
     now = now_str()
     count = 0
 
+    # 小白讲解：保存前先删除同名旧模板的所有实例记录。
+    # 原因：之前每次保存都是 INSERT 新记录，没有去重逻辑，导致同名模板被多次保存后
+    # 记录数翻倍（如17条变34条），load_template 会返回重复记录，flash 提示条数也不对。
+    # 这里先 DELETE 旧记录再 INSERT，保证每个模板名的记录数=规则数，与用户预期一致。
+    cursor.execute("""
+        DELETE FROM screening_rule_instances
+        WHERE template_name = %s AND requirement_id IS NULL
+    """, (template_name,))
+
     for override in rule_overrides:
         # 查模板ID
         cursor.execute("SELECT id FROM screening_rule_templates WHERE rule_code = %s",
@@ -332,6 +341,54 @@ def delete_template(template_name):
     conn.commit()
     conn.close()
     return deleted
+
+
+def apply_template_to_default(template_name):
+    """
+    把已保存的模板参数应用为当前默认规则配置（覆盖 screening_rule_templates 表）
+
+    小白讲解：用户在规则配置页点模板后面的"使用"按钮时调用这个函数。
+    做法：加载模板里所有规则实例（启用状态/条件/满分值/通过线），
+    逐条写回 screening_rule_templates 表，让该模板成为新的默认配置。
+    应用后规则配置页表格立即显示该模板的参数，下次初筛即使用户不选模板也会用这套配置。
+
+    注意：通过线（threshold_pass / threshold_manual_review）也是规则实例，
+    会被一起写回默认表，所以通过线也会被覆盖。
+
+    参数：template_name 模板名称
+    返回：成功应用的规则条数；模板不存在返回0
+    """
+    # 1. 加载模板里的所有规则实例（包含完整参数）
+    instances = load_template(None, template_name)
+    if not instances:
+        return 0
+
+    applied = 0
+    for inst in instances:
+        rule_code = inst.get("rule_code")
+        if not rule_code:
+            continue
+
+        # 2. 构造要写回默认表的更新字段
+        updates = {}
+        # 启用状态（模板可能禁用了某些规则）
+        if inst.get("is_enabled") is not None:
+            updates["is_enabled"] = inst.get("is_enabled")
+        # 自定义条件（如注册资本阈值），直接写字符串，update_rule_template 会按字段存
+        if inst.get("custom_condition"):
+            updates["default_condition"] = inst.get("custom_condition")
+        # 满分值（评分规则的满分）/ 通过线（threshold_pass 类规则实例的 custom_score_cap 就是通过线数值）
+        if inst.get("custom_score_cap") is not None:
+            updates["max_score"] = inst.get("custom_score_cap")
+
+        if not updates:
+            continue
+
+        # 3. 写回默认规则表
+        if update_rule_template(rule_code, updates):
+            applied += 1
+
+    return applied
 
 
 # ==================== 条件JSON解析与评估 ====================
