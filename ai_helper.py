@@ -842,6 +842,18 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 
 网页有数据但你没填 = 漏填。请对照网页内容逐项检查每个字段。
 
+【反爬空壳识别 - 重要】
+如果"网页内容"区块出现以下特征，说明该链接反爬严格（如天猫/淘宝商品页、需要登录的站点等），抓取到的不是真实商品信息：
+- 内容里只有"店铺 客服 收藏 加入购物车 立即购买""商品详情页"等导航词
+- 出现"URL路径无法提取有效关键词""抓取失败""反爬"等抓取失败提示
+- 内容很短（不到200字）且无具体产品参数
+
+遇到这种情况：
+- product_name / core_functions / material / spec_size 等字段留空（不要瞎编）
+- confirmed 设为 false
+- missing_required 必须包含 ["product_name", "core_functions", "material", "spec_size"]
+- 追问问题里要明确告知用户："该链接（如天猫/淘宝商品页）反爬严格，系统无法自动提取商品信息，请补充以下关键字段：产品名称、核心功能、材质、规格尺寸等。也可改用其他平台商品链接（如亚马逊、京东）或上传产品图片/规格书。"
+
 JSON格式（只返回JSON）：
 {{
     "product_name": "完整产品名",
@@ -914,6 +926,8 @@ def _generate_questions(parsed):
     """
     questions = []
     field_names = {
+        "product_name": "产品名称",
+        "product_aliases": "行业通用别名",
         "core_functions": "核心功能",
         "material": "材质",
         "spec_size": "规格尺寸",
@@ -922,6 +936,8 @@ def _generate_questions(parsed):
         "first_purchase_qty": "首批采购量",
         "acceptable_moq": "可接受最小起订量",
         "min_ship_qty": "最小发货量",
+        "acceptable_lead_time": "可接受生产交期",
+        "other_requirements": "其他要求",
     }
 
     # 必须项缺失

@@ -1415,8 +1415,10 @@ def ai_supplement_requirement():
         return redirect(url_for("ai_index"))
 
     # 收集用户补充的信息 + 之前已识别的信息（作为previous_data传给AI）
+    # 产品名称优先取用户在补充表单里输入的 product_name，为空时再回退到上一轮的 prev_product_name
+    product_name_input = request.form.get("product_name", "").strip()
     previous_data = {
-        "product_name": request.form.get("prev_product_name", "").strip(),
+        "product_name": product_name_input if product_name_input else request.form.get("prev_product_name", "").strip(),
         "core_functions": request.form.get("core_functions", "").strip(),
         "material": request.form.get("material", "").strip(),
         "spec_size": request.form.get("spec_size", "").strip(),
