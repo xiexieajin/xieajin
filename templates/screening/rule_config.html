@@ -84,7 +84,7 @@
         {% if score_total == 100 %}
             <span class="badge bg-light text-success ms-2">当前总分：{{ score_total }}/100 ✓</span>
         {% else %}
-            <span class="badge bg-danger ms-2">当前总分：{{ score_total }}/100 ✗ 必须等于100！</span>
+            <span class="badge bg-warning text-dark ms-2">当前总分：{{ score_total }}/100，还需调整到100</span>
         {% endif %}
     </div>
     <div class="card-body">
@@ -136,6 +136,20 @@
             </tbody>
         </table>
     </div>
+</div>
+
+{# 小白讲解：评分总分校验时机说明。单条规则保存不强制总分=100，
+   允许用户先改A再加B逐步平衡。保存为模板和开始初筛时才会强制校验总分=100。 #}
+<div class="alert {% if score_total == 100 %}alert-success{% else %}alert-warning{% endif %} mb-3">
+    <i class="bi bi-info-circle"></i>
+    <strong>评分总分校验说明：</strong>
+    {% if score_total == 100 %}
+        当前所有评分规则满分总和为 {{ score_total }}，配置完整，可以保存为模板或开始初筛。
+    {% else %}
+        当前所有评分规则满分总和为 <strong>{{ score_total }}</strong>，不等于100。
+        你可以先逐条修改规则满分（单条保存不会被拦截），调整到总分=100后再
+        <strong>保存为模板</strong> 或 <strong>开始初筛</strong>（这两个操作会强制校验总分=100）。
+    {% endif %}
 </div>
 
 {# ==================== 初筛通过标准区（可编辑） ==================== #}

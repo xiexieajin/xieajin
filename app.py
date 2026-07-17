@@ -1765,6 +1765,22 @@ def ai_auto_screening(req_id):
     score_rules = get_score_rules()
     templates = list_user_templates(g.user_id)
 
+    # 小白讲解：初筛前兜底校验"启用的评分规则满分总和=100"。
+    # 单条规则保存允许临时≠100，但初筛执行时必须=100，否则初筛总分会不对。
+    # 校验只针对"用默认规则"的情况；如果用户选了模板，模板保存时已经校验过总分=100，这里跳过。
+    template_name_submit = (request.form.get("template_name") or "").strip() if request.method == "POST" else ""
+    if not template_name_submit:
+        enabled_score_rules = [r for r in score_rules if r.get("is_enabled")]
+        score_total = sum(r["max_score"] for r in enabled_score_rules if r.get("max_score"))
+        if score_total != 100:
+            if request.method == "GET":
+                flash(f"当前启用的评分规则满分总和为{score_total}，不等于100，无法开始初筛。"
+                      f"请先到规则配置页调整满分（单条保存不会被拦截），总分=100后再来初筛。", "danger")
+            else:
+                flash(f"开始初筛失败！启用的评分规则满分总和必须等于100（当前{score_total}）。"
+                      f"请先到规则配置页调整满分。", "danger")
+            return redirect(url_for("screening_rules_config", req_id=req_id))
+
     if request.method == "GET":
         return render_template("ai/auto_screening.html",
                                requirement=requirement, pending_count=pending_count,
@@ -1989,17 +2005,11 @@ def screening_rules_update():
             if max_score < 0 or max_score > 100:
                 flash("满分分值必须在0-100之间", "danger")
                 return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
-            # 校验总分：所有评分规则的max_score总和必须=100
-            # 小白讲解：6条评分规则的满分加起来必须正好100分，否则初筛总分就不对
-            from screening_rules import get_score_rules
-            all_score_rules = get_score_rules()
-            other_total = sum(r["max_score"] for r in all_score_rules if r["rule_code"] != rule_code)
-            new_total = other_total + max_score
-            if new_total != 100:
-                flash(f"保存失败！所有评分规则的满分总和必须等于100。"
-                      f"当前其他5条规则满分合计{other_total}，本规则填{max_score}，"
-                      f"总计{new_total}≠100。请调整后再保存。", "danger")
-                return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+            # 小白讲解：单条规则保存时不校验总分=100，只校验本规则范围。
+            # 原因：用户调整评分通常需要改多条规则才能平衡总分（如A加5分、B减5分），
+            # 如果每改一条就强制总分=100，用户永远改不动。
+            # 总分校验放在"保存为模板"和"开始初筛"两个时机，那里才需要完整配置自洽。
+            # 页面顶部会实时显示当前总分，提醒用户是否还需调整。
             updates["max_score"] = max_score
         if scoring_logic:
             updates["scoring_logic"] = scoring_logic
@@ -2059,10 +2069,24 @@ def screening_rules_threshold():
 @app.route("/screening/rules/template/save", methods=["POST"])
 def screening_rules_template_save():
     """保存当前规则配置为模板（完整快照：含阈值/满分/通过线/启用状态）"""
-    from screening_rules import save_as_template, list_rule_templates
+    from screening_rules import save_as_template, list_rule_templates, get_score_rules
+    req_id = request.form.get("req_id", "") or request.args.get("req_id", "")
     template_name = request.form.get("template_name", "").strip()
     if not template_name:
         flash("请输入模板名称", "danger")
+        return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+
+    # 小白讲解：保存模板前强制校验"所有启用的评分规则满分总和=100"。
+    # 原因：单条规则保存时允许临时≠100（方便逐步调整），但模板是完整配置快照，
+    # 必须自洽。如果总分别100，初筛总分会不对（如满分105但通过线75，语义错乱）。
+    # 启用的评分规则才参与校验，禁用的不计算。
+    score_rules = get_score_rules()
+    enabled_score_rules = [r for r in score_rules if r.get("is_enabled")]
+    score_total = sum(r["max_score"] for r in enabled_score_rules)
+    if score_total != 100:
+        flash(f"保存模板失败！启用的评分规则满分总和必须等于100。"
+              f"当前{len(enabled_score_rules)}条启用规则满分合计{score_total}，"
+              f"请先到规则配置页调整满分（单条保存不会被拦截），总分=100后再保存模板。", "danger")
         return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
 
     # 小白讲解：读取当前全局表所有规则的完整参数（不只是 is_enabled），
@@ -2085,7 +2109,7 @@ def screening_rules_template_save():
         })
 
     count = save_as_template(g.user_id, template_name, rule_overrides)
-    flash(f"模板「{template_name}」已保存（{count}条规则，含完整参数）", "success")
+    flash(f"模板「{template_name}」已保存（{count}条规则，含完整参数，总分{score_total}）", "success")
     return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
 
 
