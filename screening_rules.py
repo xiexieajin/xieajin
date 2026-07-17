@@ -284,13 +284,15 @@ def list_user_templates(user_id=None):
 
 def load_template(user_id, template_name):
     """
-    加载用户保存的模板，返回该模板下所有规则实例
+    加载模板，返回该模板下所有规则实例（模板所有用户共享）
 
     小白讲解：用户在初筛页选了某个模板后，调用这个函数拿到模板里的规则配置，
     然后用这些配置覆盖当前默认规则。
+    模板是共享的（管理员保存后所有用户可选用），所以不按 user_id 过滤。
+    user_id 参数保留只是为了向后兼容旧调用。
 
     参数：
-        user_id: 用户ID
+        user_id: 已废弃（模板共享），保留参数仅为兼容旧调用
         template_name: 模板名称
     返回：规则实例字典列表
     """
@@ -302,12 +304,34 @@ def load_template(user_id, template_name):
                rt.scoring_logic, rt.tyc_commands, rt.description
         FROM screening_rule_instances ri
         JOIN screening_rule_templates rt ON ri.template_id = rt.id
-        WHERE ri.user_id = %s AND ri.template_name = %s AND ri.requirement_id IS NULL
+        WHERE ri.template_name = %s AND ri.requirement_id IS NULL
         ORDER BY rt.sort_order
-    """, (user_id, template_name))
+    """, (template_name,))
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def delete_template(template_name):
+    """
+    删除模板（按模板名删除所有实例记录）
+
+    小白讲解：一个模板由多条 screening_rule_instances 记录组成（每条规则一行），
+    删除时按 template_name 删除所有相关记录。模板是共享的，不按 user_id 过滤。
+
+    参数：template_name 模板名称
+    返回：删除的记录数
+    """
+    conn = _get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        DELETE FROM screening_rule_instances
+        WHERE template_name = %s AND requirement_id IS NULL
+    """, (template_name,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 # ==================== 条件JSON解析与评估 ====================

@@ -2113,6 +2113,30 @@ def screening_rules_template_save():
     return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
 
 
+@app.route("/screening/rules/template/delete", methods=["POST"])
+def screening_rules_template_delete():
+    """
+    删除已保存的规则模板
+
+    小白讲解：管理员在规则配置页点模板后面的"删除"按钮，调用这个路由。
+    按 template_name 删除该模板的所有规则实例记录（一个模板由17条记录组成）。
+    删除后该模板不再出现在初筛页的模板选择下拉框里。
+    """
+    from screening_rules import delete_template
+    req_id = request.form.get("req_id", "") or request.args.get("req_id", "")
+    template_name = request.form.get("template_name", "").strip()
+    if not template_name:
+        flash("未指定要删除的模板", "danger")
+        return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+
+    deleted = delete_template(template_name)
+    if deleted > 0:
+        flash(f"模板「{template_name}」已删除（共{deleted}条规则记录）", "success")
+    else:
+        flash(f"模板「{template_name}」不存在或已被删除", "warning")
+    return redirect(url_for("screening_rules_config", req_id=req_id) if req_id else url_for("screening_rules_config"))
+
+
 @app.route("/screening/rules/audit/<run_id>")
 def screening_audit_detail(run_id):
     """审计日志详情页 - 查看某次初筛运行的完整执行过程"""
