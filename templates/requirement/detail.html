@@ -166,28 +166,46 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-building"></i> 关联供应商</span>
-                <span class="badge bg-success">{{ suppliers|length }}</span>
+                <span class="badge bg-success" id="supplierTotalBadge">{{ suppliers|length }}</span>
             </div>
             <div class="card-body p-0">
                 {% if suppliers %}
-                {# 小白讲解：供应商阶段分布，一眼看出该需求当前进展到哪一步
-                   例如"已寻源待初筛 5 / 已通过初筛 3 / 沟通中 2"说明在初筛阶段 #}
+                {# 小白讲解：供应商阶段分布，一眼看出该需求当前进展到哪一步。
+                   点击某个阶段徽章可以只看该阶段的供应商；点击"全部"恢复显示全部。 #}
                 <div class="px-3 py-2 border-bottom bg-light">
-                    <small class="text-muted d-block mb-1">供应商阶段分布</small>
+                    <small class="text-muted d-block mb-1">供应商阶段分布（点击筛选）</small>
                     <div class="d-flex flex-wrap gap-1">
+                        <button type="button" class="badge bg-primary text-white stage-filter-btn active"
+                                data-stage-filter="">全部 {{ suppliers|length }}</button>
                         {% for stage in supplier_stages %}
                         {% set cnt = stage_stats.get(stage, 0) %}
                         {% if cnt > 0 %}
-                        <span class="badge {% if stage == '已合作' %}bg-success{% elif stage == '已通过初筛' %}bg-warning text-dark{% elif stage == '沟通中' %}bg-info text-dark{% elif stage == '未通过初筛' %}bg-danger{% else %}bg-secondary{% endif %}">
+                        <button type="button" class="badge {% if stage == '已合作' %}bg-success{% elif stage == '已通过初筛' %}bg-warning text-dark{% elif stage == '沟通中' %}bg-info text-dark{% elif stage == '未通过初筛' %}bg-danger{% else %}bg-secondary{% endif %} stage-filter-btn"
+                                data-stage-filter="{{ stage }}">
                             {{ stage }} {{ cnt }}
-                        </span>
+                        </button>
                         {% endif %}
                         {% endfor %}
                     </div>
                 </div>
-                <div class="list-group list-group-flush">
+                {# 小白讲解：名字筛选框，输入文字后只显示名字包含该文字的供应商（不区分大小写） #}
+                <div class="px-3 py-2 border-bottom bg-light">
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
+                        <input type="text" id="supplierNameFilter" class="form-control border-start-0"
+                               placeholder="筛选供应商名字..." autocomplete="off">
+                    </div>
+                    <small class="text-muted d-block mt-1" id="supplierCountHint">显示 {{ suppliers|length }} / 共 {{ suppliers|length }}</small>
+                </div>
+                {# 小白讲解：供应商列表设置最大高度并允许内部滚动，
+                   这样卡片整体不会拉得过长，底部与左侧"需求总结与关键词"卡片底部视觉对齐 #}
+                <div class="list-group list-group-flush" id="supplierList"
+                     style="max-height: 60vh; overflow-y: auto;">
                     {% for s in suppliers %}
-                    <a href="{{ url_for('supplier_detail', id=s.id) }}" class="list-group-item list-group-item-action">
+                    <a href="{{ url_for('supplier_detail', id=s.id) }}"
+                       class="list-group-item list-group-item-action"
+                       data-supplier-item data-stage="{{ s.dev_stage }}"
+                       data-name="{{ s.name|lower }}">
                         <div class="d-flex justify-content-between align-items-center">
                             <div>
                                 <strong>{{ s.name }}</strong>
@@ -208,6 +226,12 @@
                         </div>
                     </a>
                     {% endfor %}
+                </div>
+                {# 小白讲解：筛选后没有匹配供应商时的空提示（默认隐藏） #}
+                <div class="empty-state d-none" id="supplierEmptyHint">
+                    <div class="empty-state__icon"><i class="bi bi-search"></i></div>
+                    <div class="empty-state__title">没有匹配的供应商</div>
+                    <div class="empty-state__desc">换个筛选条件试试</div>
                 </div>
                 {% else %}
                 {# 小白讲解：没有关联供应商时用 empty-state 空状态样式 #}
@@ -230,4 +254,91 @@
         </div>
     </div>
 </div>
+
+<style>
+/* 阶段筛选按钮的 active 高亮样式：加白边框让用户知道当前选中的是哪个 */
+.stage-filter-btn {
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+}
+.stage-filter-btn.active {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 4px rgba(13, 110, 253, 0.5);
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ==================== 供应商列表筛选（阶段分布点击 + 名字搜索）====================
+// 小白讲解：在前端用 JavaScript 过滤供应商列表，不用每次筛选都重新请求后端，体验更流畅。
+// 两个筛选条件可以叠加：例如先点"已通过初筛"再搜"深圳"，只显示名字含"深圳"的已通过初筛供应商。
+(function () {
+    const stageButtons = document.querySelectorAll('.stage-filter-btn');
+    const nameInput = document.getElementById('supplierNameFilter');
+    const items = document.querySelectorAll('[data-supplier-item]');
+    const countHint = document.getElementById('supplierCountHint');
+    const totalBadge = document.getElementById('supplierTotalBadge');
+    const emptyHint = document.getElementById('supplierEmptyHint');
+    const supplierList = document.getElementById('supplierList');
+
+    if (!stageButtons.length || !items.length) return;
+
+    let currentStage = '';   // 当前选中的阶段筛选（空字符串 = 全部）
+    let currentName = '';    // 当前输入的名字筛选
+
+    // 应用筛选：遍历每个供应商项，同时满足阶段和名字两个条件才显示
+    function applyFilter() {
+        let visibleCount = 0;
+        items.forEach(item => {
+            const stage = item.getAttribute('data-stage');
+            const name = item.getAttribute('data-name');
+            const stageMatch = !currentStage || stage === currentStage;
+            const nameMatch = !currentName || name.indexOf(currentName) !== -1;
+            if (stageMatch && nameMatch) {
+                item.style.display = '';
+                visibleCount++;
+            } else {
+                item.style.display = 'none';
+            }
+        });
+
+        // 更新数量提示
+        if (countHint) {
+            countHint.textContent = `显示 ${visibleCount} / 共 ${items.length}`;
+        }
+
+        // 没有匹配项时显示空提示，否则隐藏
+        if (emptyHint && supplierList) {
+            if (visibleCount === 0) {
+                supplierList.classList.add('d-none');
+                emptyHint.classList.remove('d-none');
+            } else {
+                supplierList.classList.remove('d-none');
+                emptyHint.classList.add('d-none');
+            }
+        }
+    }
+
+    // 阶段按钮点击：切换 active 高亮，记录当前阶段，重新筛选
+    stageButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            stageButtons.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentStage = btn.getAttribute('data-stage-filter');
+            applyFilter();
+        });
+        // 小白讲解：让按钮看起来像可点击的（指针鼠标 + 边框），但仍保留徽章样式
+        btn.style.cursor = 'pointer';
+        btn.style.border = '1px solid transparent';
+    });
+
+    // 名字输入框：实时筛选（input 事件每按一个字都触发）
+    if (nameInput) {
+        nameInput.addEventListener('input', e => {
+            currentName = e.target.value.trim().toLowerCase();
+            applyFilter();
+        });
+    }
+})();
+</script>
 {% endblock %}

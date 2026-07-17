@@ -764,7 +764,13 @@ def supplier_create():
                 if years >= 0:
                     establish_years = str(years)
 
-        # 插入供应商（user_id用于数据隔离，记录是哪个用户创建的）
+        # 小白讲解：手动添加供应商时，user_id 跟着"所选需求的所有者"走。
+        # 管理员在用户的需求下手动加供应商，供应商归属到用户名下，用户能看到。
+        cursor.execute("SELECT user_id FROM requirements WHERE id = %s", (data["requirement_id"],))
+        _req_row = cursor.fetchone()
+        _owner_id = _req_row["user_id"] if _req_row and _req_row.get("user_id") else g.user_id
+
+        # 插入供应商（user_id 用于数据隔离，记录归属用户）
         cursor.execute("""
             INSERT INTO suppliers
             (requirement_id, name, intro, factory_address, email, phone,
@@ -776,7 +782,7 @@ def supplier_create():
               data["factory_address"], data["email"], data["phone"],
               data["main_product"], establish_years, data["establish_date"],
               data["operating_status"], data["has_cross_border_exp"],
-              data["source"], now_str(), now_str(), g.user_id))
+              data["source"], now_str(), now_str(), _owner_id))
         # 手动新增了供应商（默认"已寻源待初筛"），需求状态应推进到"寻源中"
         recalc_requirement_status(cursor, data["requirement_id"])
         g.db.commit()
@@ -1557,9 +1563,11 @@ def ai_search_suppliers(req_id):
     if not requirement:
         return "需求不存在", 404
 
-    # 小白讲解：线程内不能访问g对象（g只在请求线程内有效），
-    # 所以在线程启动前把当前用户ID存到局部变量，传给后台线程使用
-    user_id = g.user_id
+    # 小白讲解：数据归属跟着"需求所有者"走，而不是跟着"操作人"走。
+    # 这样管理员帮用户在用户的需求上搜索供应商时，搜出来的供应商 user_id 是用户自己的，
+    # 用户能完整看到（不会被"只看自己数据"的过滤挡掉）。
+    # 管理员本来就能看所有数据，所以不受影响。
+    user_id = requirement["user_id"] if requirement.get("user_id") else g.user_id
 
     # GET请求：显示搜索配置页面
     if request.method == "GET":

@@ -629,6 +629,11 @@ def _seed_initial_data(cursor, conn):
     # ---------- 5. 初筛规则模板预置（11条一票否决 + 6条评分规则）----------
     _seed_screening_rules(cursor, conn)
 
+    # ---------- 6. 数据归属归位（让供应商/初筛/审计/沟通记录跟着需求所有者走）----------
+    # 小白讲解：以前管理员帮用户搜索供应商时，数据 user_id 写成了管理员 ID，用户看不到。
+    # 这里把所有数据的 user_id 对齐到"所属需求的所有者 user_id"，幂等可重复执行。
+    _realign_user_id_to_requirement_owner(cursor, conn)
+
 
 def _seed_screening_rules(cursor, conn):
     """
@@ -1004,6 +1009,59 @@ def _seed_screening_rules(cursor, conn):
 
     conn.commit()
     print("[初始化] 已预置17条初筛规则模板 + 2条通过标准配置（共19条记录）")
+
+
+def _realign_user_id_to_requirement_owner(cursor, conn):
+    """
+    数据归属归位：把供应商/初筛/审计/沟通记录的 user_id 对齐到所属需求的所有者
+
+    小白讲解：以前管理员帮用户在用户的需求上搜索供应商时，数据 user_id 写成了管理员 ID，
+    导致用户看不到这些数据。这个函数把所有数据的 user_id 改成"所属需求的所有者 user_id"，
+    实现数据归属跟着需求走。幂等可重复执行，已经是正确 user_id 的不会重复更新。
+    """
+    # suppliers 表：直接 JOIN requirements 取需求所有者
+    cursor.execute("""
+        UPDATE suppliers s
+        JOIN requirements r ON s.requirement_id = r.id
+        SET s.user_id = r.user_id
+        WHERE s.user_id != r.user_id
+    """)
+    n1 = cursor.rowcount
+
+    # screenings 表：通过 supplier_id JOIN suppliers 再 JOIN requirements
+    cursor.execute("""
+        UPDATE screenings sc
+        JOIN suppliers s ON sc.supplier_id = s.id
+        JOIN requirements r ON s.requirement_id = r.id
+        SET sc.user_id = r.user_id
+        WHERE sc.user_id != r.user_id
+    """)
+    n2 = cursor.rowcount
+
+    # screening_audit_logs 表：通过 supplier_id JOIN
+    cursor.execute("""
+        UPDATE screening_audit_logs al
+        JOIN suppliers s ON al.supplier_id = s.id
+        JOIN requirements r ON s.requirement_id = r.id
+        SET al.user_id = r.user_id
+        WHERE al.user_id != r.user_id
+    """)
+    n3 = cursor.rowcount
+
+    # communications 表：通过 supplier_id JOIN
+    cursor.execute("""
+        UPDATE communications c
+        JOIN suppliers s ON c.supplier_id = s.id
+        JOIN requirements r ON s.requirement_id = r.id
+        SET c.user_id = r.user_id
+        WHERE c.user_id != r.user_id
+    """)
+    n4 = cursor.rowcount
+
+    conn.commit()
+    total = n1 + n2 + n3 + n4
+    if total > 0:
+        print(f"[初始化] 数据归属归位完成：suppliers {n1} / screenings {n2} / audit_logs {n3} / communications {n4}")
 
 
 if __name__ == "__main__":

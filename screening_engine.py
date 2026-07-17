@@ -120,18 +120,28 @@ def run_screening(requirement_id, user_id, progress_queue=None):
                    desc=f"已加载{len(veto_rules)}条否决规则 + {len(score_rules)}条评分规则")
 
     # ==================== 任务2：读取待初筛供应商 ====================
+    # 小白讲解：这里不再用 user_id 过滤供应商，只按 requirement_id 过滤。
+    # 原因：需求归属权限已经在路由层（ai_auto_screening）用 _uid_clause 校验过了，
+    # 能进到这个函数说明操作者有权限操作这个需求。
+    # 而且供应商的 user_id 可能是需求所有者（管理员帮用户搜的），用操作人 user_id 过滤会漏掉。
+    # 所以这里只按 requirement_id + dev_stage 过滤，拿到该需求下所有待初筛的供应商。
     conn = _get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT s.*, r.product_name as req_product_name, r.target_market,
-               r.required_certs, r.requirement_summary
+               r.required_certs, r.requirement_summary, r.user_id as req_owner_user_id
         FROM suppliers s
         JOIN requirements r ON s.requirement_id = r.id
-        WHERE s.requirement_id = %s AND s.dev_stage = '已寻源待初筛' AND s.user_id = %s
+        WHERE s.requirement_id = %s AND s.dev_stage = '已寻源待初筛'
         ORDER BY s.id ASC
-    """, (requirement_id, user_id))
+    """, (requirement_id,))
     suppliers = cursor.fetchall()
     conn.close()
+
+    # 小白讲解：数据归属跟着"需求所有者"走。管理员帮用户操作初筛时，
+    # 初筛结果（screenings.user_id）应该归属到需求所有者名下，用户能看到。
+    # suppliers.req_owner_user_id 是 JOIN 出来的需求所有者 ID。
+    owner_user_id = suppliers[0]["req_owner_user_id"] if suppliers else user_id
 
     if not suppliers:
         _push_progress(progress_queue,
@@ -164,9 +174,11 @@ def run_screening(requirement_id, user_id, progress_queue=None):
                        desc=f"正在初筛第{idx}/{total_suppliers}家：{supplier_dict.get('name', '')}")
 
         try:
+            # 小白讲解：传 owner_user_id 而非操作人 user_id，
+            # 这样写 screenings/audit_logs 时归属到需求所有者名下，用户能看到完整记录。
             _screen_one_supplier(
                 supplier_dict, veto_rules, score_rules,
-                run_id, user_id, progress_queue, idx
+                run_id, owner_user_id, progress_queue, idx
             )
         except Exception as e:
             # 单个供应商失败不影响其他供应商
@@ -174,7 +186,7 @@ def run_screening(requirement_id, user_id, progress_queue=None):
             log_task(run_id, supplier_dict["id"], "engine_exception",
                      "初筛引擎异常", {"supplier": supplier_dict.get("name", "")},
                      {"error": str(e), "traceback": traceback.format_exc()[:500]},
-                     "引擎异常", "fail", user_id)
+                     "引擎异常", "fail", owner_user_id)
             _push_progress(progress_queue,
                            type="supplier_error",
                            current=idx,
@@ -182,7 +194,8 @@ def run_screening(requirement_id, user_id, progress_queue=None):
                            message=err_msg)
 
     # ==================== 任务20：输出执行报告 ====================
-    report = generate_audit_report(run_id, user_id=user_id)
+    # 小白讲解：用 owner_user_id 查日志，因为日志是用需求所有者 user_id 写的。
+    report = generate_audit_report(run_id, user_id=owner_user_id)
     passed = sum(1 for s in report["suppliers"] if not s["has_veto"] and not s["has_fail"] and not s["has_uncertain"])
 
     _push_progress(progress_queue,
