@@ -14,10 +14,10 @@
     <i class="bi bi-info-circle"></i>
     <strong>使用说明：</strong>输入需求描述、上传文件（或两者结合），AI会自动提取产品信息、采购要求、认证要求和搜索关键词。
     <br>
-    <i class="bi bi-amazon"></i>
-    <strong>支持亚马逊链接：</strong>如需求描述中包含<strong>亚马逊产品链接</strong>，AI会自动访问并提取产品标题、材质、尺寸、品牌、特性等寻源关键信息，无需额外操作。
+    <i class="bi bi-link-45deg"></i>
+    <strong>支持产品链接：</strong>如需求描述中包含<strong>产品页面链接</strong>（亚马逊、沃尔玛、1688、速卖通等），AI会自动访问并提取产品标题、材质、尺寸、品牌、特性等寻源关键信息，无需额外操作。
     <br>
-    <span class="text-muted"><i class="bi bi-exclamation-circle"></i> 仅支持亚马逊链接（amazon.com等各区域站点），其他网站链接无法抓取。</span>
+    <span class="text-muted"><i class="bi bi-info-circle"></i> 支持任意网站的产品链接，建议粘贴产品详情页URL以获得最佳提取效果。</span>
 </div>
 
 {% if not vision_configured %}
@@ -39,12 +39,14 @@
     justify-content: center;
     align-items: center;
     flex-direction: column;">
-    <div class="spinner-border text-light" role="status" style="width: 4rem; height: 4rem;">
+    <div class="spinner-border text-light" role="status" style="width: 3rem; height: 3rem;">
         <span class="visually-hidden">加载中...</span>
     </div>
-    <p class="text-light mt-3" style="font-size: 1.25rem;">
-        <i class="bi bi-robot"></i> AI正在解析中（如含网页链接需额外抓取，请耐心等待）...
+    <p id="progressMainText" class="text-light mt-3 mb-2" style="font-size: 1.2rem;">
+        <i class="bi bi-robot"></i> 正在初始化...
     </p>
+    <div id="progressSteps" style="max-height: 40vh; overflow-y: auto; width: 90%; max-width: 500px;">
+    </div>
 </div>
 
 <form method="POST" enctype="multipart/form-data" id="parseForm">
@@ -111,25 +113,111 @@ document.getElementById('fileInput').addEventListener('change', function(e) {
     const previewImg = document.getElementById('previewImg');
 
     if (file && file.type.startsWith('image/')) {
-        // 图片文件显示预览
         previewImg.src = URL.createObjectURL(file);
         preview.style.display = 'block';
     } else {
-        // 非图片文件不显示预览
         preview.style.display = 'none';
     }
 });
 
-// 监听表单提交：显示全屏loading遮罩层，隐藏表单，提示用户耐心等待
-document.getElementById('parseForm').addEventListener('submit', function() {
+// 监听表单提交：使用JS fetch替代默认表单提交，接收SSE流式进度
+document.getElementById('parseForm').addEventListener('submit', async function(e) {
+    e.preventDefault();  // 阻止浏览器默认的表单提交行为
+
     var overlay = document.getElementById('loadingOverlay');
     var form = document.getElementById('parseForm');
-    // 显示遮罩层（用flex布局让内容居中）
+    var progressText = document.getElementById('progressMainText');
+    var stepsContainer = document.getElementById('progressSteps');
+
+    // 显示遮罩，隐藏表单
     overlay.style.display = 'flex';
-    // 隐藏表单（避免用户重复操作）
     form.style.display = 'none';
-    // 滚动到页面顶部，确保用户能看到loading提示
     window.scrollTo(0, 0);
+    progressText.innerHTML = '<i class="bi bi-hourglass-split"></i> 正在准备...';
+    stepsContainer.innerHTML = '';
+
+    // 构造FormData（和普通表单提交一样）
+    var formData = new FormData(form);
+
+    try {
+        var response = await fetch('/ai/parse-requirement-stream', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            throw new Error('服务器返回错误 ' + response.status);
+        }
+
+        // 读取SSE流（Server-Sent Events）
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var redirectUrl = null;
+
+        while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+
+            buffer += decoder.decode(result.value, {stream: true});
+            // SSE数据以 \n\n 分隔每条消息
+            var parts = buffer.split('\n\n');
+            // 最后一段可能是不完整的，留到下次处理
+            buffer = parts.pop() || '';
+
+            for (var i = 0; i < parts.length; i++) {
+                var line = parts[i].trim();
+                if (!line.startsWith('data: ')) continue;
+
+                try {
+                    var data = JSON.parse(line.substring(6));
+                } catch (err) {
+                    continue;
+                }
+
+                if (data.status === 'done') {
+                    // 记录跳转URL，不立即return，等reader全部读完
+                    progressText.innerHTML = '<i class="bi bi-check-circle"></i> ' + data.message;
+                    if (data.redirect) {
+                        redirectUrl = data.redirect;
+                    }
+                    continue;
+                }
+
+                if (data.status === 'error') {
+                    progressText.innerHTML = '<i class="bi bi-exclamation-triangle"></i> ' + data.message;
+                    progressText.style.color = '#ff6b6b';
+                    setTimeout(function() {
+                        overlay.style.display = 'none';
+                        form.style.display = 'block';
+                    }, 3000);
+                    return;
+                }
+
+                // 正常进度：追加到步骤列表
+                var stepEl = document.createElement('div');
+                stepEl.style.cssText = 'color: rgba(255,255,255,0.7); font-size: 0.85rem; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.08);';
+                stepEl.textContent = data.message;
+                stepsContainer.appendChild(stepEl);
+                stepsContainer.scrollTop = stepsContainer.scrollHeight;
+            }
+        }
+
+        // SSE流全部读完后再跳转（确保后端已把结果写入内存字典）
+        if (redirectUrl) {
+            window.location.href = redirectUrl;
+        } else {
+            window.location.reload();
+        }
+    } catch (err) {
+        // 网络异常等兜底
+        progressText.innerHTML = '<i class="bi bi-exclamation-triangle"></i> 网络异常：' + err.message;
+        progressText.style.color = '#ff6b6b';
+        setTimeout(function() {
+            overlay.style.display = 'none';
+            form.style.display = 'block';
+        }, 3000);
+    }
 });
 </script>
 {% endblock %}

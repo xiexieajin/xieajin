@@ -19,6 +19,7 @@ import requests
 import re
 import subprocess
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from model_config import get_model_config, get_provider
 
@@ -36,6 +37,9 @@ _MAX_TOTAL_WEB_CONTENT = 20000
 
 # 抓取网页时的请求超时时间（秒），超时就放弃这个网页，不卡住整个解析流程
 _FETCH_TIMEOUT = 10
+
+# Jina Reader / Firecrawl 网页抓取超时时间（秒），比普通请求长一些，因为需要后台解析
+_FETCH_WEB_TIMEOUT = 30
 
 # 模拟正常浏览器的身份标识（有些网站会拒绝没有User-Agent的请求）
 _USER_AGENT = (
@@ -72,21 +76,18 @@ def extract_urls(text):
     return urls
 
 
-def fetch_url_content(url):
+def _fetch_url_fallback(url):
     """
-    抓取单个网页的正文内容（专门针对亚马逊产品页优化，用curl绕过反爬）
+    兜底方案：用curl/requests抓取网页HTML，解析正文（当Jina/Firecrawl都不可用时）
 
-    小白讲解：访问用户给的亚马逊链接，把网页下载下来，重点提取产品采购寻源需要的信息：
-    产品标题、品牌、材质、尺寸规格、产品特性（About this item）、技术参数等。
-
-    关键技术点：亚马逊会通过TLS指纹识别requests库的请求并返回反爬页面（只有3900字符无产品信息）。
-    而curl的TLS指纹和真实浏览器更接近，能稳定拿到完整产品页（100万+字符）。
-    所以这里优先用curl抓取，curl不可用时回退到requests。
+    小白讲解：这是传统的网页抓取方式。先尝试用curl下载HTML（绕过TLS指纹反爬），
+    curl不可用时回退到requests。下载后用BeautifulSoup提取正文。
+    对于亚马逊页面会尝试提取结构化产品信息，非亚马逊页面走通用文本提取。
 
     参数：
-        url: 要抓取的亚马逊产品页链接
+        url: 要抓取的网页链接
 
-    返回：网页正文文字（字符串）。抓取失败时返回带失败说明的短文本，不抛异常，避免中断主流程。
+    返回：网页正文文字（字符串）。抓取失败时返回带失败说明的短文本，不抛异常。
     """
     try:
         # 优先用curl抓取（能绕过亚马逊TLS指纹反爬）
@@ -144,6 +145,128 @@ def fetch_url_content(url):
     except Exception as e:
         url_hint = _extract_product_hint_from_url(url)
         return f"【抓取失败】{url} - 原因: {str(e)[:100]}\nURL产品线索: {url_hint}"
+
+
+def fetch_url_content(url):
+    """
+    抓取单个网页的正文内容（优先用Jina Reader / Firecrawl并发抓取，不可用时回退curl爬虫）
+
+    小白讲解：系统会同时尝试Jina Reader和Firecrawl两个服务来读取网页内容。
+    哪个开启了就用哪个，两个都开了就并发抓取（同时跑，不互相等待），
+    结果合并后给AI分析。两个都不可用时回退到传统的curl抓取方式。
+    不再限制网站类型，任何URL都支持！
+
+    参数：
+        url: 要抓取的网页链接
+
+    返回：网页正文文字（字符串）。所有方式都失败时返回兜底提示。
+    """
+    jina_cfg = get_provider("jina_reader")
+    firecrawl_cfg = get_provider("firecrawl")
+
+    jina_enabled = bool(jina_cfg and jina_cfg.get("is_enabled"))
+    firecrawl_enabled = bool(firecrawl_cfg and firecrawl_cfg.get("is_enabled") and firecrawl_cfg.get("api_key"))
+
+    if not jina_enabled and not firecrawl_enabled:
+        return _fetch_url_fallback(url)
+
+    # 亚马逊链接优先用curl结构化提取（能精准拿到产品标题/品牌/特性/规格表，
+    # 避免Firecrawl返回的大量推荐商品和广告噪音淹没真实产品信息）
+    if _is_amazon_url(url):
+        fallback = _fetch_url_fallback(url)
+        if fallback and len(fallback.strip()) > 200:
+            return fallback
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {}
+        if jina_enabled:
+            futures["jina"] = executor.submit(_fetch_with_jina, url)
+        if firecrawl_enabled:
+            futures["firecrawl"] = executor.submit(_fetch_with_firecrawl, url, firecrawl_cfg["api_key"])
+
+        for name, future in futures.items():
+            try:
+                text = future.result(timeout=_FETCH_WEB_TIMEOUT)
+                if text and len(text.strip()) > 100:
+                    results[name] = text
+            except Exception:
+                pass
+
+    if results:
+        parts = []
+        labels = {"jina": "Jina Reader", "firecrawl": "Firecrawl"}
+        for name in ["jina", "firecrawl"]:
+            if name in results:
+                text = results[name]
+                if len(text) > _MAX_CONTENT_PER_URL:
+                    text = text[:_MAX_CONTENT_PER_URL] + "\n...(内容过长已截断)"
+                source_count = len(results)
+                if source_count == 1:
+                    parts.append(f"【{labels[name]}提取】\n{text}")
+                else:
+                    parts.append(f"【来源{len(parts) + 1}：{labels[name]}提取】\n{text}")
+        return "\n\n---\n\n".join(parts)
+
+    return _fetch_url_fallback(url)
+
+
+def _fetch_with_jina(url):
+    """
+    用Jina Reader抓取网页正文（免费、无需API Key、任何网站都支持）
+
+    小白讲解：Jina Reader是一个免费的网页阅读器。只需要在目标URL前面加上
+    https://r.jina.ai/，它就会帮你下载网页、提取正文、转成干净的Markdown文本。
+    支持任何网站（亚马逊、沃尔玛、1688、速卖通...），不限类型。
+
+    参数：
+        url: 要抓取的网页链接
+
+    返回：干净的Markdown格式文本。失败返回空字符串。
+    """
+    try:
+        resp = requests.get(
+            f"https://r.jina.ai/{url}",
+            headers={"Accept": "text/markdown"},
+            timeout=_FETCH_WEB_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            return resp.text
+        return ""
+    except Exception:
+        return ""
+
+
+def _fetch_with_firecrawl(url, api_key):
+    """
+    用Firecrawl API抓取网页正文（支持JS渲染、专为AI设计）
+
+    小白讲解：Firecrawl是专为AI设计的网页抓取服务。它用无头浏览器渲染页面
+    （包括JS动态加载的内容），然后提取正文转成Markdown。比Jina Reader更适合
+    复杂的动态页面。需要注册获取API Key（免费额度500次/月）。
+
+    参数：
+        url: 要抓取的网页链接
+        api_key: Firecrawl的API密钥
+
+    返回：干净的Markdown格式文本。失败返回空字符串。
+    """
+    try:
+        resp = requests.post(
+            "https://api.firecrawl.dev/v1/scrape",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"url": url, "formats": ["markdown"]},
+            timeout=_FETCH_WEB_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("data", {}).get("markdown", "")
+        return ""
+    except Exception:
+        return ""
 
 
 def _fetch_with_curl(url):
@@ -407,52 +530,70 @@ def _is_amazon_url(url):
     return False
 
 
-def fetch_urls_from_text(text):
+def fetch_urls_from_text(text, progress_callback=None):
     """
     从文本中找出所有URL并批量抓取网页内容，合并成一段给AI分析用的文本
 
     小白讲解：这是给parse_requirement调用的总入口。
-    它先找出文本里所有网页链接，然后过滤出亚马逊链接（系统只支持亚马逊），
-    一个一个去抓取产品页内容，最后把所有网页内容拼成一段文字返回。
-    如果没有URL或没有亚马逊URL就返回空字符串（不影响原有解析流程）。
+    它先找出文本里所有网页链接，然后逐个抓取网页内容，拼成一段文字返回。
+    Jina Reader和Firecrawl都开启时会同时抓取、合并结果给AI交叉验证。
+    不限网站类型（亚马逊、沃尔玛、1688、速卖通等都支持）。
+    如果没有URL就返回空字符串（不影响原有解析流程）。
 
     参数：
         text: 用户输入的需求描述文本（可能包含URL）
+        progress_callback: 可选，进度回调函数 f(step, message, status)
 
-    返回：拼接好的网页正文文本。无亚马逊URL时返回空字符串。
+    返回：拼接好的网页正文文本。无URL时返回空字符串。
           所有网页内容合计超过_MAX_TOTAL_WEB_CONTENT字数则截断。
     """
     urls = extract_urls(text)
     if not urls:
         return ""
 
-    # 过滤：只保留亚马逊链接（系统只支持抓取亚马逊产品页）
-    amazon_urls = [u for u in urls if _is_amazon_url(u)]
-    non_amazon_urls = [u for u in urls if not _is_amazon_url(u)]
+    # 通知前端：检测到链接
+    jina_cfg = get_provider("jina_reader")
+    firecrawl_cfg = get_provider("firecrawl")
+    jina_on = bool(jina_cfg and jina_cfg.get("is_enabled"))
+    firecrawl_on = bool(firecrawl_cfg and firecrawl_cfg.get("is_enabled") and firecrawl_cfg.get("api_key"))
+    tools = []
+    if jina_on:
+        tools.append("Jina Reader")
+    if firecrawl_on:
+        tools.append("Firecrawl")
+    if not tools:
+        tools.append("内置爬虫")
 
-    # 如果有非亚马逊链接，给AI一条提示，让AI告知用户只支持亚马逊
-    hint = ""
-    if non_amazon_urls and not amazon_urls:
-        hint = "（提示：用户贴了非亚马逊链接，但系统仅支持亚马逊链接抓取，请在追问中提醒用户改贴亚马逊产品链接）"
-        return hint
+    if progress_callback:
+        progress_callback("urls_found",
+            f"🔍 检测到 {len(urls)} 个网页链接，将用 {' + '.join(tools)} 抓取...", "running")
 
     chunks = []
     total_len = 0
-    # 逐个抓取亚马逊产品页内容
-    for idx, url in enumerate(amazon_urls, start=1):
+    for idx, url in enumerate(urls, start=1):
+        if progress_callback:
+            short_url = url if len(url) <= 60 else url[:57] + "..."
+            progress_callback("fetching_url",
+                f"🌐 正在抓取网页 {idx}/{len(urls)}：{short_url}", "running")
         content = fetch_url_content(url)
-        # 用分隔标记区分不同网页的内容，方便AI识别
-        chunk = f"--- 亚马逊产品页{idx}：{url} ---\n{content}"
+        # 通知前端抓取结果（字数=0说明抓取失败）
+        content_len = len(content.strip()) if content else 0
+        if progress_callback:
+            if content_len > 500:
+                progress_callback("fetch_ok",
+                    f"✅ 网页 {idx} 抓取成功（{content_len} 字）", "running")
+            elif content_len > 100:
+                progress_callback("fetch_ok",
+                    f"⚠️ 网页 {idx} 抓取内容较少（{content_len} 字），部分信息可能缺失", "running")
+            else:
+                progress_callback("fetch_fail",
+                    f"❌ 网页 {idx} 抓取失败（仅 {content_len} 字），将尝试从URL推断", "running")
+        chunk = f"--- 网页{idx}：{url} ---\n{content}"
         chunks.append(chunk)
         total_len += len(chunk)
-        # 达到总字数上限就停止抓取（避免抓太多撑爆AI上下文）
         if total_len >= _MAX_TOTAL_WEB_CONTENT:
             chunks.append(f"\n...(已达到网页内容总字数上限，后续网页不再抓取)")
             break
-
-    # 如果还有非亚马逊链接，附上提示
-    if non_amazon_urls:
-        chunks.append(f"\n（提示：检测到 {len(non_amazon_urls)} 个非亚马逊链接已忽略，系统仅支持亚马逊链接）")
 
     return "\n\n".join(chunks)
 
@@ -616,7 +757,7 @@ def extract_json_from_text(text):
 
 
 # ==================== 功能1：AI解析需求（按需求确认SKILL逻辑）====================
-def parse_requirement(input_text, file_content=None, image_base64=None, previous_data=None):
+def parse_requirement(input_text, file_content=None, image_base64=None, previous_data=None, progress_callback=None):
     """
     AI解析需求 - 严格按照"需求确认SKILL"文档的逻辑
 
@@ -633,6 +774,7 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
         file_content: 从上传文档中提取的文本内容（可选）
         image_base64: 上传图片的base64编码（可选）
         previous_data: 之前AI已识别的信息+用户补充的信息（第二轮追问时用）
+        progress_callback: 可选，进度回调 f(step, message, status)，status为 running/done/error
 
     返回：字典，包含 confirmed(是否确认完成) + 各字段 + 缺失项 + 追问问题
     """
@@ -640,6 +782,8 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 
     # 第一步：如果有图片，先用智谱GLM-4V识别图片内容
     if image_base64:
+        if progress_callback:
+            progress_callback("ocr_image", "🖼️ 正在用智谱AI识别图片内容...", "running")
         image_prompt = (
             "请仔细识别这张图片中的所有信息。这可能是产品图片、规格书、采购需求文档等。"
             "请详细描述：产品名称、规格参数、材质、数量要求、认证要求、任何文字内容等。"
@@ -650,13 +794,14 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 
     # 第二步：合并文档内容
     if file_content:
+        if progress_callback:
+            progress_callback("merge_doc", "📄 正在合并上传的文档内容...", "running")
         full_text += f"\n\n文档内容：\n{file_content}"
 
     # 第三步：抓取用户在需求描述里贴的网页链接，把网页正文加入分析文本
-    # 小白讲解：DeepSeek本身没有联网能力，所以由我们的代码先把网页内容抓下来，
-    # 再把正文文本喂给AI，这样AI就能"看到"网页里的产品规格、参数等信息了。
-    # 没有贴URL时返回空字符串，不影响原有流程。
-    web_content = fetch_urls_from_text(full_text)
+    if progress_callback:
+        progress_callback("fetch_web", "🌐 正在检查需求中的网页链接...", "running")
+    web_content = fetch_urls_from_text(full_text, progress_callback=progress_callback)
     if web_content:
         full_text += f"\n\n网页内容：\n{web_content}"
 
@@ -668,70 +813,56 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
                 supplement_text += f"{k}: {v}\n"
         full_text += f"\n\n{supplement_text}"
 
-    # 第四步：AI提取信息并判断确认状态
-    extract_prompt = f"""你是采购需求确认专家。请分析以下用户提供的采购需求，提取信息并判断确认状态。
+    # 第五步：AI提取信息并判断确认状态
+    if progress_callback:
+        progress_callback("ai_analyze", "🤖 AI 正在分析需求（DeepSeek深度思考中，请耐心等待）...", "running")
+    extract_prompt = f"""分析以下内容，提取产品采购需求。
 
-用户输入：
+【说明】
+用户可能只粘贴了产品链接，下面的"网页内容"区块就是系统自动从该链接抓取的产品页信息。
+你的任务：从网页内容中直接提取产品参数，有数据的字段必须填写，不能空着。
+
 {full_text}
 
-【网页内容处理指引】
-如果输入中包含"网页内容"或"亚马逊产品页"区块，这是从亚马逊产品页自动抓取的信息，请重点从中提取采购寻源相关字段：
-- 产品标题：提取完整产品名，包含材质、尺寸、颜色、功能等关键信息
-- 品牌：记录品牌名作为参考
-- 产品特性（About this item）：从中提取核心功能、材质、尺寸规格等
-- 技术规格/产品参数：从中提取精确的尺寸、重量、材质等参数
-- 产品描述：补充提取其他产品特征
-提取时请综合网页内容与用户文字描述，网页中的产品信息优先级较高（因为是实际产品参考）。
-
-【重要：URL线索模式处理】
-如果网页内容区块中出现"URL路径提取"或"URL路径关键词"等字样，说明系统无法获取产品页全文，
-只从URL路径中提取了关键词线索。这种情况下：
-- 产品标题：使用URL线索中的产品关键词作为产品名称（这些关键词来自亚马逊产品页的URL标题段，是真实产品名）
-- 核心功能/材质/规格：从URL关键词中推断，无法推断的留空（不要编造）
-- 确认状态：所有能从URL线索推断的字段都正常填写，无法推断的必须字段标记为missing
-- 不要因为"无法抓取正文"就把整个需求放弃，URL线索中的关键词是有效的产品参考信息
-如果网页内容提示"非亚马逊链接"或"仅支持亚马逊链接"，请在other_requirements中提醒用户改贴亚马逊产品链接。
-
 【提取规则】
-必须确认项（缺一不可，缺失时对应字段留空并标记missing）：
-- core_functions 核心功能
-- material 材质
-- spec_size 规格尺寸
+从网页内容中照着找，网页写什么你就填什么：
+- product_name: 产品名称（含品牌+品类+关键材质/尺寸特征）
+- product_aliases: 行业别名（网页提到的其他叫法）
+- core_functions: 核心功能（产品能干什么，从标题/描述提取）
+- material: 材质（从材质表提取，如"橡胶木""不锈钢""ABS塑料"）
+- spec_size: 规格尺寸（长宽高重等，从规格表提取）
+- target_market: 目标市场（从销售平台推断，如"亚马逊美国站"）
+- required_certs: 认证（网页提到什么认证就填，没提就空）
+- first_purchase_qty: 首批采购量（用户没指定就空）
+- acceptable_moq: 可接受MOQ（用户没指定就空）
+- min_ship_qty: 最小发货量（用户没指定就空）
+- acceptable_lead_time: 生产交期（用户没指定就空）
+- other_requirements: 其他（包装/OEM/使用场景/配色/质保等）
 
-也需确认项（用户可以明确回复"不限制""无要求""暂不提供"，但不能默认空）：
-- target_market 目标市场
-- required_certs 认证要求
-- first_purchase_qty 首批采购量
-- acceptable_moq 可接受最小起订量
-- min_ship_qty 最小发货量
 
-其他可选项（有则填，无则空）：
-- product_name 产品名称（必须用完整概括性名称，包含尺寸/材质/特殊特征等，例如"180mm ABS蓝牙5.0防水便携音箱"而非简单的"蓝牙音箱"）
-- product_aliases 行业通用别名
-- acceptable_lead_time 可接受生产交期
-- other_requirements 其他要求（重要：必须主动提取对找供应商有价值但无法归类到上述字段的信息，不要留空。需提取的信息包括但不限于：包装方式如独立包装/每箱N件、贴牌OEM/ODM要求、特殊工艺要求如防水/防锈/抛光、使用场景如家用/医用/户外、配色/外观要求、售后服务要求如质保年限、其他对寻源有参考价值的信息。注意：品牌、价格、评分、销量等对找供应商无价值的信息不要填入。没有额外要求时才留空）
+网页有数据但你没填 = 漏填。请对照网页内容逐项检查每个字段。
 
-请返回JSON格式（只返回JSON，不要其他文字）：
+JSON格式（只返回JSON）：
 {{
-    "product_name": "产品名称（完整概括性名称，含尺寸材质特殊特征）",
-    "product_aliases": "行业通用别名",
+    "product_name": "完整产品名",
+    "product_aliases": "行业别名",
     "core_functions": "核心功能",
     "material": "材质",
     "spec_size": "规格尺寸",
-    "first_purchase_qty": "首批采购量",
-    "acceptable_moq": "可接受最小起订量",
-    "min_ship_qty": "最小发货量",
-    "acceptable_lead_time": "可接受生产交期",
-    "target_market": "目标市场",
-    "required_certs": "认证要求",
-    "other_requirements": "其他要求（对寻源有价值的信息：包装方式/OEM要求/特殊工艺/使用场景/配色/质保等，无则空）",
-    "missing_required": ["缺失的必须确认项字段名，如core_functions/material/spec_size"],
-    "missing_optional": ["未确认的需确认项字段名（用户没明确回复不限制/无要求的）"],
-    "confirmed": true或false（必须项全有且需确认项都已确认才为true）
+    "first_purchase_qty": "",
+    "acceptable_moq": "",
+    "min_ship_qty": "",
+    "acceptable_lead_time": "",
+    "target_market": "",
+    "required_certs": "",
+    "other_requirements": "",
+    "missing_required": [],
+    "missing_optional": [],
+    "confirmed": false  ← 改为true如果material/core_functions/spec_size都从网页中提取到了
 }}"""
 
     messages = [
-        {"role": "system", "content": "你是采购需求确认专家，严格按规则判断需求是否确认完成。"},
+        {"role": "system", "content": "你是产品采购需求分析助手。从给定的内容中提取产品参数，网页里有数据的字段必须填写，不要漏。"},
         {"role": "user", "content": extract_prompt},
     ]
 
@@ -758,13 +889,19 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
         parsed["requirement_summary"] = ""
         parsed["keywords"] = ""
         parsed["questions"] = _generate_questions(parsed)
+        if progress_callback:
+            progress_callback("step_done", "✅ 解析完成（需要补充信息），正在整理结果...", "running")
         return parsed
 
     # 第六步：已确认，生成需求总结和P0-P3关键词
+    if progress_callback:
+        progress_callback("gen_summary", "📝 正在生成需求总结和搜索关键词...", "running")
     summary_and_keywords = _generate_summary_and_keywords(parsed)
     parsed["requirement_summary"] = summary_and_keywords["requirement_summary"]
     parsed["keywords"] = summary_and_keywords["keywords"]
     parsed["questions"] = []
+    if progress_callback:
+        progress_callback("step_done", "✅ 解析完成，正在整理结果...", "running")
     return parsed
 
 

@@ -21,6 +21,10 @@ from config import is_api_configured, is_vision_configured
 # 小白讲解：导入model_config模块用于启动时加载配置和修改后热更新
 import model_config
 
+# 小白讲解：SSE流式响应中无法写入session cookie（cookie只在响应结束时发送），
+# 所以用这个字典临时存放解析结果，前端通过result_id来取。
+_tmp_results = {}
+
 # 创建 Flask 应用实例
 app = Flask(__name__)
 # 自动加载模板修改（开发时方便，不用每次重启）
@@ -1249,6 +1253,146 @@ def ai_parse_requirement():
 
     # GET请求：显示输入页面
     return render_template("ai/parse_requirement.html",
+                           vision_configured=is_vision_configured())
+
+
+@app.route("/ai/parse-requirement-stream", methods=["POST"])
+def ai_parse_requirement_stream():
+    """
+    AI解析需求-流式版：通过SSE实时推送解析进度给前端
+
+    小白讲解：原版是一次性等所有步骤跑完才返回结果，用户只能干等。
+    这个版本用SSE（Server-Sent Events）把每一步的进度实时推送给前端，
+    用户能看到"正在识别图片→正在抓取网页→AI正在分析"等细节，心里有底。
+
+    前端用JS fetch接收流式数据，最后一步收到done事件后自动跳转确认页。
+    """
+    if not is_api_configured():
+        def _err():
+            yield f"data: {json.dumps({'step': 'error', 'message': 'DeepSeek API Key 未配置', 'status': 'error'}, ensure_ascii=False)}\n\n"
+        return Response(stream_with_context(_err()), mimetype="text/event-stream")
+
+    input_text = request.form.get("input_text", "").strip()
+
+    # 处理上传文件（和原版逻辑一致）
+    uploaded_file = request.files.get("file")
+    image_base64 = None
+    file_content = None
+    if uploaded_file and uploaded_file.filename:
+        file_bytes = uploaded_file.read()
+        from file_parser import parse_uploaded_file, TYPE_IMAGE
+        try:
+            result = parse_uploaded_file(file_bytes, uploaded_file.filename)
+            if result["type"] == TYPE_IMAGE:
+                if not is_vision_configured():
+                    def _err():
+                        yield f"data: {json.dumps({'step': 'error', 'message': '智谱API Key未配置，无法识别图片', 'status': 'error'}, ensure_ascii=False)}\n\n"
+                    return Response(stream_with_context(_err()), mimetype="text/event-stream")
+                image_base64 = result["content"]
+            else:
+                file_content = result["content"]
+        except Exception as e:
+            def _err():
+                msg = f"文件解析失败：{str(e)}"
+                yield f"data: {json.dumps({'step': 'error', 'message': msg, 'status': 'error'}, ensure_ascii=False)}\n\n"
+            return Response(stream_with_context(_err()), mimetype="text/event-stream")
+
+    if not input_text and not file_content and not image_base64:
+        def _err():
+            yield f"data: {json.dumps({'step': 'error', 'message': '请输入需求描述或上传文件', 'status': 'error'}, ensure_ascii=False)}\n\n"
+        return Response(stream_with_context(_err()), mimetype="text/event-stream")
+
+    def generate():
+        from ai_helper import parse_requirement
+        import uuid
+
+        # 生成唯一ID，用于跳转后取结果
+        result_id = uuid.uuid4().hex
+
+        # 进度推送队列（线程安全）
+        progress_queue = queue.Queue()
+
+        def progress_callback(step, message, status="running"):
+            progress_queue.put({"step": step, "message": message, "status": status})
+
+        # 在后台线程中执行解析（避免阻塞主线程）
+        parse_thread = threading.Thread(
+            target=_run_parse_requirement,
+            args=(input_text, file_content, image_base64, progress_callback, progress_queue, result_id),
+            daemon=True
+        )
+        parse_thread.start()
+
+        # 主循环：不断从队列取进度消息，推送给前端
+        while True:
+            try:
+                msg = progress_queue.get(timeout=0.5)
+                yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                if msg["status"] in ("done", "error"):
+                    break
+            except queue.Empty:
+                # 超时检查线程是否还活着
+                if not parse_thread.is_alive():
+                    yield f"data: {json.dumps({'step': 'done', 'message': '✅ 解析完成', 'status': 'done'}, ensure_ascii=False)}\n\n"
+                    break
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用nginx缓冲
+        }
+    )
+
+
+def _run_parse_requirement(input_text, file_content, image_base64, progress_callback, progress_queue, result_id):
+    """
+    在后台线程中执行AI解析，结果存入内存字典
+
+    小白讲解：因为SSE响应期间session cookie无法写回浏览器，
+    所以用内存字典 _tmp_results 暂存结果，前端跳转时通过result_id来取。
+    """
+    try:
+        from ai_helper import parse_requirement
+        parsed = parse_requirement(
+            input_text if input_text else None,
+            file_content,
+            image_base64,
+            progress_callback=progress_callback
+        )
+        # 结果存入内存字典
+        _tmp_results[result_id] = {
+            "parsed": parsed,
+            "original_text": input_text,
+        }
+        progress_queue.put({
+            "step": "done",
+            "message": "✅ 解析完成，正在跳转...",
+            "status": "done",
+            "redirect": f"/ai/parse-requirement-result?rid={result_id}"
+        })
+    except Exception as e:
+        progress_queue.put({
+            "step": "error",
+            "message": f"❌ 解析失败：{str(e)[:200]}",
+            "status": "error"
+        })
+
+
+@app.route("/ai/parse-requirement-result")
+def ai_parse_requirement_result():
+    """
+    流式解析完成后跳转到此路由，通过result_id从内存字典取结果渲染确认页
+    """
+    result_id = request.args.get("rid", "")
+    data = _tmp_results.pop(result_id, None)
+    if not data:
+        flash("解析结果已过期，请重新提交需求", "warning")
+        return redirect(url_for("ai_parse_requirement"))
+    return render_template("ai/requirement_confirm.html",
+                           parsed=data["parsed"],
+                           original_text=data["original_text"],
                            vision_configured=is_vision_configured())
 
 

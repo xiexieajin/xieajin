@@ -92,6 +92,10 @@
                         查询供应商的工商信息（注册资本、法人、地址等）
                     {% elif provider.provider_code == 'made_in_china' %}
                         通过中国制造网MCP服务搜索供应商
+                    {% elif provider.provider_code == 'jina_reader' %}
+                        免费网页阅读器，将任意网页URL转成干净的Markdown文本给AI分析，无需API密钥
+                    {% elif provider.provider_code == 'firecrawl' %}
+                        专为AI设计的网页抓取服务，支持JS渲染页面，需注册获取免费API Key（500次/月）
                     {% endif %}
                 </p>
                 <p class="small mb-0 text-muted">

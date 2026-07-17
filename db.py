@@ -563,6 +563,8 @@ def _seed_initial_data(cursor, conn):
             ("1688", "ali1688", "search_platform", "https://api.1688.com", ALI_1688_AK),
             ("中国制造网", "madeinchina", "search_platform", "https://mcp.chexb.com/sse", ""),
             ("天眼查", "tianyancha", "data_api", TYC_MCP_URL, TYC_MCP_AUTH),
+            ("Jina Reader", "jina_reader", "data_api", "https://r.jina.ai", ""),
+            ("Firecrawl", "firecrawl", "data_api", "https://api.firecrawl.dev/v1", ""),
         ]
         for name, code, ptype, url, key in providers:
             cursor.execute("""
@@ -570,7 +572,7 @@ def _seed_initial_data(cursor, conn):
                 VALUES (%s, %s, %s, %s, %s, 1, %s, %s)
             """, (name, code, ptype, url, key, now, now))
         conn.commit()
-        print("[初始化] 已预置5个AI服务提供商")
+        print("[初始化] 已预置7个AI服务提供商")
 
     # ---------- 3. AI模型场景配置预置（7个场景）----------
     cursor.execute("SELECT COUNT(*) as cnt FROM ai_model_configs")
