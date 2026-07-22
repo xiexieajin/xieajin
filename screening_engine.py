@@ -150,7 +150,8 @@ def run_screening(requirement_id, user_id, progress_queue=None, template_name=No
     cursor = conn.cursor()
     cursor.execute("""
         SELECT s.*, r.product_name as req_product_name, r.target_market,
-               r.required_certs, r.requirement_summary, r.user_id as req_owner_user_id
+               r.required_certs, r.requirement_summary, r.user_id as req_owner_user_id,
+               r.core_functions, r.material
         FROM suppliers s
         JOIN requirements r ON s.requirement_id = r.id
         WHERE s.requirement_id = %s AND s.dev_stage = '已寻源待初筛'
@@ -587,18 +588,33 @@ def _check_ip_lawsuit(run_id, supplier_id, company_name, judicial_case_text, use
 
 def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, supplier, user_id):
     """
-    判断是否为非制造商（AI辅助判断）
+    判断是否为非制造商（公司名关键字 + 经营范围关键字 + AI辅助判断）
 
-    小白讲解：综合分析经营范围、资质等，判断是否为真正的制造商。
-    判断依据优先级：天眼查工商登记经营范围 > AI语义分析。
-    不再使用 supplier_type 字段作为免死金牌（该字段是AI搜索阶段推断的，本身可能错误）。
+    小白讲解：判断一家公司是不是真正的制造商（有工厂能生产），按三层判断：
+    第一层看公司名字（公司名带"厂"通常是工厂，带"贸易/商贸"通常是贸易商）；
+    第二层看经营范围关键字（带"生产/制造/加工"且有实际生产字样）；
+    第三层AI综合判断（公司名+经营范围+主营产品一起分析）。
     """
-    # 小白讲解：之前的逻辑只要 supplier_type=="制造商" 就直接放过，
-    # 但这个字段是AI搜索阶段从1688/中国制造网推断的，贸易公司也可能被误判为"制造商"。
-    # 现在去掉这个免死金牌，统一走经营范围关键字+AI判断。
+    # 小白讲解：第一层——从公司名快速判断
+    # 公司名含这些字样通常是工厂/制造商：厂、制造、生产、加工
+    # 公司名含这些字样通常是贸易商：贸易、商贸、销售、商行、百货、进出口、经贸、经销
+    factory_name_keywords = ["厂", "制造", "生产", "加工"]
+    trading_name_keywords = ["贸易", "商贸", "销售", "商行", "百货", "进出口", "经贸", "经销"]
 
-    # 快速关键字判断（带上下文校验）
-    # 小白讲解：经营范围里含"生产/制造/加工"关键字，但要看上下文——
+    is_factory_by_name = any(kw in company_name for kw in factory_name_keywords)
+    is_trading_by_name = any(kw in company_name for kw in trading_name_keywords)
+
+    # 小白讲解：公司名带"厂"字且不带"贸易/商贸"字样，直接判定为制造商，不走AI
+    # 例如"佛山市顺德区卓达通家具厂"→是制造商；"某某家具厂贸易部"→不算（同时含贸易）
+    if is_factory_by_name and not is_trading_by_name:
+        log_task(run_id, supplier_id, "veto_non_manufacturer_check", "制造商判断",
+                 {"company_name": company_name, "business_scope": business_scope[:200]},
+                 {"is_manufacturer": True, "reason": "公司名含工厂关键字且无贸易关键字"},
+                 "公司名关键字匹配", "success", user_id)
+        return False  # 是制造商，不触发否决
+
+    # 小白讲解：第二层——经营范围关键字判断（带上下文校验）
+    # 经营范围里含"生产/制造/加工"关键字，但要看上下文——
     # 如果带"限分支机构""仅限研发""不得生产"等修饰语，实际不是制造商。
     manufacture_keywords = ["生产", "制造", "加工"]
     exclude_patterns = ["限分支机构", "仅限", "不得生产", "不得制造", "不得加工",
@@ -622,22 +638,24 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
                  "经营范围关键字匹配（带上下文校验）", "success", user_id)
         return False  # 是制造商，不触发否决
 
-    # AI进一步判断
+    # 小白讲解：第三层——AI综合判断
+    # 公司名和经营范围关键字都没命中，让AI看公司名+经营范围+主营产品综合判断
+    # 把公司名是否含贸易关键字这个信息也告诉AI，帮AI更准确判断
     try:
-        # 小白讲解：prompt 里明确告诉AI——
-        # 1. 以工商登记经营范围为主要依据
-        # 2. supplier_type 字段是AI推断的，仅作参考，不能单独作为判断依据
-        # 3. 贸易类公司（经营范围是"销售：xxx"）即使主营产品里写了"生产"，也不是制造商
+        name_hint = ""
+        if is_trading_by_name:
+            name_hint = "（注意：公司名含贸易/商贸关键字，疑似贸易公司）"
+
         prompt = f"""请判断以下企业是否为真正的制造商（有实际生产能力，不是贸易公司）。
 只返回JSON：{{"is_manufacturer": true/false, "reason": "判断依据"}}
 
 【判断规则】
 1. 主要依据工商登记经营范围判断，经营范围含"生产/制造/加工"字样才可能是制造商
-2. "供应商类型"和"主营产品"字段是AI推断的，仅作参考，不能单独作为判断依据
+2. 公司名含"厂/制造"字样倾向于是制造商，公司名含"贸易/商贸/销售/商行"字样倾向于是贸易公司
 3. 如果工商登记经营范围是"销售：xxx"或"批发：xxx"开头，没有生产制造字样，应判为非制造商
 4. 贸易公司即使主营产品里写了产品名称，也不是制造商
 
-企业：{company_name}
+企业：{company_name}{name_hint}
 工商登记经营范围：{business_scope}
 供应商类型（AI推断，仅供参考）：{supplier.get('supplier_type', '未知')}
 主营产品（AI推断，仅供参考）：{supplier.get('main_product', '')}"""
@@ -655,52 +673,58 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
     log_task(run_id, supplier_id, "veto_non_manufacturer_check", "制造商判断",
              {"company_name": company_name, "business_scope": business_scope[:200]},
              {"is_manufacturer": is_manufacturer, "reason": reason},
-             "AI语义分析（以工商登记为准，supplier_type仅供参考）",
+             "公司名+经营范围+AI综合判断",
              "success" if is_manufacturer else "success", user_id)
     return not is_manufacturer
 
 
 def _check_product_mismatch(run_id, supplier_id, supplier, user_id):
     """
-    判断产品与经营范围是否明显不匹配（AI语义判断）
+    判断供应商获取的产品是否为需求主产品（AI语义判断）
 
-    小白讲解：用AI对比采购需求的产品名称与供应商的经营范围/主营产品，
-    如果明显不匹配则触发否决。
-    判断时以天眼查工商登记的经营范围为权威依据，平台推断的主营产品仅作参考。
+    小白讲解：这一步是看供应商在1688/中国制造网上搜到的产品，
+    是不是就是采购需求要买的那个东西本身，而不是配件或相关小件。
+    例如：需求是"茶色玻璃下翻门电视柜"，主产品是"电视柜"。
+    如果供应商的产品名是"电视柜"→是主产品，通过；
+    如果供应商的产品名是"电视柜脚轮/电视柜支架"→是配件，否决。
     """
     req_product = supplier.get("req_product_name", "")
-    # 小白讲解：优先用天眼查工商登记的 business_scope（权威数据），
-    # 没有（天眼查没匹配上）时才退回 intro。不要用 or 把两者拼起来，
-    # 否则 AI 会把 intro 里 AI 推断的"明确生产电视柜"当成事实。
-    business_scope = supplier.get("business_scope", "")
-    intro_text = supplier.get("intro", "")
-    main_product = supplier.get("main_product", "")
+    # 小白讲解：product_title 是搜索阶段从1688/中国制造网搜到的具体产品名
+    # 这是供应商实际在卖的产品，是最直接的证据
+    product_title = supplier.get("product_title", "") or ""
 
-    if not req_product or not (business_scope or intro_text or main_product):
-        return False  # 信息不足，不触发否决
+    if not req_product or not product_title:
+        return False  # 信息不足（没搜到产品名），不触发否决
 
     try:
-        # 小白讲解：prompt 里把两类数据明确分开，告诉 AI 哪个是权威哪个是参考。
-        # - 工商登记经营范围：天眼查从工商局拉取，权威客观
-        # - 平台推断主营产品：1688/中国制造网搜索阶段 AI 推断，主观可能出错
-        # 让 AI 主要依据工商登记判断，避免被推断数据误导。
-        scope_source = "天眼查工商登记经营范围（权威）" if business_scope else "（未获取到天眼查经营范围）"
-        prompt = f"""请判断供应商是否真的有能力生产采购需求的产品。
-只返回JSON：{{"is_match": true/false, "reason": "判断依据"}}
+        # 小白讲解：让AI做两件事：
+        # 1. 从需求产品名提取主产品（如"茶色玻璃下翻门电视柜"→"电视柜"）
+        # 2. 判断供应商的产品是否就是这个主产品本身，而不是配件
+        # 关键是区分"产品本身"和"产品配件"：
+        #   - "电视柜"是产品本身
+        #   - "电视柜脚轮""电视柜支架""电视柜保护套"是配件，不是电视柜本身
+        prompt = f"""请判断供应商实际售卖的产品，是否就是采购需求要买的主产品本身（不是配件）。
+
+第一步：从采购需求中提取"主产品"。
+- 示例："茶色玻璃下翻门电视柜" → 主产品是"电视柜"
+- 示例："实木双人床带储物" → 主产品是"床"
+- 示例："不锈钢厨房水槽" → 主产品是"水槽"
+
+第二步：判断供应商的产品是否就是这个主产品本身。
+- is_match=true：供应商产品就是主产品本身（如供应商卖的是"电视柜"，需求主产品也是"电视柜"）
+- is_match=false：供应商产品只是主产品的配件或周边（如供应商卖的是"电视柜脚轮"，但需求要买的是"电视柜"）
+
+只返回JSON：{{"main_product": "提取的主产品", "is_match": true/false, "reason": "判断依据"}}
 
 【判断规则】
-1. 主要依据"工商登记经营范围"判断，经营范围里需要有与采购产品相关的生产/制造/销售字样
-2. "平台推断主营产品"仅供参考，不能单独作为匹配依据（可能是贸易公司被误判为制造商）
-3. 如果工商登记经营范围是销售/贸易类（如"销售：电子产品、五金、建筑材料"），没有生产制造字样，
-   且采购产品需要实际生产能力（如家具、设备），应判为不匹配
+1. 先从采购需求提取主产品名称
+2. 供应商产品名包含主产品，且不是配件/辅件/零件/支架/脚轮/把手/保护套/贴纸等，才算匹配
+3. 供应商产品名只是主产品的配件（即使包含主产品名称），判为不匹配
+4. 供应商产品和需求完全不相关，判为不匹配
 
 采购需求产品：{req_product}
 
-{scope_source}：{business_scope[:400] if business_scope else "（空）"}
-
-供应商简介（AI推断，仅供参考）：{intro_text[:200] if intro_text else "（空）"}
-
-平台推断主营产品（仅供参考）：{main_product[:200] if main_product else "（空）"}"""
+供应商实际售卖的产品名称：{product_title}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=0.1, json_mode=True
@@ -708,17 +732,17 @@ def _check_product_mismatch(run_id, supplier_id, supplier, user_id):
         result = extract_json_from_text(result_text)
         is_match = bool(result.get("is_match", True))  # 默认匹配避免误杀
         reason = result.get("reason", "")
+        main_product_extracted = result.get("main_product", "")
     except Exception:
         is_match = True
         reason = "AI判断失败，默认保留"
+        main_product_extracted = ""
 
-    log_task(run_id, supplier_id, "veto_product_mismatch_check", "产品匹配度判断",
+    log_task(run_id, supplier_id, "veto_product_mismatch_check", "主产品匹配判断",
              {"req_product": req_product,
-              "business_scope": business_scope[:200] if business_scope else "（空）",
-              "intro": intro_text[:200] if intro_text else "（空）",
-              "main_product": main_product[:200] if main_product else "（空）"},
-             {"is_match": is_match, "reason": reason},
-             "AI语义判断（以天眼查工商登记为准）", "success", user_id)
+              "product_title": product_title[:200] if product_title else "（空）"},
+             {"main_product": main_product_extracted, "is_match": is_match, "reason": reason},
+             "AI判断供应商产品是否为需求主产品（排除配件）", "success", user_id)
     return not is_match
 
 
@@ -729,11 +753,10 @@ def _evaluate_score_rule(rule, eval_data, supplier, tyc_data, run_id, supplier_i
     评估单条评分规则，返回得分
 
     小白讲解：根据规则编码，用对应的评分逻辑计算得分。
-    6条评分规则各有不同的计算方式：
+    5条评分规则各有不同的计算方式（联系方式已改为否决规则，不再评分）：
     - score_capital_scale：注册资本25分
     - score_operating_years：经营年限15分
-    - score_product_match：产品匹配度30分（AI判断）
-    - score_contact_complete：联系方式完整度10分
+    - score_product_match：产品匹配度40分（AI判断，按核心功能+材质匹配）
     - score_risk_record：风险记录15分
     - score_export_exp：出口经验5分
     """
@@ -747,8 +770,6 @@ def _evaluate_score_rule(rule, eval_data, supplier, tyc_data, run_id, supplier_i
     elif rule_code == "score_product_match":
         return _score_product_match(rule, eval_data, supplier, max_score,
                                      run_id, supplier_id, user_id)
-    elif rule_code == "score_contact_complete":
-        return _score_contact(eval_data.get("contact_completeness", "none"), max_score)
     elif rule_code == "score_risk_record":
         return _score_risk(eval_data, max_score)
     elif rule_code == "score_export_exp":
@@ -784,75 +805,123 @@ def _score_years(years, max_score=15):
 
 def _score_product_match(rule, eval_data, supplier, max_score, run_id, supplier_id, user_id):
     """
-    产品匹配度评分（AI判断）：完全匹配满分，部分匹配15分，不匹配0分
+    产品匹配度评分（AI判断）：用供应商产品信息+主营产品+简介，与需求匹配程度评分
 
-    小白讲解：用 AI 评估采购需求和供应商的匹配程度。判断时以天眼查工商登记的
-    经营范围为权威依据，平台推断的主营产品仅作参考，避免贸易公司被当成制造商给满分。
+    小白讲解：这一步是用供应商的多维度产品信息和采购需求做对比打分。
+    数据源包括三块（信息越全评分越准）：
+    1. product_title：搜索阶段从1688/中国制造网搜到的具体产品标题
+    2. main_product：AI搜索阶段推断的供应商主营产品
+    3. intro：供应商简介（含天眼查经营范围覆盖的客观描述）
+
+    评分采用"宽松模式"——供应商标题信息有限，没写不代表不支持，
+    按已体现的信息给中间分，不轻易给0分。
+    评分标准（AI返回0-100分）：
+    - 主产品符合（都是电视柜）→ 基础50分
+    - 核心功能按符合比例加分（最多25分）：体现部分核心功能就按比例给分
+    - 材质符合加分（最多25分）：完全符合25分，部分符合15分，完全不符0分
+    - 有需求之外的额外功能再加5分（上限100）
     """
     req_product = supplier.get("req_product_name", "")
-    # 小白讲解：优先从 eval_data 拿天眼查的 business_scope（权威），
-    # 没有（天眼查没匹配上）时退回 supplier 字典里的 business_scope（可能是初筛阶段写回的）。
-    business_scope = eval_data.get("business_scope", "") or supplier.get("business_scope", "")
-    intro_text = supplier.get("intro", "")
-    main_product = supplier.get("main_product", "")
+    # 小白讲解：核心功能和材质是需求表里的结构化字段，越匹配分数越高
+    core_functions = supplier.get("core_functions", "") or ""
+    material = supplier.get("material", "") or ""
+    # 小白讲解：product_title 是搜索阶段从1688/中国制造网搜到的具体产品名
+    product_title = supplier.get("product_title", "") or ""
+    # 小白讲解：main_product 是AI搜索阶段推断的供应商主营产品，信息比标题更全
+    main_product = supplier.get("main_product", "") or ""
+    # 小白讲解：intro 是供应商简介（含天眼查经营范围），能反映供应商整体能力
+    intro = supplier.get("intro", "") or ""
 
-    if not req_product:
-        return max_score // 2  # 需求信息缺失，给一半分
+    if not req_product or not product_title:
+        return 0  # 没有产品信息无法评分，给0分
 
     try:
-        # 小白讲解：能走到评分阶段，说明一票否决阶段已经判定为"匹配"（没触发否决）。
-        # 所以这里正常评估匹配程度即可，不需要再重复否决逻辑。
-        # prompt 以天眼查工商登记经营范围为权威依据，平台推断数据作参考。
-        scope_source = "天眼查工商登记经营范围（权威）" if business_scope else "（未获取到天眼查经营范围）"
-        prompt = f"""请评估供应商与采购需求的产品匹配度。
-只返回JSON：{{"match_level": "full/partial/none", "reason": "判断依据"}}
+        # 小白讲解：把需求信息拼成完整描述，让AI能综合判断
+        req_detail = f"产品名称：{req_product}"
+        if core_functions:
+            req_detail += f"\n核心功能：{core_functions}"
+        if material:
+            req_detail += f"\n材质要求：{material}"
 
-【评分规则】
-1. 主要依据"工商登记经营范围"判断匹配度，"平台推断主营产品"仅作参考
-2. 工商登记经营范围明确含采购产品相关字样，且直接对应 → full（完全匹配）
-3. 工商登记经营范围与采购产品有一定关联但不完全对应 → partial（部分匹配）
-4. 工商登记经营范围与采购产品完全不相关 → none（不匹配）
+        # 小白讲解：把供应商的多维度产品信息拼到一起，让AI有更全的判断依据
+        supplier_info = f"产品标题：{product_title}"
+        if main_product:
+            supplier_info += f"\n主营产品：{main_product}"
+        if intro:
+            supplier_info += f"\n供应商简介：{intro[:300]}"
 
-采购需求：{req_product}
+        # 小白讲解：让AI按"宽松评分"标准返回0-100分
+        # 关键原则：供应商标题信息有限，没写不代表不支持，按已体现的信息给中间分
+        prompt = f"""请评估供应商的产品与采购需求的匹配程度，返回0-100的整数分数。
 
-{scope_source}：{business_scope[:400] if business_scope else "（空）"}
+只返回JSON：{{"score": 0-100的整数, "matched_features": "已匹配的核心功能", "reason": "判断依据"}}
 
-供应商简介（AI推断，仅供参考）：{intro_text[:200] if intro_text else "（空）"}
+【重要前提】
+供应商的产品标题通常很短（20-40字），不可能把所有细节都写全。
+没在标题里写出来的功能，不代表供应商不支持。
+请基于已有信息给中间分，不要轻易给0分。
 
-平台推断主营产品（仅供参考）：{main_product[:200] if main_product else "（空）"}"""
+【评分标准】（宽松模式，按项累加）
+1. 基础分50分：主产品符合（需求是电视柜，供应商也是电视柜）
+2. 核心功能加分（0-25分）：
+   - 供应商产品信息体现了部分核心功能 → 按体现数量给10-20分
+   - 核心功能全部体现 → 25分
+   - 完全没体现任何核心功能 → 0分
+3. 材质加分（0-25分）：
+   - 材质完全符合（如要求茶色玻璃，供应商也是茶色玻璃） → 25分
+   - 材质部分符合（如要求茶色玻璃，供应商只写了玻璃没写颜色） → 15分
+   - 材质完全不符（如要求玻璃，供应商是实木） → 0分
+4. 额外功能奖励（+5分，上限100）：供应商产品有需求之外的功能（如需求没要求但供应商带了LED灯带）
+
+【评分示例】
+- 需求"带玻璃台面+抽屉电视柜"，供应商标题"玻璃电视柜带抽屉" → 50+25+25=100分（全符合）
+- 需求"带玻璃台面+抽屉+灯带电视柜"，供应商标题"玻璃电视柜" → 50+0+25=75分（材质符合但功能没体现）
+- 需求"茶色玻璃电视柜"，供应商标题"玻璃电视柜" → 50+0+15=65分（材质部分符合，没写茶色）
+- 需求"带抽屉电视柜"，供应商标题"普通电视柜" → 50+0+0=50分（仅主产品符合）
+- 需求"玻璃电视柜"，供应商标题"实木电视柜" → 50+0+0=50分（主产品符合但材质不符，仍给基础分）
+
+【关键原则】
+- 主产品符合就给50分基础分，不要给0分
+- 核心功能没体现不扣基础分，只是不加分
+- 材质不符也不扣基础分，只是不加分
+- 只有主产品完全不符（如需求电视柜供应商卖沙发）才给0分
+
+采购需求：
+{req_detail}
+
+供应商产品信息：
+{supplier_info}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=0.1, json_mode=True
         )
         result = extract_json_from_text(result_text)
-        level = result.get("match_level", "partial")
+        # 小白讲解：AI返回0-100分，按满分值换算（如满分40分，AI给80分→实际得32分）
+        ai_score = int(result.get("score", 0))
+        # 限制在0-100范围内
+        ai_score = max(0, min(100, ai_score))
         reason = result.get("reason", "")
+        matched_features = result.get("matched_features", "")
     except Exception:
-        level = "partial"
+        ai_score = 0
         reason = "AI判断失败"
+        matched_features = ""
+
+    # 小白讲解：AI返回0-100分，按max_score满分换算成实际得分
+    actual_score = int(max_score * ai_score / 100)
 
     log_task(run_id, supplier_id, "score_product_match_check", "产品匹配度评分",
              {"req_product": req_product,
-              "business_scope": business_scope[:200] if business_scope else "（空）",
-              "main_product": main_product[:200] if main_product else "（空）"},
-             {"match_level": level, "reason": reason},
-             "AI语义判断（以天眼查工商登记为准）", "success", user_id)
+              "core_functions": core_functions[:200] if core_functions else "（空）",
+              "material": material[:200] if material else "（空）",
+              "product_title": product_title[:200] if product_title else "（空）",
+              "main_product": main_product[:200] if main_product else "（空）",
+              "intro": intro[:200] if intro else "（空）"},
+             {"ai_score": ai_score, "actual_score": actual_score,
+              "matched_features": matched_features, "reason": reason},
+             "AI宽松评分（主产品50分基础+核心功能加分+材质加分+额外功能奖励）", "success", user_id)
 
-    if level == "full":
-        return max_score
-    elif level == "partial":
-        return max_score // 2
-    else:
-        return 0
-
-
-def _score_contact(completeness, max_score=10):
-    """联系方式完整度评分：both满分，phone_only或email_only给一半，none为0"""
-    if completeness == "both":
-        return max_score
-    elif completeness in ("phone_only", "email_only"):
-        return max_score // 2
-    return 0
+    return actual_score
 
 
 def _score_risk(eval_data, max_score=15):
@@ -1063,16 +1132,21 @@ def _write_screening_result(supplier, run_id, user_id, conclusion, reason,
             update_fields.append("main_product = %s")
             update_params.append(tyc_scope[:950])  # VARCHAR(1000)，留余量
 
-        # 供应商简介（天眼查的企业简介+注册资本信息组合）
-        # 小白讲解：供应商简介要求包含"注册资本"信息，用天眼查的企业简介+注册资本拼接
+        # 供应商简介：天眼查匹配成功后，总是用天眼查客观信息覆盖 AI 推断的 intro
+        # 小白讲解：AI 搜索阶段 DeepSeek 会推断一段供应商简介（比如"生产木制家具"），
+        # 但这是主观判断，可能不准。初筛阶段天眼查匹配成功后，应该用客观工商数据覆盖它，
+        # 让业务人员看到的是天眼查的真实经营范围，而不是 AI 的主观描述。
         tyc_intro = tyc_basic.get("intro", "") if tyc_basic else ""
-        if tyc_intro and (not supplier.get("intro") or supplier.get("intro") in ("", "工商数据未匹配")):
-            # 组合简介：企业简介 + 注册资本
+        tyc_scope = tyc_basic.get("business_scope", "") if tyc_basic else ""
+        # 优先用天眼查的企业简介，没有则用经营范围作为客观描述
+        objective_desc = tyc_intro or tyc_scope
+        if objective_desc:
             intro_parts = []
-            if tyc_intro:
-                intro_parts.append(tyc_intro[:500])
+            intro_parts.append(objective_desc[:500])
             if tyc_capital:
                 intro_parts.append(f"注册资本：{tyc_capital}")
+            if tyc_status:
+                intro_parts.append(f"经营状态：{tyc_status}")
             combined_intro = "；".join(intro_parts) if intro_parts else ""
             if combined_intro:
                 update_fields.append("intro = %s")

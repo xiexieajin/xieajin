@@ -39,6 +39,34 @@ def _is_1688_ak_configured():
     return bool(provider and provider["api_key"] and len(provider["api_key"]) > 50)
 
 
+def _get_platform_max_results(provider_code, default=100):
+    """
+    从数据库读取某个搜索平台的"最大搜索数量"配置（管理员可在前端管理页面修改）
+
+    小白讲解：管理员在"模型与平台管理→搜索平台管理"页面里设置每个平台的"最大结果数"，
+    这个函数把那个配置读出来，用于控制1688的pageSize和MIC的翻页目标数量。
+    管理员改完后保存即生效，不需要改代码、不需要重启。
+
+    参数：
+        provider_code: 平台代码，如 "ali1688" 或 "madeinchina"
+        default: 配置不存在时的默认值，默认100
+
+    返回：最大搜索数量（整数），如1688返回96、MIC返回100
+    """
+    # 从model_config缓存的搜索平台列表里查找对应平台
+    platforms = get_search_platforms()
+    for p in platforms:
+        if p.get("provider_code") == provider_code:
+            max_results = p.get("max_results", default)
+            try:
+                # 限制在合理范围（10-200），避免管理员配置异常值
+                max_results = int(max_results)
+                return max(10, min(200, max_results))
+            except (ValueError, TypeError):
+                return default
+    return default
+
+
 def _get_1688_ak():
     """获取1688 AK密钥（从数据库读取）"""
     provider = get_provider("ali1688")
@@ -339,21 +367,112 @@ def _translate_company_names_batch(suppliers_list, batch_size=20):
     return suppliers_list
 
 
-def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
+def _translate_product_names_batch(suppliers_list, batch_size=30):
     """
-    用MCP服务从中国制造网直接搜索供应商（只用英文关键词，中文词直接跳过）
+    用DeepSeek把MCP返回的英文产品名批量翻译成中文
 
-    小白讲解：中国制造网（MIC）是国际站，用英文关键词搜索效果最好。
-    之前会把中文词翻译成英文再搜，但翻译质量不稳定、还多花一次AI调用。
-    现在改成：中文关键词直接跳过不搜（1688那边会搜中文词，不会漏供应商），
-    英文关键词直接拿来搜，靠翻页（最多10页）凑够目标数量，不再用变体词扩搜。
+    小白讲解：中国制造网(MCP)的产品名是英文的（如"Small Size White Wood TV Stand with Glass Doors"），
+    业务部门看英文不方便，需要翻译成中文，格式："小型白色木质玻璃门电视柜"。
+
+    为了避免逐个调用太慢，采用批量翻译：每批30个产品名一次性发给DeepSeek，返回JSON映射。
+    翻译失败的产品保留原英文名。
 
     参数：
-        keyword: 搜索关键词（英文词直接搜；中文词跳过返回空列表）
+        suppliers_list: 供应商列表（会原地修改每条的product_title字段）
+        batch_size: 每批翻译的产品名数量，默认30
+
+    返回：翻译后的供应商列表（同名对象的product_title已更新为中文）
+    """
+    # 只翻译英文产品名（含英文字母的），中文名跳过
+    to_translate = []
+    for s in suppliers_list:
+        title = s.get("product_title", "")
+        if title and re.search(r'[a-zA-Z]', title):
+            to_translate.append(title)
+
+    if not to_translate:
+        return suppliers_list
+
+    # 去重后翻译（同一个产品名可能出现多次）
+    unique_titles = list(set(to_translate))
+    print(f"MCP产品名批量翻译：共{len(unique_titles)}个唯一英文产品名需要翻译")
+
+    # 中文翻译结果映射：英文产品名 -> 中文产品名
+    title_map = {}
+
+    # 分批调用DeepSeek翻译
+    for i in range(0, len(unique_titles), batch_size):
+        batch = unique_titles[i:i + batch_size]
+        # 构造产品名列表文本
+        titles_text = "\n".join(f"{idx+1}. {title}" for idx, title in enumerate(batch))
+
+        prompt = f"""请把下面的英文产品名翻译成对应的中文产品名。
+要求：
+1. 按中国大陆电商习惯翻译，简洁准确，如"TV Stand"翻译成"电视柜"，"Bluetooth Speaker"翻译成"蓝牙音箱"
+2. 只返回翻译后的中文名，不要加任何解释或编号
+3. 每行一个中文名，顺序和输入一一对应
+4. 如果某个产品名无法准确翻译，返回原文（保留英文）
+
+【英文产品名列表】
+{titles_text}
+
+【请返回JSON对象】（只返回JSON）
+{{
+    "translations": [
+        {{"original": "英文原名", "chinese": "中文翻译"}}
+    ]
+}}"""
+
+        messages = [
+            {"role": "system", "content": "你是专业的产品名称翻译专家，擅长把英文电商产品名翻译成符合中国大陆电商习惯的中文名。"},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            # 翻译是简单任务，用high强度即可
+            result_text = call_deepseek(messages, scene_code="supplier_translate", temperature=0.1, json_mode=True)
+            result = json.loads(result_text)
+            translations = result.get("translations", [])
+            if isinstance(translations, dict):
+                translations = [translations]
+            for item in translations:
+                original = item.get("original", "").strip()
+                chinese = item.get("chinese", "").strip()
+                if original and chinese:
+                    title_map[original] = chinese
+            print(f"MCP产品名翻译第{i//batch_size+1}批：{len(batch)}个 → 成功翻译{len([t for t in translations if t.get('chinese')])}个")
+        except Exception as e:
+            print(f"MCP产品名翻译第{i//batch_size+1}批失败: {e}")
+
+    # 把翻译后的中文名更新到供应商列表
+    translated_count = 0
+    for s in suppliers_list:
+        title = s.get("product_title", "")
+        if title in title_map:
+            chinese_title = title_map[title]
+            if chinese_title and chinese_title != title:
+                s["product_title"] = chinese_title
+                translated_count += 1
+
+    print(f"MCP产品名翻译完成：{translated_count}/{len(to_translate)}个已翻译成中文")
+    return suppliers_list
+
+
+def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
+    """
+    用MCP服务从中国制造网搜索产品，再从产品中获取供应商信息（两步流程的第一步：搜产品）
+
+    小白讲解：原来直接用search_suppliers搜供应商，会出现"产品不适配"问题（供应商可能做相关但不完全匹配的产品）。
+    现在改成先用search_products搜产品，每条产品自带供应商公司名，这样搜到的供应商一定做这个产品。
+    每页30条产品，翻4页就能凑够约100家供应商（去重后约80-100家）。
+
+    参数：
+        keyword: 搜索关键词（英文词直接搜；中文词跳过返回空）
         hit_keyword: 命中的P0-P3关键词标签
         variants: 变体关键词列表（此参数已不再使用，保留是为了兼容调用方）
 
-    返回：供应商列表，每条包含 name, content, hit_keyword, business_type, location, badges
+    返回：供应商列表，每条包含 name, content, hit_keyword, business_type, location, badges,
+          product_title(产品名), product_link(产品链接), price(价格), moq(起订量)
     """
     # 小白讲解：用正则判断关键词是否含英文字母。
     # 含英文字母 = 英文关键词 → 继续搜索
@@ -364,7 +483,7 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
 
     # 英文关键词已经是英文，不需要再翻译，直接使用
     search_keyword = keyword
-    print(f"MCP开始搜索英文关键词：'{search_keyword}'")
+    print(f"MCP开始搜索英文关键词（搜产品）：'{search_keyword}'")
 
     client = _MicMcpClient()
     if not client.connect():
@@ -382,34 +501,37 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
             print(f"MCP初始化失败")
             return []
 
-        # 总超时保护：单词翻页搜索，60秒足够
+        # 总超时保护：搜产品翻页，60秒足够
         mcp_start_time = time.time()
         MCP_TOTAL_TIMEOUT = 60
 
         # 搜索结果存放，用公司名去重
         all_results = []
         seen_names = set()
-        max_pages = 10  # 每页10条，最多翻10页凑够100家
+        # 小白讲解：目标供应商数量从管理中心配置读取（管理员可在"搜索平台管理"页面调整）
+        # 每页30条产品，按目标数量计算最多翻几页（向上取整，至少1页，最多10页）
+        target_count = _get_platform_max_results("madeinchina", default=100)
+        max_pages = max(1, min(10, (target_count + 29) // 30))
 
-        # 翻页搜索：逐页获取，直到凑够100家或没有更多数据
+        # 翻页搜索：逐页获取，直到凑够目标数量或没有更多数据
         for page in range(1, max_pages + 1):
             # 总超时检查
             if time.time() - mcp_start_time > MCP_TOTAL_TIMEOUT:
                 print(f"MCP搜索总超时({MCP_TOTAL_TIMEOUT}秒)，返回已有{len(all_results)}家供应商")
                 break
-            # 已凑够100家就停止翻页
-            if len(all_results) >= 100:
+            # 已凑够目标数量就停止翻页
+            if len(all_results) >= target_count:
                 print(f"MCP已凑够{len(all_results)}家供应商，停止翻页")
                 break
 
-            result = client.call_tool("search_suppliers", {
+            result = client.call_tool("search_products", {
                 "keyword": search_keyword,
                 "page": page
             }, call_id=page, timeout=30)
 
             # 限流处理：等待8秒后重新连接重试一次
             if result == "__RATE_LIMIT__":
-                print(f"MCP search_suppliers第{page}页触发限流(429)，等待8秒后重新连接重试...")
+                print(f"MCP search_products第{page}页触发限流(429)，等待8秒后重新连接重试...")
                 time.sleep(8)
                 client.close()
                 client = _MicMcpClient()
@@ -420,62 +542,71 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
                     "protocolVersion": "2025-03-26", "capabilities": {},
                     "clientInfo": {"name": "supplier-search", "version": "1.0"}
                 }, call_id=0, timeout=15)
-                result = client.call_tool("search_suppliers", {
+                result = client.call_tool("search_products", {
                     "keyword": search_keyword,
                     "page": page
                 }, call_id=page + 100, timeout=30)
 
             # 重试后仍然限流，快速失败，返回已有结果
             if result == "__RATE_LIMIT__":
-                print(f"MCP search_suppliers重试后仍限流，返回已有{len(all_results)}家")
+                print(f"MCP search_products重试后仍限流，返回已有{len(all_results)}家")
                 break
             if not result or not isinstance(result, dict):
                 break
 
             items = result.get("items", [])
             if not items:
-                print(f"MCP search_suppliers'{search_keyword}'第{page}页无数据，停止翻页")
+                print(f"MCP search_products'{search_keyword}'第{page}页无数据，停止翻页")
                 break
 
             new_count = 0
             for item in items:
-                # 提取公司名（多字段容错，适配不同返回格式）
-                name = (item.get("name") or item.get("companyName") or
-                        item.get("supplierName") or item.get("company") or "").strip()
+                # 小白讲解：search_products返回的每条是"产品"，但自带供应商公司名。
+                # 从产品里提取供应商公司名（supplier字段），用公司名去重
+                name = (item.get("supplier") or item.get("supplierName") or
+                        item.get("companyName") or item.get("company") or "").strip()
                 if not name or name in seen_names:
                     continue
                 seen_names.add(name)
                 new_count += 1
 
-                # 业务类型（Manufacturer制造商 / Trading Company贸易公司）
-                business_type = (item.get("businessType") or item.get("business_type") or
-                                 item.get("type") or item.get("supplierType") or "").strip()
+                # 产品名（英文，后续会批量翻译成中文）
+                product_title = (item.get("name") or item.get("title") or
+                                 item.get("productName") or "").strip()
 
-                # 主营产品
-                main_products = (item.get("mainProducts") or item.get("main_products") or
-                                 item.get("products") or item.get("mainProduct") or "").strip()
+                # 产品链接
+                product_link = (item.get("url") or item.get("link") or
+                                item.get("productUrl") or "").strip()
 
-                # 地区
-                location = (item.get("location") or item.get("area") or
-                            item.get("city") or item.get("region") or "").strip()
+                # 价格和起订量分开存储（业务页面需要分别显示价格和MOQ）
+                price = (item.get("price") or "").strip()
+                moq = (item.get("moq") or "").strip()
 
-                # 认证徽章（ISO、Audited Supplier等）
-                badges = item.get("badges") or item.get("certifications") or item.get("certs") or []
-                if isinstance(badges, list):
-                    badges = "；".join(str(b) for b in badges)
-                elif not isinstance(badges, str):
-                    badges = str(badges) if badges else ""
+                # 产品规格属性（字典转成字符串供DeepSeek参考）
+                properties = item.get("properties", {})
+                if isinstance(properties, dict) and properties:
+                    props_text = "；".join(f"{k}:{v}" for k, v in properties.items())
+                else:
+                    props_text = ""
+
+                # search_products不返回business_type/location/badges，置空（下游.get()兼容）
+                business_type = ""
+                location = ""
+                badges = ""
 
                 # 组合描述供DeepSeek过滤参考
+                # 小白讲解：把产品名+规格+价格+搜索关键词组合成描述，
+                # DeepSeek能结合"搜的是什么+产品规格+公司名"综合判断供应商是否合适
                 desc_parts = []
-                if business_type:
-                    desc_parts.append(f"业务类型：{business_type}")
-                if main_products:
-                    desc_parts.append(f"主营：{main_products}")
-                if location:
-                    desc_parts.append(f"地区：{location}")
-                if badges:
-                    desc_parts.append(f"认证：{badges}")
+                desc_parts.append(f"搜索品类：{keyword}")
+                if product_title:
+                    desc_parts.append(f"产品名：{product_title}")
+                if props_text:
+                    desc_parts.append(f"规格：{props_text}")
+                if price:
+                    desc_parts.append(f"价格：{price}")
+                if moq:
+                    desc_parts.append(f"起订量：{moq}")
                 content = "；".join(desc_parts) if desc_parts else name
 
                 all_results.append({
@@ -485,19 +616,26 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
                     "business_type": business_type,
                     "location": location,
                     "badges": badges,
+                    "product_title": product_title,
+                    "product_link": product_link,
+                    "price": price,
+                    "moq": moq,
                 })
 
             total = result.get("totalItems", 0)
-            print(f"MCP search_suppliers'{search_keyword}'第{page}页：{new_count}家，累计{len(all_results)}家（总数{total}）")
+            print(f"MCP search_products'{search_keyword}'第{page}页：{new_count}家供应商，累计{len(all_results)}家（目标{target_count}家，总产品数{total}）")
 
-            if len(all_results) >= 100:
+            if len(all_results) >= target_count:
                 break
 
             time.sleep(1)  # 翻页间隔1秒，避免触发限流
 
-        print(f"MCP搜索完成：英文关键词'{search_keyword}' → {len(all_results)}家供应商")
+        print(f"MCP搜索完成（搜产品）：英文关键词'{search_keyword}' → {len(all_results)}家供应商")
 
-        # 不再做AI翻译，直接用英文公司名去天眼查匹配（能找到就用中文名，找不到就丢弃）
+        # 产品名批量翻译成中文（业务部门看英文不方便）
+        if all_results:
+            _translate_product_names_batch(all_results)
+
         return all_results
 
     finally:
@@ -534,6 +672,9 @@ def crawl_made_in_china(keyword, hit_keyword="", variants=None):
 _1688_API_HOST = "https://skills-gateway.1688.com"
 # 供应商搜索API路径（单步，直接返回工厂列表）
 _1688_SOURCE_SUPPLIERS_URI = "/api/1688_source_suppliers/1.0.0"
+# 小白讲解：新增"搜产品"接口，先搜产品再从产品里拿供应商公司名，
+# 这样搜到的供应商一定做这个产品，解决"产品不适配"问题
+_1688_FIND_PRODUCT_URI = "/api/find_product/1.0.0"
 # 签名版本号（与官方SKILL一致用1.0.0）
 _SKILL_VERSION = "1.0.0"
 
@@ -767,11 +908,11 @@ def _extract_1688_factories(result):
 
 def _crawl_1688_once(keyword, hit_keyword=""):
     """
-    单次调用1688官方API搜索供应商（返回约10家）
+    单次调用1688"搜产品"API，从产品中提取供应商信息（一次返回约30家）
 
-    小白讲解：调一次 skills-gateway.1688.com 的供应商搜索接口，
-    传入一个关键词直接返回约10家工厂。
-    这是"一次调用"的版本，外面的 crawl_1688 会多次调用它来凑够50家。
+    小白讲解：原来调供应商搜索接口（source_suppliers），会出现"产品不适配"问题。
+    现在改成调"搜产品"接口（find_product），每条产品自带供应商公司名(company字段)，
+    这样搜到的供应商一定做这个产品。一次返回30个产品，外层 crawl_1688 用变体词多次调用凑够50家。
 
     参数：
         keyword: 搜索关键词（如"玻璃电视柜"）
@@ -781,165 +922,123 @@ def _crawl_1688_once(keyword, hit_keyword=""):
         - name: 公司名称
         - content: 供应商详细描述（供DeepSeek过滤参考）
         - hit_keyword: 命中关键词
+        - product_title: 产品名称（中文，无需翻译）
+        - product_link: 产品链接
+        - price: 价格
+        - moq: 起订量
     """
     if not _is_1688_ak_configured():
         print(f"1688 AK未配置，跳过'{keyword}'的搜索（请在管理中心配置1688服务商的api_key）")
         return []
 
-    # 调用 skills-gateway 供应商搜索API
-    data = _1688_api_post(_1688_SOURCE_SUPPLIERS_URI, {"query": keyword}, timeout=60)
+    # 调用 skills-gateway "搜产品"API
+    # 小白讲解：scoreLevel=high保证相关性高
+    # pageSize从管理中心配置读取（管理员可在"搜索平台管理"页面调整最大结果数）
+    max_results = _get_platform_max_results("ali1688", default=100)
+    data = _1688_api_post(_1688_FIND_PRODUCT_URI, {
+        "query": keyword,
+        "pageSize": max_results,
+        "purchaseAmount": 1,
+        "scoreLevel": "high",
+    }, timeout=60)
     if not data or not data.get("success"):
-        print(f"1688搜索'{keyword}'失败: {data.get('msgInfo') if data else '无响应'}")
+        print(f"1688搜产品'{keyword}'失败: {data.get('msgInfo') if data else '无响应'}")
         return []
 
-    # 从响应中提取工厂数据
-    factories = _extract_1688_factories(data)
-    if not factories:
-        print(f"1688搜索'{keyword}'未获取到供应商")
+    # 小白讲解：find_product的产品列表在 data.data 里（嵌套一层）
+    # 响应结构：{success, data: {data: [产品列表], count, intent}}
+    outer_data = data.get("data") or {}
+    if isinstance(outer_data, dict):
+        products = outer_data.get("data") or []
+    elif isinstance(outer_data, list):
+        products = outer_data
+    else:
+        products = []
+
+    if not products:
+        print(f"1688搜产品'{keyword}'未获取到产品")
         return []
 
-    print(f"1688搜索'{keyword}'：获取到 {len(factories)} 家供应商")
+    print(f"1688搜产品'{keyword}'：获取到 {len(products)} 个产品")
 
-    # 组装供应商数据
+    # 组装供应商数据（从产品中提取供应商公司名和产品信息）
     results = []
-    for factory in factories:
-        if not isinstance(factory, dict):
+    for product in products:
+        if not isinstance(product, dict):
             continue
 
-        company_name = factory.get("companyName", "").strip()
+        # 小白讲解：从产品里提取供应商公司名（company字段）
+        company_name = (product.get("company") or product.get("supplier") or "").strip()
         if not company_name:
             continue
 
-        ext = factory.get("extInfos", {}) or {}
-
-        # 解析合作方式和服务（JSON数组格式，和SKILL一致）
-        oem_mode = _parse_json_field(ext.get("oem_mode", ""))
-        manufacture_type = _parse_json_field(ext.get("manufacture_type", ""))
-
-        # 数据质量过滤：必须有合作方式和服务才保留（和SKILL一致）
-        if not oem_mode or not manufacture_type:
-            continue
-
-        # 所在地区
-        province = ext.get("reg_prov_name", "")
-        city = ext.get("reg_city_name", "")
-        location = f"{province}{city}" if province or city else ""
-
-        # 工厂质量指标
-        factory_level = ext.get("factory_level", "")
-        satisfied_rate = ext.get("satisfied_rate_std_001", "")
-        monthly_orders = ext.get("pay_ord_byr_cnt_1m_004", 0)
-        support_proofing = ext.get("is_proofing", "") == "Y"
+        # 产品信息（1688产品名是中文，不需要翻译）
+        product_title = (product.get("title") or product.get("name") or "").strip()
+        product_link = (product.get("detailUrl") or product.get("url") or "").strip()
+        # 价格和起订量分开存储（1688返回 currentPrice 和 quantityBegin）
+        price = str(product.get("currentPrice") or product.get("price") or "").strip()
+        moq = str(product.get("quantityBegin") or product.get("moq") or "").strip()
+        if moq and not moq.endswith("件"):
+            moq = f"{moq}件"
+        sku_title = (product.get("skuTitle") or "").strip()
 
         # 组装供应商描述（供DeepSeek过滤参考）
-        # 小白讲解：1688接口本身不返回"主营产品"文字，但用户搜的关键词就是产品品类，
-        # 把"搜索品类"写进描述里，DeepSeek 就能结合"搜的是什么+公司名+工厂能力"综合判断
+        # 小白讲解：把搜索品类+产品名+规格组合成描述，
+        # DeepSeek能结合"搜的是什么+具体产品+公司名"综合判断供应商是否合适
         desc_parts = []
         desc_parts.append(f"搜索品类：{keyword}")
-        desc_parts.append(f"合作方式：{', '.join(oem_mode)}")
-        desc_parts.append(f"服务：{', '.join(manufacture_type)}")
-        if location:
-            desc_parts.append(f"地区：{location}")
-        if factory_level:
-            desc_parts.append(f"工厂等级：{factory_level}")
-        if monthly_orders:
-            desc_parts.append(f"月订单：{monthly_orders}")
-        if satisfied_rate:
-            desc_parts.append(f"满意度：{satisfied_rate}")
-        if support_proofing:
-            desc_parts.append("支持打样")
-        # 尝试提取 extInfos 里可能的主营产品/经营范围字段（不同账号返回字段名可能不同，有就加上）
-        main_products = (ext.get("mainProducts") or ext.get("main_products")
-                         or ext.get("scope") or ext.get("businessScope")
-                         or ext.get("mainCate") or "")
-        if main_products:
-            # 列表/字典类型先转成字符串，方便 DeepSeek 阅读
-            if isinstance(main_products, (list, dict)):
-                main_products = json.dumps(main_products, ensure_ascii=False)
-            desc_parts.append(f"主营产品：{main_products}")
-
-        content = "；".join(desc_parts)
+        if product_title:
+            desc_parts.append(f"产品名：{product_title}")
+        if sku_title:
+            desc_parts.append(f"规格：{sku_title}")
+        if price:
+            desc_parts.append(f"价格：¥{price}")
+        if moq:
+            desc_parts.append(f"起订量：{moq}")
+        content = "；".join(desc_parts) if desc_parts else company_name
 
         results.append({
             "name": company_name,
             "content": content,
             "hit_keyword": hit_keyword or keyword,
+            "product_title": product_title,
+            "product_link": product_link,
+            "price": price,
+            "moq": moq,
         })
 
-    print(f"1688'{keyword}'：{len(factories)}家工厂 → {len(results)}家有效供应商")
+    print(f"1688搜产品'{keyword}'：{len(products)}个产品 → {len(results)}家供应商")
     return results
 
 
 def crawl_1688(keyword, hit_keyword="", variants=None, target_count=50):
     """
-    用1688官方API搜索供应商，通过变体关键词凑够目标数量（默认50家）
+    用1688"搜产品"API搜索供应商，直接用原始关键词搜一次（不再用变体词）
 
-    小白讲解：1688每次搜索固定返回约10家供应商，同一个关键词重复搜结果一样。
-    所以要用AI提前生成的变体关键词（比如"电视柜批发""玻璃电视柜"等）多次搜索，
-    按公司名去重，一直凑够50家为止。变体用完还凑不够就返回实际拿到的数量。
+    小白讲解：改造前每次只返回约10家供应商，需要用变体词多次搜索凑够50家。
+    改造后调"搜产品"接口，一次返回30个产品（约28家供应商），单次就够用，
+    不再需要变体词扩搜。variants参数保留只是为了兼容调用方，内部已不使用。
 
     参数：
         keyword: 原始搜索关键词（如"电视柜"）
         hit_keyword: 命中的P0-P3关键词标签
-        variants: AI生成的变体关键词列表（如["电视柜批发","玻璃电视柜",...]）
-        target_count: 目标供应商数量，默认50家
+        variants: AI生成的变体关键词列表（已不再使用，保留参数兼容调用方）
+        target_count: 目标供应商数量（已不再使用，保留参数兼容调用方）
 
-    返回：去重后的供应商列表（最多target_count家）
+    返回：去重后的供应商列表（约28家，一次搜索的实际结果）
     """
-    # 第1步：先用原始关键词搜一次（拿约10家）
+    # 直接用原始关键词搜一次，按公司名去重后返回
     all_results = []
-    seen_names = set()  # 按公司名去重
+    seen_names = set()
 
-    first_batch = _crawl_1688_once(keyword, hit_keyword)
-    for r in first_batch:
+    batch = _crawl_1688_once(keyword, hit_keyword)
+    for r in batch:
         name = r.get("name", "")
         if name and name not in seen_names:
             seen_names.add(name)
             all_results.append(r)
 
-    print(f"1688'{keyword}'原始词：{len(all_results)}家（目标{target_count}家）")
-
-    # 够了就直接返回
-    if len(all_results) >= target_count:
-        return all_results[:target_count]
-
-    # 没有变体就返回已有的
-    if not variants:
-        print(f"1688'{keyword}'无变体，最终{len(all_results)}家")
-        return all_results
-
-    # 第2步：用变体关键词逐个搜索，凑够target_count家为止
-    for i, variant in enumerate(variants):
-        if len(all_results) >= target_count:
-            break
-
-        # 跳过空变体或和原始词一样的变体
-        variant = variant.strip()
-        if not variant or variant == keyword:
-            continue
-
-        # 每次调用间隔1秒，避免触发限流
-        if i > 0:
-            time.sleep(1)
-
-        try:
-            batch = _crawl_1688_once(variant, hit_keyword)
-        except Exception as e:
-            print(f"1688变体'{variant}'异常: {e}")
-            continue
-
-        # 按公司名去重
-        new_count = 0
-        for r in batch:
-            name = r.get("name", "")
-            if name and name not in seen_names:
-                seen_names.add(name)
-                all_results.append(r)
-                new_count += 1
-
-        print(f"1688变体'{variant}'：新增{new_count}家，累计{len(all_results)}/{target_count}")
-
-    print(f"1688'{keyword}'最终：{len(all_results)}家（目标{target_count}家）")
+    print(f"1688'{keyword}'最终：{len(all_results)}家（单次搜产品，不再用变体）")
     return all_results
 
 
@@ -1391,6 +1490,11 @@ def extract_company_names(search_results):
                     "business_type": r.get("business_type", ""),  # MCP的businessType字段
                     "location": r.get("location", ""),             # MCP的location字段
                     "badges": r.get("badges", ""),                 # MCP的badges字段
+                    # 产品字段（MCP搜产品方式才有，1688无此字段）
+                    "product_title": r.get("product_title", ""),
+                    "product_link": r.get("product_link", ""),
+                    "price": r.get("price", ""),
+                    "moq": r.get("moq", ""),
                 }
                 companies.append(company)
             continue
@@ -1659,6 +1763,11 @@ def _filter_one_batch(batch, product_name):
                     # 天眼查工商简介存到临时字段，后续追加到 DeepSeek 生成的 intro 后面（问题3的追加方案）
                     if orig.get("_tyc_business_intro"):
                         s["_tyc_business_intro"] = orig["_tyc_business_intro"]
+                    # 产品字段透传（MCP搜产品方式才有，1688无此字段为空）
+                    s["product_title"] = orig.get("product_title", "")
+                    s["product_link"] = orig.get("product_link", "")
+                    s["price"] = orig.get("price", "")
+                    s["moq"] = orig.get("moq", "")
                 else:
                     s["hit_keyword"] = ""
                     s["source"] = "B2B平台"
@@ -1671,6 +1780,10 @@ def _filter_one_batch(batch, product_name):
                     s.setdefault("phone", "")
                     s.setdefault("email", "")
                     s.setdefault("contact_status", "未获取")
+                    s.setdefault("product_title", "")
+                    s.setdefault("product_link", "")
+                    s.setdefault("price", "")
+                    s.setdefault("moq", "")
                 s["has_cross_border_exp"] = 1 if s.get("has_cross_border_exp") else 0
             return batch_filtered
         except Exception as e:
@@ -2108,9 +2221,8 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                 except Exception as e:
                     print(f"天眼查详情查询失败({name}): {e}")
             else:
-                # 天眼查未匹配：保留该公司，标记经营状态未知，不编造工商数据
-                # （含MIC来源，用户希望直接用英文名搜索，能找到就补全，找不到也保留）
-                supplier["operating_status"] = "工商数据未匹配"
+                # 天眼查未匹配：标记剔除（天眼查是初筛唯一数据源，找不到的没必要保留）
+                supplier["_tyc_not_found"] = True
 
             # 计算联系方式状态
             has_phone = bool(supplier.get("phone", "").strip())
@@ -2147,6 +2259,13 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                     print(f"天眼查补全任务异常: {e}")
     except Exception as e:
         print(f"天眼查补全初始化失败: {e}")
+
+    # 天眼查补全后剔除未匹配的供应商（找不到工商数据的不保留）
+    removed_count = 0
+    companies = [c for c in companies if not c.pop("_tyc_not_found", False) or (removed_count := removed_count + 1) and False]
+    if removed_count > 0 and progress_callback:
+        progress_callback(current_step, total_steps,
+                          f"天眼查未匹配{removed_count}家已剔除，剩余{len(companies)}家")
 
     # 第四步：用DeepSeek基于完整工商数据做精细过滤
     # 小白讲解：此时 companies 已带工商信息（注册资本/经营状态/成立年限等），

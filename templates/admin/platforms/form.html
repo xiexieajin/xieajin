@@ -30,10 +30,17 @@
 
                     <!-- 最大结果数 -->
                     <div class="mb-3">
-                        <label class="form-label">最大结果数 <span class="text-danger">*</span></label>
+                        <label class="form-label">最大搜索数量 <span class="text-danger">*</span></label>
                         <input type="number" class="form-control" name="max_results"
                                value="{{ platform.max_results }}" min="10" max="200" step="10" required>
-                        <small class="text-muted">该平台单次搜索目标供应商数量（实际数量受平台限制）</small>
+                        <small class="text-muted">
+                            该平台单次搜索的目标产品数量（实际返回数量受平台限制）。
+                            {% if platform.provider_code == 'ali1688' %}
+                                1688搜产品接口上限约96个，建议填100。
+                            {% elif platform.provider_code == 'madeinchina' %}
+                                MIC每页30个产品，系统会按此数量自动计算翻页（如填100则翻4页）。
+                            {% endif %}
+                        </small>
                     </div>
 
                     <!-- 启用状态 -->
@@ -64,9 +71,9 @@
                 <p class="small mb-2"><strong>{{ platform.provider_name }}</strong></p>
                 <p class="small mb-0 text-muted">
                     {% if platform.provider_code == 'ali1688' %}
-                        通过1688官方API搜索供应商。每个关键词固定返回10家，需用关键词变体多次搜索凑够目标数量。
-                    {% elif platform.provider_code == 'made_in_china' %}
-                        通过中国制造网MCP服务搜索供应商。每页10家，最多翻10页。
+                        通过1688官方API搜索产品，从产品中获取供应商。单次调用可返回最多96个产品（约80-90家供应商），不需要变体词多次搜索。
+                    {% elif platform.provider_code == 'madeinchina' %}
+                        通过中国制造网MCP服务搜索产品，从产品中获取供应商。每页30个产品，系统按"最大搜索数量"自动计算翻页次数。
                     {% endif %}
                 </p>
                 <hr>

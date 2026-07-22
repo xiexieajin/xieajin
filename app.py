@@ -237,7 +237,13 @@ def teardown_request(exception):
     """每次请求后关闭数据库连接（Flask 自动调用）"""
     db_conn = getattr(g, "db", None)
     if db_conn is not None:
-        db_conn.close()
+        # 小白讲解：用try/except包裹close()，避免连接已被SSE后台线程关闭时
+        # 抛出"Already closed"异常，这个异常会中断SSE流式响应导致前端报network error
+        try:
+            db_conn.close()
+        except Exception:
+            pass
+        g.db = None
 
 
 # ==================== 首页 ====================
@@ -1617,10 +1623,12 @@ def ai_search_suppliers(req_id):
                      hit_keyword,
                      supplier_type, contact_status, registered_capital, legal_person,
                      operating_status, establish_years, establish_date, has_cross_border_exp,
+                     product_title, product_link, price, moq,
                      created_at, updated_at, user_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '已寻源待初筛',
                             %s,
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s)
                 """, (req_id, s.get("name", ""), s.get("intro", ""),
                       s.get("factory_address", ""), s.get("email", ""),
                       s.get("phone", ""), s.get("main_product", ""),
@@ -1631,6 +1639,8 @@ def ai_search_suppliers(req_id):
                       s.get("operating_status", "存续"),
                       s.get("establish_years", ""), s.get("establish_date", ""),
                       s.get("has_cross_border_exp", 0),
+                      s.get("product_title", ""), s.get("product_link", ""),
+                      s.get("price", ""), s.get("moq", ""),
                       now_str(), now_str(), user_id))
                 saved_count += 1
             # 新增了供应商（都是"已寻源待初筛"），需求状态应从"需求确认中"推进到"寻源中"

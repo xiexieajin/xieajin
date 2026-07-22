@@ -153,6 +153,30 @@
                         <div class="info-grid__label">主营产品</div>
                         <div class="info-grid__value">{{ supplier.main_product or '-' }}</div>
                     </div>
+                    {# 小白讲解：以下4个字段来自"搜产品"方式，让业务能看到"供应商是靠哪个产品命中的"，
+                       解决"产品不适配"问题的可解释性。价格和MOQ分开显示方便业务快速判断。 #}
+                    <div>
+                        <div class="info-grid__label">产品名称</div>
+                        <div class="info-grid__value">{{ supplier.product_title or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">价格</div>
+                        <div class="info-grid__value">{{ supplier.price or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">MOQ</div>
+                        <div class="info-grid__value">{{ supplier.moq or '-' }}</div>
+                    </div>
+                    <div>
+                        <div class="info-grid__label">产品链接</div>
+                        <div class="info-grid__value">
+                            {% if supplier.product_link %}
+                                <a href="{{ supplier.product_link }}" target="_blank" rel="noopener noreferrer" class="text-primary"><i class="bi bi-box-arrow-up-right"></i> 查看产品页</a>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </div>
+                    </div>
                     <div>
                         <div class="info-grid__label">跨境电商经验</div>
                         <div class="info-grid__value">
@@ -214,16 +238,9 @@
                 <div class="score-row">
                     <div class="score-row__label">产品匹配度</div>
                     <div class="score-row__track">
-                        <div class="score-row__fill" style="width: {{ (screening.score_product_match / 30 * 100) if screening.score_product_match else 0 }}%"></div>
+                        <div class="score-row__fill" style="width: {{ (screening.score_product_match / 40 * 100) if screening.score_product_match else 0 }}%"></div>
                     </div>
-                    <div class="score-row__value">{{ screening.score_product_match or 0 }}/30</div>
-                </div>
-                <div class="score-row">
-                    <div class="score-row__label">联系方式完整度</div>
-                    <div class="score-row__track">
-                        <div class="score-row__fill" style="width: {{ (screening.score_contact_complete / 10 * 100) if screening.score_contact_complete else 0 }}%"></div>
-                    </div>
-                    <div class="score-row__value">{{ screening.score_contact_complete or 0 }}/10</div>
+                    <div class="score-row__value">{{ screening.score_product_match or 0 }}/40</div>
                 </div>
                 <div class="score-row">
                     <div class="score-row__label">风险记录</div>

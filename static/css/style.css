@@ -556,13 +556,15 @@ a:hover {
   margin-bottom: 0.75rem;
 }
 .stage-bar-row__label {
-  width: 80px;
+  width: 100px;
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
   flex-shrink: 0;
+  white-space: nowrap;
 }
 .stage-bar-row__track {
   flex: 1;
+  max-width: 55%;
   height: 8px;
   background-color: var(--color-neutral-100);
   border-radius: var(--radius-full);

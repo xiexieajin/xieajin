@@ -264,6 +264,11 @@ def init_db():
         contact_status      VARCHAR(50) DEFAULT '未获取',   -- 联系方式状态（已获取电话/已获取邮箱/已获取电话和邮箱/未获取）
         registered_capital  VARCHAR(1000) DEFAULT '',         -- 注册资本
         legal_person        VARCHAR(1000) DEFAULT '',         -- 法定代表人
+        -- 产品字段（搜产品方式返回，用于业务核对供应商是否真做该产品）
+        product_title       VARCHAR(1000) DEFAULT '',         -- 产品名称（1688中文原样，MIC已翻译成中文）
+        product_link        VARCHAR(1000) DEFAULT '',         -- 产品链接（产品页URL）
+        price               VARCHAR(200) DEFAULT '',          -- 价格（如"176.63"或"US$105.00-155.00"）
+        moq                 VARCHAR(200) DEFAULT '',          -- 起订量MOQ（如"1件"或"30 Pieces (MOQ)"）
         created_at          TEXT NOT NULL,
         updated_at          TEXT NOT NULL,
         FOREIGN KEY (requirement_id) REFERENCES requirements (id)
@@ -279,13 +284,17 @@ def init_db():
     _add_column_if_not_exists(cursor, "suppliers", "legal_person", "VARCHAR(1000) DEFAULT ''")
     _add_column_if_not_exists(cursor, "suppliers", "has_cross_border_exp", "INTEGER DEFAULT 0")
     _add_column_if_not_exists(cursor, "suppliers", "establish_date", "VARCHAR(1000) DEFAULT ''")
+    # 恢复产品字段（搜产品方式需要，用于业务核对供应商是否真做该产品）
+    _add_column_if_not_exists(cursor, "suppliers", "product_title", "VARCHAR(1000) DEFAULT ''")
+    _add_column_if_not_exists(cursor, "suppliers", "product_link", "VARCHAR(1000) DEFAULT ''")
+    _add_column_if_not_exists(cursor, "suppliers", "price", "VARCHAR(200) DEFAULT ''")
+    _add_column_if_not_exists(cursor, "suppliers", "moq", "VARCHAR(200) DEFAULT ''")
 
-    # 清理已废弃的旧字段（这些字段不再使用，从旧数据库中删除以节省空间）
+    # 清理已废弃的旧字段（price_moq已拆分成price和moq两个独立字段，需删除旧的合并字段）
+    _drop_column_if_exists(cursor, "suppliers", "price_moq")
+    # 清理其他已废弃旧字段
     _drop_column_if_exists(cursor, "suppliers", "has_amazon_exp")
     _drop_column_if_exists(cursor, "suppliers", "has_temu_exp")
-    _drop_column_if_exists(cursor, "suppliers", "product_title")
-    _drop_column_if_exists(cursor, "suppliers", "product_link")
-    _drop_column_if_exists(cursor, "suppliers", "price_moq")
 
     # ==================== 3. 初筛结果表 ====================
     # 对应工作流的"阶段3-供应商初筛"，记录风险排查、资质核实和评分
@@ -637,15 +646,21 @@ def _seed_initial_data(cursor, conn):
 
 def _seed_screening_rules(cursor, conn):
     """
-    预置初筛规则模板（11条一票否决 + 6条评分规则）
+    预置初筛规则模板（11条一票否决 + 5条评分规则）
 
-    小白讲解：系统第一次启动时自动把方案5.2节的17条默认规则写入 screening_rule_templates 表。
+    小白讲解：系统第一次启动时自动把方案5.2节的16条默认规则写入 screening_rule_templates 表。
     之后用户可以在「规则配置页」修改参数（阈值/分值/启用开关），修改后保存为衍生模板。
     系统默认规则不可删除，但用户可以基于默认规则创建自己的模板。
+
+    升级机制：已有数据库时（cnt>0），调用 _upgrade_screening_rules 做"规则升级"，
+    把过时的 score_contact_complete 规则删除、把 score_product_match 满分从30改为40、
+    更新两条 veto 规则的描述文案。这样老用户重启系统后规则自动同步到最新版。
     """
     cursor.execute("SELECT COUNT(*) as cnt FROM screening_rule_templates")
     if cursor.fetchone()["cnt"] > 0:
-        return  # 规则已存在，跳过（避免重复插入）
+        # 老数据库：执行规则升级（删除联系方式评分、更新产品匹配度满分与veto规则描述）
+        _upgrade_screening_rules(cursor, conn)
+        return  # 规则已存在，跳过重复插入
 
     now = now_str()
 
@@ -748,7 +763,7 @@ def _seed_screening_rules(cursor, conn):
             "is_configurable": 1,  # 可开关
             "is_enabled": 1,
             "sort_order": 6,
-            "description": "供应商非制造商且无制造能力证据的，触发一票否决。由AI综合分析注册类型、经营范围、资质等判断。用户可关闭此规则。",
+            "description": "供应商非制造商且无制造能力证据的，触发一票否决。判断依据：公司名关键字（厂/制造 vs 贸易/商贸）+ 经营范围关键字 + AI综合判断。用户可关闭此规则。",
         },
         # 7. 产品不匹配一票否决
         {
@@ -757,14 +772,14 @@ def _seed_screening_rules(cursor, conn):
             "rule_type": "veto",
             "rule_category": "match",
             "default_condition": '{"type":"single","field":"product_match","operator":"eq","value":"mismatch"}',
-            "default_action": '{"result":"veto","reason":"产品或经营范围明显不匹配"}',
+            "default_action": '{"result":"veto","reason":"供应商产品不是需求主产品（可能是配件）"}',
             "max_score": None,
             "scoring_logic": "",
-            "tyc_commands": '["get_company_basic_profile"]',
+            "tyc_commands": '[]',
             "is_configurable": 1,  # 可开关
             "is_enabled": 1,
             "sort_order": 7,
-            "description": "供应商产品或经营范围与采购需求明显不匹配的，触发一票否决。由AI语义判断。用户可关闭此规则。",
+            "description": "判断供应商已获取的产品是否为需求主产品本身（不是配件）。AI从需求提取主产品（如'茶色玻璃下翻门电视柜'→'电视柜'），判断供应商产品是否就是该主产品。配件（如电视柜脚轮/支架）触发否决。用户可关闭此规则。",
         },
         # 8. 失信被执行人一票否决
         {
@@ -880,39 +895,23 @@ def _seed_screening_rules(cursor, conn):
             "sort_order": 102,
             "description": "根据成立年限评估企业经营稳定性。用户可修改分值和阈值。",
         },
-        # 3. 产品与经营范围匹配（30分）
+        # 3. 产品匹配度（40分，AI宽松评分：主产品50分基础+核心功能加分+材质加分+额外功能奖励）
         {
             "rule_code": "score_product_match",
-            "rule_name": "产品与经营范围匹配",
+            "rule_name": "产品匹配度",
             "rule_type": "score",
             "rule_category": "match",
             "default_condition": '{"field":"product_match"}',
             "default_action": '{}',
-            "max_score": 30,
-            "scoring_logic": "AI语义判断：完全匹配30分，部分匹配20分，弱关联10分，不匹配0分",
-            "tyc_commands": '["get_company_basic_profile"]',
+            "max_score": 40,
+            "scoring_logic": "AI宽松评分：主产品符合给基础50分，核心功能按符合比例加0-25分，材质完全符合加25分/部分符合加15分/不符加0分，有额外功能奖励5分（上限100）。数据源=product_title+main_product+intro",
+            "tyc_commands": '[]',
             "is_configurable": 1,
             "is_enabled": 1,
             "sort_order": 103,
-            "description": "由AI对比需求产品名称与供应商经营范围/主营产品，判断匹配度。用户可修改分值。",
+            "description": "用供应商产品标题+主营产品+简介与需求的核心功能+材质做匹配评分。宽松模式：主产品符合就给基础分，不轻易给0分。",
         },
-        # 4. 联系方式完整度（10分）
-        {
-            "rule_code": "score_contact_complete",
-            "rule_name": "联系方式完整度",
-            "rule_type": "score",
-            "rule_category": "contact",
-            "default_condition": '{"field":"contact_completeness"}',
-            "default_action": '{}',
-            "max_score": 10,
-            "scoring_logic": "有电话+邮箱满分10分，仅有电话或邮箱5分，均无0分",
-            "tyc_commands": '["get_company_basic_profile"]',
-            "is_configurable": 1,
-            "is_enabled": 1,
-            "sort_order": 104,
-            "description": "根据联系方式完整度评分。用户可修改分值。",
-        },
-        # 5. 风险记录（15分）
+        # 4. 风险记录（15分）
         {
             "rule_code": "score_risk_record",
             "rule_name": "风险记录",
@@ -925,10 +924,10 @@ def _seed_screening_rules(cursor, conn):
             "tyc_commands": '["get_risk_overview"]',
             "is_configurable": 1,
             "is_enabled": 1,
-            "sort_order": 105,
+            "sort_order": 104,
             "description": "根据天眼查风险总览中的风险记录数量评分。用户可修改分值和阈值。",
         },
-        # 6. 出口经验、平台经验或资质（5分）
+        # 5. 出口经验、平台经验或资质（5分）
         {
             "rule_code": "score_export_exp",
             "rule_name": "出口经验、平台经验或资质",
@@ -941,7 +940,7 @@ def _seed_screening_rules(cursor, conn):
             "tyc_commands": '["get_qualifications","get_company_basic_profile"]',
             "is_configurable": 1,
             "is_enabled": 1,
-            "sort_order": 106,
+            "sort_order": 105,
             "description": "结合资质证书、经营范围和AI分析判断是否有出口/平台经验。用户可修改分值。",
         },
     ]
@@ -1008,7 +1007,96 @@ def _seed_screening_rules(cursor, conn):
               rule["is_enabled"], rule["sort_order"], rule["description"], now, now))
 
     conn.commit()
-    print("[初始化] 已预置17条初筛规则模板 + 2条通过标准配置（共19条记录）")
+    print("[初始化] 已预置16条初筛规则模板 + 2条通过标准配置（共18条记录）")
+
+
+def _upgrade_screening_rules(cursor, conn):
+    """
+    老数据库规则升级：把过时规则同步到最新版
+
+    小白讲解：用户改了初筛逻辑后，老数据库里还是旧规则（比如还有"联系方式评分"规则、
+    产品匹配度满分还是30分）。这个函数在每次启动时检查并升级：
+    1. 删除 score_contact_complete（联系方式改为否决规则，不再评分）
+    2. 把 score_product_match 满分从30改成40，更新评分说明
+    3. 更新 veto_non_manufacturer 描述（增加公司名判断说明）
+    4. 更新 veto_product_mismatch 描述和动作（改为判断主产品而非经营范围）
+
+    幂等设计：已经升级过的数据库再跑也不会出错（用rule_code做唯一判断）。
+    """
+    now = now_str()
+    upgraded = []
+
+    # 1. 删除联系方式评分规则（已改为 veto_no_contact 否决规则）
+    # 小白讲解：先删除引用了该模板的实例记录（用户保存的模板快照），
+    # 再删除模板本身，否则外键约束会阻止删除。
+    cursor.execute("""
+        DELETE FROM screening_rule_instances
+        WHERE template_id IN (
+            SELECT id FROM screening_rule_templates WHERE rule_code = %s
+        )
+    """, ("score_contact_complete",))
+    cursor.execute("DELETE FROM screening_rule_templates WHERE rule_code = %s",
+                   ("score_contact_complete",))
+    if cursor.rowcount > 0:
+        upgraded.append("删除 score_contact_complete（联系方式改为否决规则）")
+
+    # 2. 更新产品匹配度评分规则：满分30→40，更新评分说明（宽松模式）
+    # 小白讲解：只在 max_score 还是旧值（30或非40）或评分说明未更新时才更新，
+    # 避免每次启动都重复更新（用 WHERE 条件限制只在需要时才匹配）。
+    new_scoring_logic = "AI宽松评分：主产品符合给基础50分，核心功能按符合比例加0-25分，材质完全符合加25分/部分符合加15分/不符加0分，有额外功能奖励5分（上限100）。数据源=product_title+main_product+intro"
+    new_description = "用供应商产品标题+主营产品+简介与需求的核心功能+材质做匹配评分。宽松模式：主产品符合就给基础分，不轻易给0分。"
+    cursor.execute("""
+        UPDATE screening_rule_templates
+        SET max_score = 40,
+            scoring_logic = %s,
+            description = %s,
+            updated_at = %s
+        WHERE rule_code = %s AND (max_score <> 40 OR scoring_logic <> %s OR description <> %s)
+    """, (new_scoring_logic, new_description, now, "score_product_match",
+          new_scoring_logic, new_description))
+    if cursor.rowcount > 0:
+        upgraded.append("更新 score_product_match 满分30→40 + 宽松评分说明")
+
+    # 3. 更新非制造商否决规则描述（增加公司名判断说明）
+    new_veto_nm_desc = "供应商非制造商且无制造能力证据的，触发一票否决。判断依据：公司名关键字（厂/制造 vs 贸易/商贸）+ 经营范围关键字 + AI综合判断。用户可关闭此规则。"
+    cursor.execute("""
+        UPDATE screening_rule_templates
+        SET description = %s,
+            updated_at = %s
+        WHERE rule_code = %s AND description <> %s
+    """, (new_veto_nm_desc, now, "veto_non_manufacturer", new_veto_nm_desc))
+    if cursor.rowcount > 0:
+        upgraded.append("更新 veto_non_manufacturer 描述（增加公司名判断说明）")
+
+    # 4. 更新产品不匹配否决规则描述和动作（改为判断主产品而非经营范围）
+    new_veto_pm_action = '{"result":"veto","reason":"供应商产品不是需求主产品（可能是配件）"}'
+    new_veto_pm_desc = "判断供应商已获取的产品是否为需求主产品本身（不是配件）。AI从需求提取主产品（如'茶色玻璃下翻门电视柜'→'电视柜'），判断供应商产品是否就是该主产品。配件（如电视柜脚轮/支架）触发否决。用户可关闭此规则。"
+    cursor.execute("""
+        UPDATE screening_rule_templates
+        SET default_action = %s,
+            description = %s,
+            updated_at = %s
+        WHERE rule_code = %s AND (default_action <> %s OR description <> %s)
+    """, (new_veto_pm_action, new_veto_pm_desc, now, "veto_product_mismatch",
+          new_veto_pm_action, new_veto_pm_desc))
+    if cursor.rowcount > 0:
+        upgraded.append("更新 veto_product_mismatch 描述和动作（改为判断主产品）")
+
+    # 5. 同步更新用户保存的模板实例中的产品匹配度满分（旧模板可能还是30分）
+    cursor.execute("""
+        UPDATE screening_rule_instances si
+        JOIN screening_rule_templates srt ON si.template_id = srt.id
+        SET si.custom_score_cap = 40
+        WHERE srt.rule_code = 'score_product_match' AND si.custom_score_cap <> 40
+    """)
+    if cursor.rowcount > 0:
+        upgraded.append(f"更新{cursor.rowcount}个模板实例的产品匹配度满分30→40")
+
+    if upgraded:
+        conn.commit()
+        print(f"[升级] 已升级初筛规则：{'; '.join(upgraded)}")
+    else:
+        print("[升级] 初筛规则已是最新，无需升级")
 
 
 def _realign_user_id_to_requirement_owner(cursor, conn):

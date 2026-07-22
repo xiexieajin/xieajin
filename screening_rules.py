@@ -120,6 +120,30 @@ def update_rule_template(rule_code, updates):
         f"UPDATE screening_rule_templates SET {', '.join(set_parts)} WHERE rule_code = %s",
         params
     )
+
+    # 小白讲解：同步更新所有模板实例中该规则的参数，让模板跟着默认规则变。
+    # 否则用户在规则配置页修改后，初筛选模板时还是用旧的快照值。
+    # 同步字段映射：is_enabled→is_enabled, default_condition→custom_condition, max_score→custom_score_cap
+    sync_parts = []
+    sync_params = []
+    if "is_enabled" in updates:
+        sync_parts.append("is_enabled = %s")
+        sync_params.append(updates["is_enabled"])
+    if "default_condition" in updates:
+        sync_parts.append("custom_condition = %s")
+        sync_params.append(json.dumps(updates["default_condition"], ensure_ascii=False) if updates["default_condition"] else None)
+    if "max_score" in updates:
+        sync_parts.append("custom_score_cap = %s")
+        sync_params.append(updates["max_score"])
+    if sync_parts:
+        sync_parts.append("updated_at = %s")
+        sync_params.append(now_str())
+        sync_params.append(rule_code)
+        cursor.execute(
+            f"UPDATE screening_rule_instances SET {', '.join(sync_parts)} WHERE template_id IN (SELECT id FROM screening_rule_templates WHERE rule_code = %s)",
+            sync_params
+        )
+
     conn.commit()
     conn.close()
     return True
