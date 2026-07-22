@@ -93,10 +93,13 @@ class ScreeningDataClient(TianyanchaClient):
         if not self.session_id:
             self.initialize()
 
-        # 构造调用参数
-        call_args = {"company_name": company_name}
-        if arguments:
-            call_args.update(arguments)
+        # 小白讲解：天眼查MCP协议规定——
+        # company_name 放在顶层参数，arguments 里只保留真正的工具参数（如page/page_size）。
+        # 之前把 company_name 塞进 arguments 里，天眼查报错：
+        #   "arguments 不需要也不允许包含主体定位参数 company_name"
+        # 导致风险总览/资质证书/司法案件三个维度全部查询失败，
+        # 风险评分和出口经验评分都基于错误数据给满分。
+        call_args = dict(arguments) if arguments else {}
 
         result = self._call("tools/call", {
             "name": "call_tool",

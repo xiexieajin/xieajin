@@ -347,6 +347,14 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
     phone = basic_info.get("phone", "") or supplier.get("phone", "")
     email = basic_info.get("email", "") or supplier.get("email", "")
 
+    # 小白讲解：把天眼查返回的权威数据写回 supplier 字典，让后续函数能拿到。
+    # 原因：一票否决和评分阶段会调用 _check_product_mismatch / _score_product_match，
+    # 这两个函数从 supplier 字典取数据。如果不写回，它们只能拿到 AI 搜索阶段推断的
+    # 主观字段（intro/main_product），会被 AI 生成的内容误导，把销售类公司当成制造商。
+    # 天眼查的 business_scope 是工商登记的客观经营范围，权威性远高于平台推断数据。
+    if business_scope:
+        supplier["business_scope"] = business_scope
+
     # 解析风险总览
     risk_detail = parse_risk_detail(tyc_data.get("risk_overview", ""))
 
@@ -581,36 +589,58 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
     """
     判断是否为非制造商（AI辅助判断）
 
-    小白讲解：综合分析经营范围、供应商类型、资质等，判断是否为制造商。
-    如果经营范围含"生产""制造""加工"等关键字，认为是制造商。
-    否则用AI做进一步判断。
+    小白讲解：综合分析经营范围、资质等，判断是否为真正的制造商。
+    判断依据优先级：天眼查工商登记经营范围 > AI语义分析。
+    不再使用 supplier_type 字段作为免死金牌（该字段是AI搜索阶段推断的，本身可能错误）。
     """
-    # 快速关键字判断
-    manufacture_keywords = ["生产", "制造", "加工", "研发"]
-    if any(kw in business_scope for kw in manufacture_keywords):
+    # 小白讲解：之前的逻辑只要 supplier_type=="制造商" 就直接放过，
+    # 但这个字段是AI搜索阶段从1688/中国制造网推断的，贸易公司也可能被误判为"制造商"。
+    # 现在去掉这个免死金牌，统一走经营范围关键字+AI判断。
+
+    # 快速关键字判断（带上下文校验）
+    # 小白讲解：经营范围里含"生产/制造/加工"关键字，但要看上下文——
+    # 如果带"限分支机构""仅限研发""不得生产"等修饰语，实际不是制造商。
+    manufacture_keywords = ["生产", "制造", "加工"]
+    exclude_patterns = ["限分支机构", "仅限", "不得生产", "不得制造", "不得加工",
+                        "分支机构", "仅研发", "技术研发", "技术开发"]
+    hit_keyword = None
+    for kw in manufacture_keywords:
+        if kw in business_scope:
+            # 检查关键字前后30个字符内是否有排除修饰语
+            idx = business_scope.find(kw)
+            context = business_scope[max(0, idx-30):idx+len(kw)+30]
+            if any(ex in context for ex in exclude_patterns):
+                print(f"[初筛] 经营范围含'{kw}'但命中排除修饰语，不视为制造商：{context[:60]}")
+                continue
+            hit_keyword = kw
+            break
+
+    if hit_keyword:
         log_task(run_id, supplier_id, "veto_non_manufacturer_check", "制造商判断",
                  {"company_name": company_name, "business_scope": business_scope[:200]},
-                 {"is_manufacturer": True, "reason": "经营范围含生产/制造/加工关键字"},
-                 "经营范围关键字匹配", "success", user_id)
+                 {"is_manufacturer": True, "reason": f"经营范围含{hit_keyword}关键字且无排除修饰语"},
+                 "经营范围关键字匹配（带上下文校验）", "success", user_id)
         return False  # 是制造商，不触发否决
-
-    # 供应商类型判断
-    if supplier.get("supplier_type") == "制造商":
-        log_task(run_id, supplier_id, "veto_non_manufacturer_check", "制造商判断",
-                 {"company_name": company_name, "supplier_type": supplier.get("supplier_type")},
-                 {"is_manufacturer": True, "reason": "供应商类型标记为制造商"},
-                 "数据库supplier_type字段", "success", user_id)
-        return False
 
     # AI进一步判断
     try:
-        prompt = f"""请判断以下企业是否为制造商（有实际生产能力）。
+        # 小白讲解：prompt 里明确告诉AI——
+        # 1. 以工商登记经营范围为主要依据
+        # 2. supplier_type 字段是AI推断的，仅作参考，不能单独作为判断依据
+        # 3. 贸易类公司（经营范围是"销售：xxx"）即使主营产品里写了"生产"，也不是制造商
+        prompt = f"""请判断以下企业是否为真正的制造商（有实际生产能力，不是贸易公司）。
 只返回JSON：{{"is_manufacturer": true/false, "reason": "判断依据"}}
 
+【判断规则】
+1. 主要依据工商登记经营范围判断，经营范围含"生产/制造/加工"字样才可能是制造商
+2. "供应商类型"和"主营产品"字段是AI推断的，仅作参考，不能单独作为判断依据
+3. 如果工商登记经营范围是"销售：xxx"或"批发：xxx"开头，没有生产制造字样，应判为非制造商
+4. 贸易公司即使主营产品里写了产品名称，也不是制造商
+
 企业：{company_name}
-经营范围：{business_scope}
-供应商类型：{supplier.get('supplier_type', '未知')}
-主营产品：{supplier.get('main_product', '')}"""
+工商登记经营范围：{business_scope}
+供应商类型（AI推断，仅供参考）：{supplier.get('supplier_type', '未知')}
+主营产品（AI推断，仅供参考）：{supplier.get('main_product', '')}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=0.1, json_mode=True
@@ -623,9 +653,10 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
         reason = "AI判断失败，默认保留"
 
     log_task(run_id, supplier_id, "veto_non_manufacturer_check", "制造商判断",
-             {"company_name": company_name},
+             {"company_name": company_name, "business_scope": business_scope[:200]},
              {"is_manufacturer": is_manufacturer, "reason": reason},
-             "AI语义分析", "success" if is_manufacturer else "success", user_id)
+             "AI语义分析（以工商登记为准，supplier_type仅供参考）",
+             "success" if is_manufacturer else "success", user_id)
     return not is_manufacturer
 
 
@@ -635,21 +666,41 @@ def _check_product_mismatch(run_id, supplier_id, supplier, user_id):
 
     小白讲解：用AI对比采购需求的产品名称与供应商的经营范围/主营产品，
     如果明显不匹配则触发否决。
+    判断时以天眼查工商登记的经营范围为权威依据，平台推断的主营产品仅作参考。
     """
     req_product = supplier.get("req_product_name", "")
-    business_scope = supplier.get("business_scope", "") or supplier.get("intro", "")
+    # 小白讲解：优先用天眼查工商登记的 business_scope（权威数据），
+    # 没有（天眼查没匹配上）时才退回 intro。不要用 or 把两者拼起来，
+    # 否则 AI 会把 intro 里 AI 推断的"明确生产电视柜"当成事实。
+    business_scope = supplier.get("business_scope", "")
+    intro_text = supplier.get("intro", "")
     main_product = supplier.get("main_product", "")
 
-    if not req_product or not (business_scope or main_product):
+    if not req_product or not (business_scope or intro_text or main_product):
         return False  # 信息不足，不触发否决
 
     try:
-        prompt = f"""请判断供应商的经营范围/主营产品与采购需求是否匹配。
+        # 小白讲解：prompt 里把两类数据明确分开，告诉 AI 哪个是权威哪个是参考。
+        # - 工商登记经营范围：天眼查从工商局拉取，权威客观
+        # - 平台推断主营产品：1688/中国制造网搜索阶段 AI 推断，主观可能出错
+        # 让 AI 主要依据工商登记判断，避免被推断数据误导。
+        scope_source = "天眼查工商登记经营范围（权威）" if business_scope else "（未获取到天眼查经营范围）"
+        prompt = f"""请判断供应商是否真的有能力生产采购需求的产品。
 只返回JSON：{{"is_match": true/false, "reason": "判断依据"}}
 
+【判断规则】
+1. 主要依据"工商登记经营范围"判断，经营范围里需要有与采购产品相关的生产/制造/销售字样
+2. "平台推断主营产品"仅供参考，不能单独作为匹配依据（可能是贸易公司被误判为制造商）
+3. 如果工商登记经营范围是销售/贸易类（如"销售：电子产品、五金、建筑材料"），没有生产制造字样，
+   且采购产品需要实际生产能力（如家具、设备），应判为不匹配
+
 采购需求产品：{req_product}
-供应商经营范围：{business_scope[:300]}
-供应商主营产品：{main_product[:200]}"""
+
+{scope_source}：{business_scope[:400] if business_scope else "（空）"}
+
+供应商简介（AI推断，仅供参考）：{intro_text[:200] if intro_text else "（空）"}
+
+平台推断主营产品（仅供参考）：{main_product[:200] if main_product else "（空）"}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=0.1, json_mode=True
@@ -662,9 +713,12 @@ def _check_product_mismatch(run_id, supplier_id, supplier, user_id):
         reason = "AI判断失败，默认保留"
 
     log_task(run_id, supplier_id, "veto_product_mismatch_check", "产品匹配度判断",
-             {"req_product": req_product, "business_scope": business_scope[:200]},
+             {"req_product": req_product,
+              "business_scope": business_scope[:200] if business_scope else "（空）",
+              "intro": intro_text[:200] if intro_text else "（空）",
+              "main_product": main_product[:200] if main_product else "（空）"},
              {"is_match": is_match, "reason": reason},
-             "AI语义判断", "success", user_id)
+             "AI语义判断（以天眼查工商登记为准）", "success", user_id)
     return not is_match
 
 
@@ -729,21 +783,43 @@ def _score_years(years, max_score=15):
 
 
 def _score_product_match(rule, eval_data, supplier, max_score, run_id, supplier_id, user_id):
-    """产品匹配度评分（AI判断）：完全匹配满分，部分匹配15分，不匹配0分"""
+    """
+    产品匹配度评分（AI判断）：完全匹配满分，部分匹配15分，不匹配0分
+
+    小白讲解：用 AI 评估采购需求和供应商的匹配程度。判断时以天眼查工商登记的
+    经营范围为权威依据，平台推断的主营产品仅作参考，避免贸易公司被当成制造商给满分。
+    """
     req_product = supplier.get("req_product_name", "")
-    business_scope = eval_data.get("business_scope", "")
+    # 小白讲解：优先从 eval_data 拿天眼查的 business_scope（权威），
+    # 没有（天眼查没匹配上）时退回 supplier 字典里的 business_scope（可能是初筛阶段写回的）。
+    business_scope = eval_data.get("business_scope", "") or supplier.get("business_scope", "")
+    intro_text = supplier.get("intro", "")
     main_product = supplier.get("main_product", "")
 
     if not req_product:
         return max_score // 2  # 需求信息缺失，给一半分
 
     try:
+        # 小白讲解：能走到评分阶段，说明一票否决阶段已经判定为"匹配"（没触发否决）。
+        # 所以这里正常评估匹配程度即可，不需要再重复否决逻辑。
+        # prompt 以天眼查工商登记经营范围为权威依据，平台推断数据作参考。
+        scope_source = "天眼查工商登记经营范围（权威）" if business_scope else "（未获取到天眼查经营范围）"
         prompt = f"""请评估供应商与采购需求的产品匹配度。
 只返回JSON：{{"match_level": "full/partial/none", "reason": "判断依据"}}
 
+【评分规则】
+1. 主要依据"工商登记经营范围"判断匹配度，"平台推断主营产品"仅作参考
+2. 工商登记经营范围明确含采购产品相关字样，且直接对应 → full（完全匹配）
+3. 工商登记经营范围与采购产品有一定关联但不完全对应 → partial（部分匹配）
+4. 工商登记经营范围与采购产品完全不相关 → none（不匹配）
+
 采购需求：{req_product}
-供应商经营范围：{business_scope[:300]}
-供应商主营产品：{main_product[:200]}"""
+
+{scope_source}：{business_scope[:400] if business_scope else "（空）"}
+
+供应商简介（AI推断，仅供参考）：{intro_text[:200] if intro_text else "（空）"}
+
+平台推断主营产品（仅供参考）：{main_product[:200] if main_product else "（空）"}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=0.1, json_mode=True
@@ -756,9 +832,11 @@ def _score_product_match(rule, eval_data, supplier, max_score, run_id, supplier_
         reason = "AI判断失败"
 
     log_task(run_id, supplier_id, "score_product_match_check", "产品匹配度评分",
-             {"req_product": req_product},
+             {"req_product": req_product,
+              "business_scope": business_scope[:200] if business_scope else "（空）",
+              "main_product": main_product[:200] if main_product else "（空）"},
              {"match_level": level, "reason": reason},
-             "AI语义判断", "success", user_id)
+             "AI语义判断（以天眼查工商登记为准）", "success", user_id)
 
     if level == "full":
         return max_score
@@ -796,34 +874,62 @@ def _score_risk(eval_data, max_score=15):
 
 
 def _score_export(eval_data, supplier, tyc_data, max_score, run_id, supplier_id, user_id):
-    """出口经验评分：有进出口资质满分，有跨境电商经验满分，否则0分"""
-    # 检查资质证书文本中是否含进出口/外贸相关
+    """
+    出口经验评分：有实际出口资质/认证满分，有跨境电商经验满分，仅有进出口贸易权给一半，否则0分
+
+    小白讲解：之前只要经营范围含"进出口"就给满分，但中国大部分贸易公司经营范围
+    都有"自营和代理进出口"（这是贸易经营权，不是实际出口经验）。
+    现在区分三类：
+    - 出口认证（CE/FCC/RoHS等）：有实际国际认证，满分
+    - 跨境电商经验：有实际跨境销售记录，满分
+    - 仅进出口贸易权：经营范围含"进出口"但无认证无跨境经验，给一半分
+    - 无任何出口相关：0分
+    """
+    # 检查资质证书文本中是否含出口认证（CE/FCC/RoHS等是国际认证，证明有实际出口）
     qual_text = eval_data.get("qualifications_text", "")
-    export_keywords = ["进出口", "外贸", "出口", "海关", "CE", "FCC", "RoHS", "UL", "ETL"]
-    has_export_qual = any(kw in qual_text for kw in export_keywords)
+    cert_keywords = ["CE", "FCC", "RoHS", "UL", "ETL", "海关", "外贸认证", "出口认证"]
+    has_export_cert = any(kw in qual_text for kw in cert_keywords)
 
     # 检查供应商是否有跨境电商经验
     has_cross_border = bool(supplier.get("has_cross_border_exp", 0))
 
-    # 检查经营范围是否含进出口
+    # 检查经营范围是否含进出口贸易权（仅是经营权，不代表实际出口经验）
     business_scope = eval_data.get("business_scope", "")
     has_export_scope = "进出口" in business_scope or "外贸" in business_scope
 
-    if has_export_qual or has_cross_border or has_export_scope:
+    # 小白讲解：评分分级——
+    # 有出口认证或跨境电商经验 → 满分（证明有实际出口业务）
+    # 仅有进出口贸易权 → 给一半分（有出口资格但无证据证明实际出口）
+    # 都没有 → 0分
+    if has_export_cert or has_cross_border:
         log_task(run_id, supplier_id, "score_export_exp_check", "出口经验评分",
-                 {"has_export_qual": has_export_qual,
+                 {"has_export_cert": has_export_cert,
                   "has_cross_border": has_cross_border,
-                  "has_export_scope": has_export_scope},
+                  "has_export_scope": has_export_scope,
+                  "score_level": "full"},
                  {"has_export_exp": True, "score": max_score},
-                 "天眼查资质证书 + 供应商表 + 经营范围综合判断",
+                 "有出口认证或跨境电商经验，满分",
                  "success", user_id)
         return max_score
-
-    log_task(run_id, supplier_id, "score_export_exp_check", "出口经验评分",
-             {"has_export_qual": False, "has_cross_border": False},
-             {"has_export_exp": False, "score": 0},
-             "未发现出口经验证据", "success", user_id)
-    return 0
+    elif has_export_scope:
+        log_task(run_id, supplier_id, "score_export_exp_check", "出口经验评分",
+                 {"has_export_cert": False,
+                  "has_cross_border": False,
+                  "has_export_scope": True,
+                  "score_level": "partial"},
+                 {"has_export_exp": False, "score": max_score // 2},
+                 "仅经营范围含进出口贸易权，无认证无跨境经验，给一半分",
+                 "success", user_id)
+        return max_score // 2
+    else:
+        log_task(run_id, supplier_id, "score_export_exp_check", "出口经验评分",
+                 {"has_export_cert": False,
+                  "has_cross_border": False,
+                  "has_export_scope": False,
+                  "score_level": "none"},
+                 {"has_export_exp": False, "score": 0},
+                 "未发现任何出口经验证据", "success", user_id)
+        return 0
 
 
 # ==================== 结果写回数据库 ====================
