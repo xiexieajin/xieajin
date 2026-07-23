@@ -1799,13 +1799,27 @@ def ai_auto_screening(req_id):
                                veto_rules=veto_rules, score_rules=score_rules,
                                templates=templates)
 
-    # POST请求：执行初筛（用SSE流式返回进度）
+    # POST请求：提交初筛任务（返回task_id，由前端轮询进度）
+    # 小白讲解：改成"消息列表"轮询模式，和供应商搜索保持一致。
+    # 原因：Railway代理会切断长时间保持的SSE连接（约5分钟超时），
+    # 初筛100+家供应商要10+分钟，连接被切断后前端就报network error。
+    # 轮询模式每次请求都是瞬间的，不受长连接超时限制。
     if pending_count == 0:
         flash("没有需要初筛的供应商（所有供应商已完成初筛）", "info")
         return redirect(url_for("requirement_detail", id=req_id))
 
-    # 用队列在线程间传递进度消息（初筛线程 -> 主响应generator）
-    progress_queue = queue.Queue()
+    import uuid
+    task_id = str(uuid.uuid4())
+
+    # 创建任务记录，放入全局task_store（messages列表保留全部进度，req_id用于刷新恢复）
+    task_store[task_id] = {
+        "messages": [],          # 所有进度消息列表（不再消费式读取，全部保留）
+        "status": "running",     # 任务状态：running/done/error
+        "result": None,          # 最终结果（done时存审计报告，error时存错误信息）
+        "req_id": req_id,        # 关联的需求ID（用户刷新页面后通过它找到正在运行的任务）
+        "task_type": "screening",  # 任务类型标记（区分搜索/初筛，便于后续清理）
+    }
+
     # 小白讲解：把user_id存到局部变量，避免后台线程访问g对象（g是请求级的，请求结束后失效）
     current_user_id = g.user_id
 
@@ -1818,50 +1832,108 @@ def ai_auto_screening(req_id):
     g.db.commit()
 
     def run_screening_thread():
-        """后台线程：执行初筛引擎并通过队列推送进度"""
+        """后台线程：执行初筛引擎，把进度写入task_store的messages列表"""
         try:
             from screening_engine import run_screening
+            # 小白讲解：用适配器把 screening_engine 的 queue.put 接口
+            # 转成写 task_store["messages"]，这样engine代码完全不用改。
+            # 适配器加锁保护，避免并发写入冲突。
+            class _QueueToTaskStore:
+                """把queue.Queue的put接口适配到task_store消息列表"""
+                def put(self, msg):
+                    with _task_store_lock:
+                        task_store[task_id]["messages"].append(msg)
+
+            progress_queue = _QueueToTaskStore()
+
             # 小白讲解：后台线程不在Flask请求上下文中，需要用app.app_context()创建应用上下文
             # 否则db.get_db()等依赖Flask上下文的函数会报"Working outside of application context"
             # template_name 透传给初筛引擎，用于加载模板的规则参数和通过线阈值。
             with app.app_context():
-                run_screening(req_id, current_user_id, progress_queue, template_name=template_name)
+                report = run_screening(req_id, current_user_id, progress_queue, template_name=template_name)
+            # 初筛完成：标记任务完成，存最终结果
+            with _task_store_lock:
+                task_store[task_id]["status"] = "done"
+                task_store[task_id]["result"] = report
         except Exception as e:
-            progress_queue.put({"type": "error", "message": f"初筛引擎失败：{str(e)}"})
+            import traceback
+            err_msg = f"初筛引擎失败：{str(e)}"
+            with _task_store_lock:
+                task_store[task_id]["messages"].append({"type": "error", "message": err_msg})
+                task_store[task_id]["status"] = "error"
+                task_store[task_id]["result"] = {"error": str(e), "traceback": traceback.format_exc()[:500]}
 
-    # 先放一条"正在启动"消息，让前端立即收到响应
-    progress_queue.put({"type": "progress", "step": 0, "total": 3, "desc": "正在启动初筛引擎..."})
+    # 先放一条"正在启动"消息，让前端第一次轮询就能收到响应
+    with _task_store_lock:
+        task_store[task_id]["messages"].append(
+            {"type": "progress", "step": 0, "total": 3, "desc": "正在启动初筛引擎..."}
+        )
 
-    # 启动初筛线程
+    # 启动后台初筛线程
     thread = threading.Thread(target=run_screening_thread)
     thread.start()
 
-    # generator：从队列读消息，以SSE格式推送给浏览器
-    def generate():
-        """SSE事件生成器：把队列里的消息实时推送给前端"""
-        yield b": connected\n\n"
+    # 瞬间返回task_id，前端拿到后开始每3秒轮询进度
+    return jsonify({"task_id": task_id, "status": "started"})
 
-        while True:
-            try:
-                item = progress_queue.get(timeout=1)
-            except queue.Empty:
-                yield b": heartbeat\n\n"
-                continue
 
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n".encode("utf-8")
+@app.route("/ai/auto-screening/<int:req_id>/poll/<task_id>", methods=["GET"])
+def poll_ai_screening(req_id, task_id):
+    """
+    轮询初筛任务进度（每3秒调用一次）
 
-            if item.get("type") in ("done", "error"):
-                break
+    小白讲解：游标模式——前端传cursor参数表示"上次读到第N条消息"，
+    后端返回第N条之后的所有新消息 + 新的cursor位置。
+    这样即使前端断线重连，也不会丢失中间的进度消息。
+    和供应商搜索的poll接口完全一致。
+    """
+    task = task_store.get(task_id)
+    if not task:
+        return jsonify({"status": "not_found", "error": "任务不存在或已过期"}), 404
 
-    return Response(
-        generate(),
-        mimetype="text/event-stream",
-        direct_passthrough=True,
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    # 获取前端传来的游标位置（默认0，表示从头读）
+    cursor = request.args.get("cursor", 0, type=int)
+
+    # 加锁读取增量消息（从cursor位置开始的所有新消息）
+    with _task_store_lock:
+        all_messages = task["messages"]
+        new_messages = all_messages[cursor:]
+        new_cursor = len(all_messages)
+        current_status = task["status"]
+        result = task.get("result")
+
+    return jsonify({
+        "status": current_status,
+        "messages": new_messages,
+        "cursor": new_cursor,
+        "result": result
+    })
+
+
+@app.route("/ai/auto-screening/<int:req_id>/status", methods=["GET"])
+def ai_screening_status(req_id):
+    """
+    查询需求是否有正在运行或已完成的初筛任务（用于页面刷新后恢复进度）
+
+    小白讲解：用户刷新页面后，前端的task_id丢了，不知道之前初筛到哪了。
+    这个接口根据需求ID(req_id)在task_store里查找初筛类型的任务：
+    - 找到running状态 → 返回task_id和全部历史消息，前端恢复进度界面继续轮询
+    - 找到done/error状态 → 返回task_id和结果，前端直接显示完成/错误
+    - 没找到 → 返回not_found，前端正常显示初筛表单
+    """
+    with _task_store_lock:
+        for task_id, task in task_store.items():
+            # 只匹配初筛类型且req_id对应的任务（避免和搜索任务混淆）
+            if task.get("task_type") == "screening" and task.get("req_id") == req_id:
+                return jsonify({
+                    "task_id": task_id,
+                    "status": task["status"],
+                    "messages": task["messages"],
+                    "cursor": len(task["messages"]),
+                    "result": task.get("result")
+                })
+
+    return jsonify({"status": "not_found"})
 
 
 # ==================== 初筛规则管理路由 ====================

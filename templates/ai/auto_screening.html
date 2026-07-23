@@ -200,7 +200,266 @@
 </div>
 
 <script>
-{# ==================== SSE前端逻辑 ==================== #}
+{# ==================== 轮询模式前端逻辑（和供应商搜索一致）==================== #}
+{# 小白讲解：之前用SSE长连接，Railway代理5分钟超时会切断连接导致network error。 #}
+{# 现在改成轮询：POST瞬间返回task_id → 前端每3秒GET一次/poll接口拿增量消息。 #}
+{# 每次请求都是毫秒级的，不受长连接超时限制，支持刷新页面恢复进度。 #}
+
+const logList = document.getElementById('logList');
+const supplierTableBody = document.getElementById('supplierTableBody');
+let elapsedTimer = null;
+
+function startTimer(startTime) {
+    const elapsedEl = document.getElementById('elapsedTime');
+    elapsedTimer = setInterval(() => {
+        const secs = Math.floor((Date.now() - startTime) / 1000);
+        if (secs < 60) {
+            elapsedEl.textContent = '已用时 ' + secs + ' 秒';
+        } else {
+            elapsedEl.textContent = '已用时 ' + Math.floor(secs / 60) + ' 分 ' + (secs % 60) + ' 秒';
+        }
+    }, 1000);
+}
+
+function stopTimer() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
+
+function addLog(text, type) {
+    type = type || 'info';
+    const li = document.createElement('li');
+    li.className = 'list-group-item list-group-item-' + (type === 'success' ? 'success' : type === 'warning' ? 'warning' : 'light');
+    li.innerHTML = '<small><i class="bi bi-' + (type === 'success' ? 'check-circle-fill text-success' : type === 'warning' ? 'exclamation-triangle-fill text-warning' : 'dot text-muted') + '"></i> ' + text + '</small>';
+    logList.appendChild(li);
+    logList.scrollTop = logList.scrollHeight;
+}
+
+function updateProgress(current, total, desc) {
+    const pct = total > 0 ? Math.round(current * 100 / total) : 0;
+    const bar = document.getElementById('progressBar');
+    bar.style.width = pct + '%';
+    bar.textContent = pct + '%';
+    document.getElementById('progressDesc').textContent = desc;
+}
+
+function addSupplierRow(idx, name) {
+    const tr = document.createElement('tr');
+    tr.id = 'supplier-row-' + idx;
+    tr.innerHTML = '<td>' + idx + '</td><td>' + name + '</td><td><span class="badge bg-info">处理中</span></td><td>-</td><td>-</td>';
+    supplierTableBody.appendChild(tr);
+    return tr;
+}
+
+function updateSupplierRow(idx, conclusion, score, vetoed) {
+    const tr = document.getElementById('supplier-row-' + idx);
+    if (!tr) return;
+    let badge = '';
+    if (conclusion === '已通过初筛') {
+        badge = '<span class="badge bg-success">通过</span>';
+    } else if (conclusion === '未通过初筛') {
+        badge = '<span class="badge bg-danger">' + (vetoed ? '否决' : '未通过') + '</span>';
+    } else {
+        badge = '<span class="badge bg-warning text-dark">人工确认</span>';
+    }
+    tr.cells[2].innerHTML = '<span class="badge bg-secondary">完成</span>';
+    tr.cells[3].innerHTML = badge;
+    tr.cells[4].textContent = score;
+}
+
+/**
+ * 处理一批消息（轮询和断线恢复共用）
+ * 小白讲解：不管是新初筛的实时消息，还是刷新后恢复的历史消息，
+ * 都走同一个处理函数，保证界面更新逻辑一致。
+ * @param {Array} messages - 消息列表
+ * @returns {string|null} - 'done'/'error'表示任务已结束，null表示还在运行
+ */
+function processMessages(messages) {
+    for (const msg of messages) {
+        if (msg.type === 'progress') {
+            updateProgress(msg.step, msg.total, msg.desc);
+            addLog(msg.desc);
+        } else if (msg.type === 'supplier_progress') {
+            updateProgress(msg.current, msg.total, msg.desc);
+            addSupplierRow(msg.current, msg.supplier_name);
+            addLog('开始初筛：' + msg.supplier_name);
+        } else if (msg.type === 'supplier_step') {
+            addLog(msg.supplier_name + ' - ' + msg.step);
+        } else if (msg.type === 'supplier_done') {
+            updateSupplierRow(
+                msg.current || 0,
+                msg.conclusion,
+                msg.total_score,
+                msg.veto_triggered
+            );
+            addLog(msg.supplier_name + ' - ' + msg.conclusion + '（得分：' + msg.total_score + '）',
+                   msg.conclusion === '已通过初筛' ? 'success' : msg.conclusion === '需人工确认' ? 'warning' : 'info');
+        } else if (msg.type === 'supplier_error') {
+            addLog(msg.supplier_name + ' - ' + msg.message, 'warning');
+        } else if (msg.type === 'done') {
+            return 'done';
+        } else if (msg.type === 'error') {
+            return 'error';
+        }
+    }
+    return null;
+}
+
+/**
+ * 显示初筛完成界面
+ * 小白讲解：从result里取审计报告，展示"查看审计"按钮，3秒后跳回需求详情页
+ */
+function showDone(result) {
+    stopTimer();
+    const r = result || {};
+    const report = r.report || r;
+    const message = r.message || '初筛完成';
+    updateProgress(1, 1, message);
+    addLog(message, 'success');
+
+    document.getElementById('progressArea').style.display = 'none';
+    document.getElementById('doneArea').style.display = 'block';
+    document.getElementById('doneDesc').textContent = message;
+
+    if (report && report.run_id) {
+        document.getElementById('auditLink').style.display = 'block';
+        document.getElementById('auditUrl').href = '/screening/rules/audit/' + report.run_id;
+    }
+
+    let countdown = 3;
+    const countdownEl = document.getElementById('countdown');
+    const timer = setInterval(() => {
+        countdown--;
+        countdownEl.textContent = countdown;
+        if (countdown <= 0) {
+            clearInterval(timer);
+            window.location.href = '{{ url_for("requirement_detail", id=requirement.id) }}';
+        }
+    }, 1000);
+}
+
+/**
+ * 显示错误界面
+ */
+function showError(message) {
+    stopTimer();
+    document.getElementById('progressArea').style.display = 'none';
+    document.getElementById('errorArea').style.display = 'block';
+    document.getElementById('errorMsg').textContent = message || '初筛失败';
+}
+
+/**
+ * 启动轮询（带游标，每3秒一次）
+ * 小白讲解：cursor 是"上次读到第几条"的位置，每次轮询带上它，
+ * 后端只返回 cursor 之后的新消息，避免重复。
+ * @param {string} pollUrl - 轮询接口地址
+ * @param {number} initialCursor - 初始游标位置（恢复时从历史消息末尾开始）
+ */
+function startPolling(pollUrl, initialCursor) {
+    let cursor = initialCursor || 0;
+    let pollFailCount = 0;
+
+    const pollInterval = setInterval(async () => {
+        try {
+            const res = await fetch(pollUrl + '?cursor=' + cursor);
+            if (!res.ok) {
+                if (res.status === 404) {
+                    clearInterval(pollInterval);
+                    return;
+                }
+                throw new Error('HTTP ' + res.status);
+            }
+
+            const pollData = await res.json();
+            pollFailCount = 0;
+
+            // 处理新消息
+            const endStatus = processMessages(pollData.messages || []);
+            cursor = pollData.cursor;  // 更新游标位置
+
+            // 初筛完成
+            if (pollData.status === 'done' || endStatus === 'done') {
+                clearInterval(pollInterval);
+                // 小白讲解：done消息可能在messages里（带report），也可能只在result里
+                // 两种都兼容，优先从messages里找done消息（含message和report字段）
+                let doneMsg = null;
+                for (const m of (pollData.messages || [])) {
+                    if (m.type === 'done') { doneMsg = m; break; }
+                }
+                showDone(doneMsg || pollData.result);
+            }
+
+            // 初筛出错
+            if (pollData.status === 'error' || endStatus === 'error') {
+                clearInterval(pollInterval);
+                let errMsg = '初筛失败';
+                if (pollData.result && pollData.result.error) errMsg = pollData.result.error;
+                else if (pollData.result && pollData.result.message) errMsg = pollData.result.message;
+                // 从messages里找error消息（更准确）
+                for (const m of (pollData.messages || [])) {
+                    if (m.type === 'error' && m.message) { errMsg = m.message; break; }
+                }
+                showError(errMsg);
+            }
+        } catch (pollErr) {
+            pollFailCount++;
+            if (pollFailCount >= 3) {
+                clearInterval(pollInterval);
+                showError('请求失败：' + pollErr.message + '（可能是网络问题或服务器超时，请刷新页面重试）');
+            }
+        }
+    }, 3000);
+}
+
+// ========== 页面加载时先检查是否有正在运行的初筛任务（断线恢复）==========
+// 小白讲解：用户刷新页面后task_id丢了，通过/status接口按req_id找回任务，
+// 用历史消息重建进度界面，再继续轮询新消息。
+(async function checkRunningTask() {
+    const statusUrl = '{{ url_for("ai_screening_status", req_id=requirement.id) }}';
+    try {
+        const res = await fetch(statusUrl);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (data.status === 'not_found') {
+            // 没有正在运行的任务，正常显示初筛表单（不做任何操作）
+            return;
+        }
+
+        // 找到正在运行或已完成的任务，恢复进度界面
+        document.getElementById('screeningForm').style.display = 'none';
+        document.getElementById('progressArea').style.display = 'block';
+        const startBtn = document.getElementById('startBtn');
+        if (startBtn) startBtn.disabled = true;
+
+        // 用历史消息重建进度界面
+        const endStatus = processMessages(data.messages || []);
+
+        if (data.status === 'done' || endStatus === 'done') {
+            // 任务已完成，直接显示完成界面
+            let doneMsg = null;
+            for (const m of (data.messages || [])) {
+                if (m.type === 'done') { doneMsg = m; break; }
+            }
+            showDone(doneMsg || data.result);
+        } else if (data.status === 'error' || endStatus === 'error') {
+            // 任务出错，直接显示错误界面
+            let errMsg = '初筛失败';
+            if (data.result && data.result.error) errMsg = data.result.error;
+            for (const m of (data.messages || [])) {
+                if (m.type === 'error' && m.message) { errMsg = m.message; break; }
+            }
+            showError(errMsg);
+        } else {
+            // 任务还在运行，启动计时器并继续轮询新消息
+            startTimer(Date.now());  // 恢复时从当前时间开始计时
+            addLog('已恢复初筛进度，继续实时跟踪...', 'info');
+            const pollUrl = '{{ url_for("ai_auto_screening", req_id=requirement.id) }}/poll/' + data.task_id;
+            startPolling(pollUrl, data.cursor);
+        }
+    } catch (err) {
+        // 检查失败不影响正常使用，静默忽略
+    }
+})();
+
+// ========== 表单提交：发起新初筛 ==========
 document.getElementById('screeningForm').addEventListener('submit', async function(e) {
     e.preventDefault();
 
@@ -211,155 +470,30 @@ document.getElementById('screeningForm').addEventListener('submit', async functi
     const startBtn = document.getElementById('startBtn');
     startBtn.disabled = true;
 
-    const logList = document.getElementById('logList');
-    const supplierTableBody = document.getElementById('supplierTableBody');
-
-    // 独立计时器
-    const elapsedEl = document.getElementById('elapsedTime');
-    const startTime = Date.now();
-    const elapsedTimer = setInterval(() => {
-        const secs = Math.floor((Date.now() - startTime) / 1000);
-        if (secs < 60) {
-            elapsedEl.textContent = '已用时 ' + secs + ' 秒';
-        } else {
-            elapsedEl.textContent = '已用时 ' + Math.floor(secs / 60) + ' 分 ' + (secs % 60) + ' 秒';
-        }
-    }, 1000);
-
-    function stopTimer() { if (elapsedTimer) clearInterval(elapsedTimer); }
-
-    function addLog(text, type) {
-        type = type || 'info';
-        const li = document.createElement('li');
-        li.className = 'list-group-item list-group-item-' + (type === 'success' ? 'success' : type === 'warning' ? 'warning' : 'light');
-        li.innerHTML = '<small><i class="bi bi-' + (type === 'success' ? 'check-circle-fill text-success' : type === 'warning' ? 'exclamation-triangle-fill text-warning' : 'dot text-muted') + '"></i> ' + text + '</small>';
-        logList.appendChild(li);
-        logList.scrollTop = logList.scrollHeight;
-    }
-
-    function updateProgress(current, total, desc) {
-        const pct = total > 0 ? Math.round(current * 100 / total) : 0;
-        const bar = document.getElementById('progressBar');
-        bar.style.width = pct + '%';
-        bar.textContent = pct + '%';
-        document.getElementById('progressDesc').textContent = desc;
-    }
-
-    function addSupplierRow(idx, name) {
-        const tr = document.createElement('tr');
-        tr.id = 'supplier-row-' + idx;
-        tr.innerHTML = '<td>' + idx + '</td><td>' + name + '</td><td><span class="badge bg-info">处理中</span></td><td>-</td><td>-</td>';
-        supplierTableBody.appendChild(tr);
-        return tr;
-    }
-
-    function updateSupplierRow(idx, conclusion, score, vetoed) {
-        const tr = document.getElementById('supplier-row-' + idx);
-        if (!tr) return;
-        let badge = '';
-        if (conclusion === '已通过初筛') {
-            badge = '<span class="badge bg-success">通过</span>';
-        } else if (conclusion === '未通过初筛') {
-            badge = '<span class="badge bg-danger">' + (vetoed ? '否决' : '未通过') + '</span>';
-        } else {
-            badge = '<span class="badge bg-warning text-dark">人工确认</span>';
-        }
-        tr.cells[2].innerHTML = '<span class="badge bg-secondary">完成</span>';
-        tr.cells[3].innerHTML = badge;
-        tr.cells[4].textContent = score;
-    }
+    const form = e.target;
 
     try {
-        const response = await fetch(window.location.href, {
+        // POST瞬间返回task_id（不再保持SSE长连接）
+        const postResponse = await fetch(form.action, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
-            body: new FormData(document.getElementById('screeningForm')),
+            body: new FormData(form),
         });
 
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            let idx;
-            while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                const rawMsg = buffer.slice(0, idx);
-                buffer = buffer.slice(idx + 2);
-
-                if (!rawMsg.startsWith('data: ')) continue;
-
-                const jsonStr = rawMsg.slice(6).trim();
-                if (!jsonStr) continue;
-
-                let msg;
-                try { msg = JSON.parse(jsonStr); } catch (err) { continue; }
-
-                if (msg.type === 'progress') {
-                    updateProgress(msg.step, msg.total, msg.desc);
-                    addLog(msg.desc);
-                } else if (msg.type === 'supplier_progress') {
-                    updateProgress(msg.current, msg.total, msg.desc);
-                    addSupplierRow(msg.current, msg.supplier_name);
-                    addLog('开始初筛：' + msg.supplier_name);
-                } else if (msg.type === 'supplier_step') {
-                    addLog(msg.supplier_name + ' - ' + msg.step);
-                } else if (msg.type === 'supplier_done') {
-                    updateSupplierRow(
-                        msg.current || 0,
-                        msg.conclusion,
-                        msg.total_score,
-                        msg.veto_triggered
-                    );
-                    addLog(msg.supplier_name + ' - ' + msg.conclusion + '（得分：' + msg.total_score + '）',
-                           msg.conclusion === '已通过初筛' ? 'success' : msg.conclusion === '需人工确认' ? 'warning' : 'info');
-                } else if (msg.type === 'supplier_error') {
-                    addLog(msg.supplier_name + ' - ' + msg.message, 'warning');
-                } else if (msg.type === 'done') {
-                    stopTimer();
-                    updateProgress(1, 1, msg.message);
-                    addLog(msg.message, 'success');
-
-                    document.getElementById('progressArea').style.display = 'none';
-                    document.getElementById('doneArea').style.display = 'block';
-                    document.getElementById('doneDesc').textContent = msg.message;
-
-                    if (msg.report && msg.report.run_id) {
-                        document.getElementById('auditLink').style.display = 'block';
-                        document.getElementById('auditUrl').href = '/screening/rules/audit/' + msg.report.run_id;
-                    }
-
-                    let countdown = 3;
-                    const countdownEl = document.getElementById('countdown');
-                    const timer = setInterval(() => {
-                        countdown--;
-                        countdownEl.textContent = countdown;
-                        if (countdown <= 0) {
-                            clearInterval(timer);
-                            window.location.href = '{{ url_for("requirement_detail", id=requirement.id) }}';
-                        }
-                    }, 1000);
-                    return;
-                } else if (msg.type === 'error') {
-                    stopTimer();
-                    document.getElementById('progressArea').style.display = 'none';
-                    document.getElementById('errorArea').style.display = 'block';
-                    document.getElementById('errorMsg').textContent = msg.message;
-                    return;
-                }
-            }
+        if (!postResponse.ok) {
+            throw new Error('HTTP ' + postResponse.status);
         }
+
+        const startData = await postResponse.json();
+        const taskId = startData.task_id;
+        addLog('初筛任务已提交，正在启动...', 'info');
+
+        // 启动计时器和轮询
+        startTimer(Date.now());
+        const pollUrl = form.action + '/poll/' + taskId;
+        startPolling(pollUrl, 0);
     } catch (err) {
-        stopTimer();
-        document.getElementById('progressArea').style.display = 'none';
-        document.getElementById('errorArea').style.display = 'block';
-        document.getElementById('errorMsg').textContent = '请求失败：' + err.message;
+        showError('请求失败：' + err.message + '（可能是网络问题或服务器超时）');
     }
 });
 </script>

@@ -23,6 +23,7 @@ import base64
 import queue
 import threading
 import difflib
+import subprocess
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -93,33 +94,78 @@ _MIC_MCP_TARGET_COUNT = 100
 # search_products每页返回30个，需要翻4页凑够100个
 _MIC_MCP_PAGE_SIZE = 30
 
+# ==================== MIC 调用限速控制 ====================
+# 小白讲解：3个关键词并发搜索时，MCP服务会同时去made-in-china.com抓数据，
+# 容易触发429限流（Storage TV Cabinet就是第1页就限流导致0家）。
+# 用全局锁把所有MIC的search_products调用排成一队，两次调用至少间隔5秒，
+# 避免同时请求触发限流。
+_mic_call_lock = threading.Lock()           # 全局锁，保证同一时刻只有一个线程在判断/更新调用时间
+_mic_last_call_time = 0.0                   # 上次MCP search_products调用的发起时间戳
+_MIC_CALL_INTERVAL = 5                      # 两次MCP search_products调用之间的最小间隔秒数
+
+# ==================== MIC 关键词串行锁 ====================
+# 小白讲解：3个关键词并发搜索时，即使有5秒限速，3个线程轮流请求made-in-china.com，
+# 等于每5秒就有一个请求，加上重试时3个线程同时重试，互相加剧限流，导致后续关键词全部429失败。
+# 用这个串行锁让MIC部分一次只搜一个关键词（排队执行），1688部分仍然并发不受影响。
+# 这样5秒限速才能真正生效，重试时也不会有多线程同时重试的问题。
+_mic_serial_lock = threading.Lock()         # MIC关键词串行锁：同一时刻只有一个关键词在搜MIC
+
+
+def _wait_mic_rate_limit():
+    """
+    MIC调用前限速：确保两次MCP search_products调用之间至少间隔5秒
+
+    小白讲解：这个函数在每次调用MCP search_products前执行。
+    - 拿到全局锁后，看上次调用是什么时候
+    - 如果距离上次调用不到5秒，就补睡"5秒 - 已过时间"
+    - 补睡完更新"上次调用时间"为当前时间，然后释放锁去发请求
+    这样不管多少个线程并发，MCP的search_products调用都会自动排队，两次调用至少隔5秒，避免触发429限流。
+    """
+    global _mic_last_call_time
+    with _mic_call_lock:
+        now = time.time()
+        elapsed = now - _mic_last_call_time
+        if elapsed < _MIC_CALL_INTERVAL:
+            wait = _MIC_CALL_INTERVAL - elapsed
+            print(f"MCP限速等待：距上次调用{elapsed:.1f}秒，补睡{wait:.1f}秒后再次调用")
+            time.sleep(wait)
+        # 更新上次调用时间为"现在"（即即将发起调用的时刻）
+        _mic_last_call_time = time.time()
+
 
 class _MicMcpClient:
     """
-    Made-in-China MCP over SSE 客户端
+    Made-in-China MCP over SSE 客户端（用系统curl实现，绕过Python OpenSSL兼容性问题）
+
+    小白讲解：原来用Python requests库连接MCP的SSE服务，但服务器拒绝Python OpenSSL的TLS指纹，
+    导致连接被重置(10054)。系统自带的curl用Windows Schannel做SSL，能正常连上。
+    所以这里改用 subprocess 调用系统 curl 来建立SSE长连接和发送POST请求。
 
     MCP over SSE 通信模式：
-    1. GET /sse 建立长连接，从首个data:行获取session路径（/messages?sessionId=xxx）
-    2. POST到session路径发送JSON-RPC请求（返回202 Accepted）
-    3. 实际响应通过SSE长连接的data:行返回
+    1. 用 curl GET /sse 建立长连接，从首个data:行获取session路径（/messages?sessionId=xxx）
+    2. 用 curl POST 到session路径发送JSON-RPC请求（返回202 Accepted）
+    3. 实际响应通过SSE长连接的data:行返回（从curl的stdout读取）
     4. 需保持SSE连接不断开，否则session失效
     """
 
     def __init__(self):
         self.session_path = None
-        self.sse_resp = None
-        self.sse_thread = None
+        self.curl_proc = None       # curl子进程，用于维持SSE长连接
+        self.sse_thread = None      # 后台线程，持续读取curl的stdout
         self.response_queue = queue.Queue()
         self._stop = False
 
     def _read_sse(self):
-        """后台线程：持续读取SSE事件，把JSON-RPC响应放入队列"""
+        """后台线程：持续读取curl子进程的stdout，把JSON-RPC响应放入队列"""
         try:
-            for line in self.sse_resp.iter_lines(decode_unicode=True):
-                if self._stop:
-                    break
+            while not self._stop and self.curl_proc:
+                line = self.curl_proc.stdout.readline()
                 if not line:
+                    # readline返回空说明curl进程已结束
+                    if self.curl_proc.poll() is not None:
+                        break
                     continue
+                line = line.strip()
                 if line.startswith("data: "):
                     data_content = line[6:].strip()
                     # 首个data是session路径
@@ -138,39 +184,53 @@ class _MicMcpClient:
 
     def connect(self, wait_timeout=15):
         """
-        建立SSE连接并等待session路径
+        用系统curl建立SSE连接并等待session路径
 
-        小白讲解：SSE是长连接，连接建立后会一直保持。
-        timeout用元组(连接超时, 读取超时)：
-        - 连接超时10秒：建立TCP连接最多等10秒
-        - 读取超时120秒：两次数据之间最多等120秒（SSE长连接保活，避免30秒等待期间断开）
+        小白讲解：用 subprocess 启动 curl 进程，让它去连接MCP的SSE服务。
+        curl用Windows Schannel做SSL握手，能绕过服务器对Python OpenSSL的拒绝。
+        SSE长连接由curl进程维持，我们通过读取curl的stdout来获取SSE事件。
         """
         try:
-            # 元组timeout：(连接超时, 读取超时)
-            # 读取超时设120秒，避免限流等待30秒时SSE连接被断开（原来15秒会Read timed out）
-            self.sse_resp = requests.get(
-                _MIC_MCP_SSE_URL, stream=True, timeout=(10, 120),
-                headers={"Accept": "text/event-stream"}
+            # 用系统curl建立SSE长连接
+            # -s 静默模式，-N 禁用缓冲（实时输出），--max-time 120 最长保持120秒
+            self.curl_proc = subprocess.Popen(
+                ["curl", "-s", "-N", "--max-time", "120",
+                 "-H", "Accept: text/event-stream", _MIC_MCP_SSE_URL],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,  # 行缓冲，确保每读到一行就输出
             )
-            if self.sse_resp.status_code != 200:
-                print(f"MCP SSE连接失败: HTTP {self.sse_resp.status_code}")
-                return False
         except Exception as e:
-            print(f"MCP SSE连接异常: {e}")
+            print(f"MCP SSE连接异常（curl启动失败）: {e}")
             return False
 
+        # 检查curl是否启动成功（如果立刻退出说明有问题）
+        time.sleep(0.5)
+        if self.curl_proc.poll() is not None:
+            err = self.curl_proc.stderr.read() if self.curl_proc.stderr else ""
+            print(f"MCP SSE连接失败（curl立即退出）: {err[:200]}")
+            return False
+
+        # 启动后台线程读取SSE事件
         self.sse_thread = threading.Thread(target=self._read_sse, daemon=True)
         self.sse_thread.start()
 
         # 等待获取session路径（最多等15秒）
         start = time.time()
         while not self.session_path and time.time() - start < wait_timeout:
+            # 如果curl进程在此期间退出，直接失败
+            if self.curl_proc.poll() is not None:
+                err = self.curl_proc.stderr.read() if self.curl_proc.stderr else ""
+                print(f"MCP SSE连接失败（curl提前退出）: {err[:200]}")
+                return False
             time.sleep(0.1)
 
         return bool(self.session_path)
 
     def call(self, method, params, call_id, timeout=60):
-        """调用MCP方法，等待SSE流返回响应"""
+        """用curl POST发送MCP方法调用，等待SSE流返回响应"""
         if not self.session_path:
             return None
 
@@ -182,7 +242,14 @@ class _MicMcpClient:
             "params": params
         }
         try:
-            requests.post(url, json=body, timeout=15, headers={"Content-Type": "application/json"})
+            # 用系统curl发送POST请求（同样绕过OpenSSL兼容性问题）
+            subprocess.run(
+                ["curl", "-s", "-X", "POST", url,
+                 "-H", "Content-Type: application/json",
+                 "-d", json.dumps(body, ensure_ascii=False)],
+                capture_output=True,
+                timeout=15,
+            )
         except Exception as e:
             print(f"MCP POST异常: {e}")
             return None
@@ -197,6 +264,10 @@ class _MicMcpClient:
                 # 不是本次响应，放回队列
                 self.response_queue.put(resp_data)
             except queue.Empty:
+                # 检查curl进程是否还活着
+                if self.curl_proc and self.curl_proc.poll() is not None:
+                    print(f"MCP SSE连接已断开（curl进程退出）")
+                    return None
                 continue
         return None
 
@@ -237,12 +308,17 @@ class _MicMcpClient:
         return None
 
     def close(self):
+        """关闭SSE连接：停止读取线程，终止curl子进程"""
         self._stop = True
-        if self.sse_resp:
+        if self.curl_proc:
             try:
-                self.sse_resp.close()
+                self.curl_proc.terminate()
+                self.curl_proc.wait(timeout=3)
             except Exception:
-                pass
+                try:
+                    self.curl_proc.kill()
+                except Exception:
+                    pass
 
 
 def _translate_keyword_to_english(keyword):
@@ -483,6 +559,22 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
 
     # 英文关键词已经是英文，不需要再翻译，直接使用
     search_keyword = keyword
+
+    # 小白讲解：MIC串行锁——3个关键词并发搜索时，MIC部分一次只搜一个关键词。
+    # 1688部分不受这个锁影响，仍然并发。这样made-in-china.com的5秒限速才能真正生效，
+    # 不会出现3个线程轮流请求+同时重试导致的持续429限流。
+    # 用with语法自动加锁/解锁，即使搜索出错也能自动释放锁。
+    with _mic_serial_lock:
+        return _crawl_made_in_china_mcp_impl(keyword, hit_keyword, variants, search_keyword)
+
+
+def _crawl_made_in_china_mcp_impl(keyword, hit_keyword, variants, search_keyword):
+    """
+    MIC搜索的实际实现（被crawl_made_in_china_mcp包装，加了串行锁）
+
+    小白讲解：这个函数才是真正干活的，外面的crawl_made_in_china_mcp负责排队拿号（串行锁），
+    拿到号了才进来真正搜产品。
+    """
     print(f"MCP开始搜索英文关键词（搜产品）：'{search_keyword}'")
 
     client = _MicMcpClient()
@@ -501,9 +593,9 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
             print(f"MCP初始化失败")
             return []
 
-        # 总超时保护：搜产品翻页，60秒足够
+        # 总超时保护：搜产品翻页，限流重试3次每次6秒，需要更长超时
         mcp_start_time = time.time()
-        MCP_TOTAL_TIMEOUT = 60
+        MCP_TOTAL_TIMEOUT = 180
 
         # 搜索结果存放，用公司名去重
         all_results = []
@@ -524,15 +616,25 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
                 print(f"MCP已凑够{len(all_results)}家供应商，停止翻页")
                 break
 
+            # 小白讲解：调用MCP search_products前先限速，保证两次调用间隔至少5秒，避免3个并发线程同时请求触发429
+            _wait_mic_rate_limit()
+
             result = client.call_tool("search_products", {
                 "keyword": search_keyword,
                 "page": page
             }, call_id=page, timeout=30)
 
-            # 限流处理：等待8秒后重新连接重试一次
-            if result == "__RATE_LIMIT__":
-                print(f"MCP search_products第{page}页触发限流(429)，等待8秒后重新连接重试...")
-                time.sleep(8)
+            # 限流处理：等待6秒后重新连接重试，最多重试3次
+            # 小白讲解：made-in-china.com的限流比较严，重试1次经常不够，
+            # 改成循环重试3次，每次等6秒后重新连接MCP再试。
+            # 只要某次重试成功就继续翻页，3次都失败才放弃当前关键词。
+            MAX_RETRY = 3
+            retry_count = 0
+            while result == "__RATE_LIMIT__" and retry_count < MAX_RETRY:
+                retry_count += 1
+                print(f"MCP search_products第{page}页触发限流(429)，等待6秒后重试（第{retry_count}/{MAX_RETRY}次）...")
+                time.sleep(6)
+                # 重新连接MCP（SSE连接可能已断开，需要新建连接）
                 client.close()
                 client = _MicMcpClient()
                 if not client.connect():
@@ -545,11 +647,13 @@ def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
                 result = client.call_tool("search_products", {
                     "keyword": search_keyword,
                     "page": page
-                }, call_id=page + 100, timeout=30)
+                }, call_id=page + retry_count * 100, timeout=30)
 
-            # 重试后仍然限流，快速失败，返回已有结果
+            # 3次重试后仍然限流，放弃当前关键词（保留已有结果）
+            # 小白讲解：3次重试都失败说明made-in-china.com限流严重，
+            # 继续翻下一页大概率也会限流，不如保留已有结果不浪费时间。
             if result == "__RATE_LIMIT__":
-                print(f"MCP search_products重试后仍限流，返回已有{len(all_results)}家")
+                print(f"MCP search_products第{page}页重试{MAX_RETRY}次后仍限流，返回已有{len(all_results)}家")
                 break
             if not result or not isinstance(result, dict):
                 break
