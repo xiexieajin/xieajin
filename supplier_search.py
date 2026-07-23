@@ -678,6 +678,36 @@ _1688_FIND_PRODUCT_URI = "/api/find_product/1.0.0"
 # 签名版本号（与官方SKILL一致用1.0.0）
 _SKILL_VERSION = "1.0.0"
 
+# ==================== 1688 调用限速控制 ====================
+# 小白讲解：因为多个关键词是并发搜索的（最多3个线程同时跑），如果每个线程
+# 各自sleep(5)秒，3个线程会在5秒后同时发请求，照样触发限流。所以用一把
+# 全局锁把所有1688调用排成一队，按"上次调用时间"补睡剩余时间，真正错开。
+_1688_call_lock = threading.Lock()       # 全局锁，保证同一时刻只有一个线程在判断/更新调用时间
+_1688_last_call_time = 0.0               # 上次1688 API调用的完成时间戳
+_1688_CALL_INTERVAL = 5                  # 两次1688搜索调用之间的最小间隔秒数
+
+
+def _wait_1688_rate_limit():
+    """
+    1688调用前限速：确保两次1688 API搜索调用之间至少间隔5秒
+
+    小白讲解：这个函数在每次调用1688搜索接口前执行。
+    - 拿到全局锁后，看上次调用是什么时候
+    - 如果距离上次调用不到5秒，就补睡"5秒 - 已过时间"
+    - 补睡完更新"上次调用时间"为当前时间，然后释放锁去发请求
+    这样不管多少个线程并发，1688的调用都会自动排队，两次调用至少隔5秒，避免被限流(429)。
+    """
+    global _1688_last_call_time
+    with _1688_call_lock:
+        now = time.time()
+        elapsed = now - _1688_last_call_time
+        if elapsed < _1688_CALL_INTERVAL:
+            wait = _1688_CALL_INTERVAL - elapsed
+            print(f"1688限速等待：距上次调用{elapsed:.1f}秒，补睡{wait:.1f}秒后再次调用")
+            time.sleep(wait)
+        # 更新上次调用时间为"现在"（即即将发起调用的时刻）
+        _1688_last_call_time = time.time()
+
 
 def _parse_1688_ak():
     """
@@ -935,6 +965,11 @@ def _crawl_1688_once(keyword, hit_keyword=""):
     # 小白讲解：scoreLevel=high保证相关性高
     # pageSize从管理中心配置读取（管理员可在"搜索平台管理"页面调整最大结果数）
     max_results = _get_platform_max_results("ali1688", default=100)
+
+    # 小白讲解：调用1688搜索接口前先限速，保证两次调用间隔至少5秒，避免触发限流(429)
+    # 即使3个关键词并发搜索，这里也会自动排队错开，不会同时发请求
+    _wait_1688_rate_limit()
+
     data = _1688_api_post(_1688_FIND_PRODUCT_URI, {
         "query": keyword,
         "pageSize": max_results,
