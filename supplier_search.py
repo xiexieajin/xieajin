@@ -3,11 +3,13 @@
 
 这个模块实现了供应商寻源的完整搜索流程：
 1. 1688官方API：用AK签名调用searchoffer搜索商品 → workflow(offer_detail)获取商家信息
-   （官方API方式，无需Cookie/爬虫，不会被风控，数据最完整）
+  （官方API方式，无需Cookie/爬虫，不会被风控，数据最完整）
 2. 中国制造网（Made-in-China）：按P0-P3关键词爬取B2B平台搜索页
-   （带session保持+4秒慢速间隔，减少验证码触发）
-3. 用DeepSeek做过滤判断（不推荐、不编造，只从已有公司名中筛选）
-4. 用天眼查MCP补全供应商的工商信息（注册资本、地址、电话等）
+  （带session保持+4秒慢速间隔，减少验证码触发）
+3. 海关贸易数据（topease）：用HS编码+产品关键词搜索海关出口记录
+  （streamable-http MCP，stream=True解决JSON截断，按exporterName聚合统计出口量）
+4. 用DeepSeek做过滤判断（不推荐、不编造，只从已有公司名中筛选）
+5. 用天眼查MCP补全供应商的工商信息（注册资本、地址、电话等）
 
 参考文档：供应商寻源SKILL（飞书文档）
 参考项目：https://github.com/next-1688/1688-shopkeeper
@@ -60,9 +62,10 @@ def _get_platform_max_results(provider_code, default=100):
         if p.get("provider_code") == provider_code:
             max_results = p.get("max_results", default)
             try:
-                # 限制在合理范围（10-200），避免管理员配置异常值
                 max_results = int(max_results)
-                return max(10, min(200, max_results))
+                # 海关数据每页10条，翻50页最多500条，上限放宽到500；其他平台上限200
+                upper_limit = 500 if provider_code == "topease_customs" else 200
+                return max(10, min(upper_limit, max_results))
             except (ValueError, TypeError):
                 return default
     return default
@@ -109,6 +112,62 @@ _MIC_CALL_INTERVAL = 5                      # 两次MCP search_products调用之
 # 用这个串行锁让MIC部分一次只搜一个关键词（排队执行），1688部分仍然并发不受影响。
 # 这样5秒限速才能真正生效，重试时也不会有多线程同时重试的问题。
 _mic_serial_lock = threading.Lock()         # MIC关键词串行锁：同一时刻只有一个关键词在搜MIC
+
+
+# ==================== 海关贸易数据（topease）MCP服务 ====================
+# MCP Endpoint: https://mcp.topease.net/mcp (streamable-http)
+# 工具: search_customs_data
+# 搜索策略: hs_code=9403 + product_keyword + trade_type=import + stream=True
+# 翻页: 每页10条（实测上限），翻50页凑500条
+# 聚合: 按exporterName合并，累加出口量，降序排序
+
+# topease API Key（优先从数据库读取，管理员可在管理中心修改；这里作为兜底默认值）
+_TOPEASE_API_KEY_DEFAULT = "trdmcp_live_gh-CN9jbAnZrRd99lJR9MNSG8avtLdnXZKoY0NaE8c4"
+
+
+def _get_topease_api_key():
+    """
+    获取topease海关数据API密钥（优先从数据库读取，失败时用默认值兜底）
+
+    小白讲解：管理员在"模型与平台管理→搜索平台管理"里看到的"海关贸易数据"，
+    其API密钥存在ai_providers表中。这个函数从数据库取密钥，取不到就用代码里写死的默认值。
+    """
+    try:
+        from model_config import get_provider
+        provider = get_provider("topease_customs")
+        if provider and provider.get("api_key"):
+            return provider["api_key"]
+    except Exception as e:
+        print(f"从数据库读取topease API密钥失败：{e}")
+    return _TOPEASE_API_KEY_DEFAULT
+
+# ==================== 海关数据 调用限速控制 ====================
+# 小白讲解：与MIC一样，用全局锁保证两次topease调用之间至少间隔5秒，
+# 避免触发topease服务的请求频率限制。
+_topease_call_lock = threading.Lock()        # 全局锁
+_topease_last_call_time = 0.0               # 上次调用时间戳
+_TOPEASE_CALL_INTERVAL = 5                   # 5秒间隔
+
+# 海关数据关键词串行锁（与MIC一样，一次只搜一个关键词）
+_topease_serial_lock = threading.Lock()
+
+
+def _wait_topease_rate_limit():
+    """
+    海关数据调用前限速：确保两次调用间隔至少5秒
+
+    小白讲解：用和MIC完全一样的限速策略。
+    用全局锁记录上次调用时间，如果距上次调用不足5秒就补齐。
+    """
+    global _topease_last_call_time
+    with _topease_call_lock:
+        now = time.time()
+        elapsed = now - _topease_last_call_time
+        if elapsed < _TOPEASE_CALL_INTERVAL:
+            wait = _TOPEASE_CALL_INTERVAL - elapsed
+            print(f"海关数据限速等待：距上次调用{elapsed:.1f}秒，补睡{wait:.1f}秒")
+            time.sleep(wait)
+        _topease_last_call_time = time.time()
 
 
 def _wait_mic_rate_limit():
@@ -506,7 +565,8 @@ def _translate_product_names_batch(suppliers_list, batch_size=30):
 
         try:
             # 翻译是简单任务，用high强度即可
-            result_text = call_deepseek(messages, scene_code="supplier_translate", temperature=0.1, json_mode=True)
+            # 小白讲解：这里显式传max_tokens=2048覆盖场景配置，避免JSON输出被截断导致解析失败
+            result_text = call_deepseek(messages, scene_code="supplier_translate", temperature=0.1, json_mode=True, max_tokens=2048)
             result = json.loads(result_text)
             translations = result.get("translations", [])
             if isinstance(translations, dict):
@@ -532,6 +592,244 @@ def _translate_product_names_batch(suppliers_list, batch_size=30):
 
     print(f"MCP产品名翻译完成：{translated_count}/{len(to_translate)}个已翻译成中文")
     return suppliers_list
+
+
+# ==================== 海关贸易数据（topease）搜索 ====================
+
+def crawl_topease_customs(keyword, hit_keyword="", variants=None, hs_code=""):
+    """
+    海关数据搜索入口函数（与 crawl_1688 / crawl_made_in_china 并列）
+
+    小白讲解：和MIC一样，先检查关键词是否包含英文字母（海关数据产品描述全是英文），
+    中文关键词直接跳过。然后用串行锁排队，一次只搜一个关键词，避免topease限流。
+
+    搜索策略：
+    - hs_code 从需求配置读取（DeepSeek在需求确认时归类），没有则不传
+    - product_keyword 用英文关键词
+    - trade_type=import（用进口数据反推中国出口商）
+    - country 不填（搜全球海关数据）
+    - stream=True（解决JSON截断问题）
+    - 翻50页拿500条
+    - 按exporterName聚合统计出口量
+    - 过滤物流公司
+    """
+    # 跳过中文关键词（海关数据产品描述全是英文，中文搜不到）
+    if not re.search(r'[a-zA-Z]', keyword):
+        print(f"海关数据跳过中文关键词：'{keyword}'")
+        return []
+
+    with _topease_serial_lock:
+        return _crawl_topease_customs_impl(keyword, hit_keyword, hs_code)
+
+
+def _crawl_topease_customs_impl(keyword, hit_keyword, hs_code=""):
+    """
+    海关数据搜索实际实现
+
+    小白讲解：topease是streamable-http MCP，不需要像MIC那样用curl+SSE。
+    直接用requests.post + stream=True调用，每次返回SSE格式响应，
+    用正则提取data:开头的行拼接后解析JSON。
+
+    流程：
+    1. 初始化握手，获取mcp-session-id
+    2. 翻50页搜索，每页10条，5秒间隔
+    3. 按exporterName聚合，只保留exportCountry=China
+    4. 过滤物流公司
+    5. 返回候选池格式（15个字段，对齐1688/MIC）
+    """
+    print(f"海关数据搜索关键词：'{keyword}'")
+
+    # 从数据库读取API密钥（管理员可在管理中心修改）
+    topease_api_key = _get_topease_api_key()
+
+    # 1. 初始化MCP会话
+    try:
+        resp = requests.post(
+            "https://mcp.topease.net/mcp",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {topease_api_key}",
+            },
+            json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "sourcing-system", "version": "1.0"},
+                },
+            },
+            timeout=15,
+        )
+        session_id = resp.headers.get("mcp-session-id")
+        if not session_id:
+            print(f"海关数据MCP初始化失败：未获取session-id")
+            return []
+
+        # 发送初始化完成通知
+        requests.post(
+            "https://mcp.topease.net/mcp",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {topease_api_key}",
+                "mcp-session-id": session_id,
+            },
+            json={"jsonrpc": "2.0", "id": 2, "method": "notifications/initialized"},
+            timeout=10,
+        )
+        print(f"海关数据MCP初始化成功")
+    except Exception as e:
+        print(f"海关数据MCP初始化异常: {e}")
+        return []
+
+    # 2. 翻页搜索（页数从数据库配置读取：max_results÷每页10条）
+    all_records = []
+    target_count = _get_platform_max_results("topease_customs", default=100)
+    target_pages = max(1, min(50, (target_count + 9) // 10))  # 每页10条，最多50页=500条
+    print(f"海关数据目标{target_count}条，每页10条，计划翻{target_pages}页")
+
+    for page in range(1, target_pages + 1):
+        # 限速等待（与MIC一样5秒）
+        _wait_topease_rate_limit()
+
+        try:
+            resp = requests.post(
+                "https://mcp.topease.net/mcp",
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "Authorization": f"Bearer {topease_api_key}",
+                    "mcp-session-id": session_id,
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": page + 10,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search_customs_data",
+                        "arguments": {
+                            "hs_code": hs_code or "9403",  # 用需求配置的HS编码，没有则默认9403（家具类）
+                            "product_keyword": keyword,
+                            "trade_type": "import",  # 用进口数据反推中国出口商
+                            # country 不填，搜全球海关数据
+                            "page_index": page,
+                            "page_size": 10,
+                            "sort_by": "quantity",
+                            "sort_order": "desc",
+                        },
+                    },
+                },
+                stream=True,  # 关键：stream=True解决JSON截断
+                timeout=30,
+            )
+
+            # 读取完整响应体
+            body = b""
+            for chunk in resp.iter_content(chunk_size=None):
+                if chunk:
+                    body += chunk
+            text = body.decode("utf-8", errors="replace")
+
+            # 解析SSE响应
+            blocks = re.findall(r'data:\s*(.+)', text)
+            if not blocks:
+                print(f"  海关第{page}页: 响应无data块")
+                break
+
+            try:
+                data = json.loads("".join(blocks))
+                structured = data.get("result", {}).get("structuredContent", {})
+                records = structured.get("records", [])
+                total = structured.get("total", 0)
+            except json.JSONDecodeError as e:
+                print(f"  海关第{page}页: JSON解析失败: {e}")
+                break
+
+            print(f"  海关第{page:2d}页: {len(records)}条 (总{total}) 累计{len(all_records)}")
+
+            if not records:
+                break
+            all_records.extend(records)
+
+            if len(all_records) >= 500:
+                break
+
+        except requests.Timeout:
+            print(f"  海关第{page}页: 超时，停止翻页")
+            break
+        except Exception as e:
+            print(f"  海关第{page}页: 异常: {e}")
+            break
+
+    if not all_records:
+        print(f"海关数据搜索无结果：'{keyword}'")
+        return []
+
+    print(f"海关数据搜索完成：{len(all_records)}条记录")
+
+    # 3. 按exporterName聚合，只保留exportCountry=China
+    stats = {}
+    for r in all_records:
+        name = (r.get("exporterName") or "").strip()
+        if not name:
+            continue
+        if (r.get("exportCountry") or "").strip() != "China":
+            continue
+        if name not in stats:
+            stats[name] = {
+                "name": name,
+                "count": 0,
+                "total_qty": 0.0,
+                "total_amount": 0.0,
+                "products": [],
+                "province": (r.get("exporterProvince") or "").strip(),
+                "hit_keyword": hit_keyword or keyword,
+                "source_platform": "海关数据",
+                "business_type": "",
+                "location": (r.get("exporterProvince") or "").strip(),
+                "badges": "",
+                "product_link": "",
+                "price": "",
+                "moq": "",
+            }
+        s = stats[name]
+        s["count"] += 1
+        s["total_qty"] += float(r.get("quantity") or 0)
+        s["total_amount"] += float(r.get("amuntusd") or 0)
+        desc = (r.get("prodesc") or "").strip()
+        if desc:
+            s["products"].append(desc[:80])
+
+    # 4. 过滤物流公司
+    logistics_kw = ["COURIER", "LOGISTICS", "FORWARDING", "FREIGHT",
+                    "SHIPPING", "TRANSPORT", "EXPRESS", "SUPPLY CHAIN"]
+    exporters = []
+    for e in sorted(stats.values(), key=lambda x: x["total_qty"], reverse=True):
+        if any(k in e["name"].upper() for k in logistics_kw):
+            continue
+        exporters.append(e)
+
+    print(f"海关数据聚合：{len(stats)}家出口商 → 过滤物流后 {len(exporters)}家")
+
+    # 5. 构造候选池格式（15个字段，对齐1688/MIC）
+    results = []
+    for e in exporters:
+        e["customs_export_count"] = e["count"]
+        e["customs_total_qty"] = e["total_qty"]
+        e["customs_total_amount"] = e["total_amount"]
+        e["product_title"] = e["products"][0] if e["products"] else ""
+        # content字段拼接（与MIC格式一致，供DeepSeek判断用）
+        desc_parts = [f"搜索品类：{keyword}"]
+        desc_parts.append(f"出口次数：{e['count']}次")
+        desc_parts.append(f"总出口量：{e['total_qty']:.0f}")
+        if e["products"]:
+            desc_parts.append(f"产品样本：{e['products'][0]}")
+        e["content"] = "；".join(desc_parts)
+        results.append(e)
+
+    print(f"海关数据候选池：{len(results)}家供应商")
+    return results
 
 
 def crawl_made_in_china_mcp(keyword, hit_keyword="", variants=None):
@@ -624,16 +922,16 @@ def _crawl_made_in_china_mcp_impl(keyword, hit_keyword, variants, search_keyword
                 "page": page
             }, call_id=page, timeout=30)
 
-            # 限流处理：等待6秒后重新连接重试，最多重试3次
-            # 小白讲解：made-in-china.com的限流比较严，重试1次经常不够，
-            # 改成循环重试3次，每次等6秒后重新连接MCP再试。
-            # 只要某次重试成功就继续翻页，3次都失败才放弃当前关键词。
+            # 限流处理：等待10秒后重新连接重试，最多重试3次
+            # 小白讲解：made-in-china.com的限流是IP级滑动窗口限制，6秒等待不够恢复，
+            # 改成每次等10秒，给made-in-china.com足够的冷却时间。
+            # 3次重试都失败才放弃当前关键词，保留已有结果。
             MAX_RETRY = 3
             retry_count = 0
             while result == "__RATE_LIMIT__" and retry_count < MAX_RETRY:
                 retry_count += 1
-                print(f"MCP search_products第{page}页触发限流(429)，等待6秒后重试（第{retry_count}/{MAX_RETRY}次）...")
-                time.sleep(6)
+                print(f"MCP search_products第{page}页触发限流(429)，等待10秒后重试（第{retry_count}/{MAX_RETRY}次）...")
+                time.sleep(10)
                 # 重新连接MCP（SSE连接可能已断开，需要新建连接）
                 client.close()
                 client = _MicMcpClient()
@@ -1634,6 +1932,10 @@ def extract_company_names(search_results):
                     "product_link": r.get("product_link", ""),
                     "price": r.get("price", ""),
                     "moq": r.get("moq", ""),
+                    # 海关出口数据字段（海关数据来源才有，其他平台为0）
+                    "customs_export_count": r.get("customs_export_count", 0),
+                    "customs_total_qty": r.get("customs_total_qty", 0),
+                    "customs_total_amount": r.get("customs_total_amount", 0),
                 }
                 companies.append(company)
             continue
@@ -1907,6 +2209,10 @@ def _filter_one_batch(batch, product_name):
                     s["product_link"] = orig.get("product_link", "")
                     s["price"] = orig.get("price", "")
                     s["moq"] = orig.get("moq", "")
+                    # 海关出口数据字段透传（海关数据来源才有，其他平台为0）
+                    s["customs_export_count"] = orig.get("customs_export_count", 0)
+                    s["customs_total_qty"] = orig.get("customs_total_qty", 0)
+                    s["customs_total_amount"] = orig.get("customs_total_amount", 0)
                 else:
                     s["hit_keyword"] = ""
                     s["source"] = "B2B平台"
@@ -2061,7 +2367,7 @@ def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_ca
 
 
 # ==================== 主搜索函数 ====================
-def search_suppliers(keywords_json, product_name, progress_callback=None):
+def search_suppliers(keywords_json, product_name, progress_callback=None, hs_code=""):
     """
     供应商搜索主函数 - 完整的P0-P3关键词矩阵搜索流程
 
@@ -2076,6 +2382,7 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
         keywords_json: P0-P3关键词JSON字符串
         product_name: 产品名称
         progress_callback: 进度回调函数，接收(当前步骤, 总步骤, 描述)参数
+        hs_code: 产品的HS编码（如9403），用于海关数据搜索精确过滤，传空字符串表示不限制HS编码
 
     返回：供应商列表
     """
@@ -2140,6 +2447,7 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
         小白讲解：一个关键词按管理中心启用的平台决定搜索哪些平台。
         1688那边会把原始词+变体词都搜一遍凑够50家。
         中国制造网只搜主词+前3个变体。
+        海关数据搜全部英文关键词，中文跳过（产品描述全是英文）。
         如果某平台在管理中心被关闭，则跳过不搜索。
         """
         # 报告当前关键词开始搜索（细粒度进度，让用户看到在搜哪个词）
@@ -2149,13 +2457,40 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
         local_results = []
         results_1688 = []
         results_mic = []
+        results_customs = []
 
         # 按启用状态决定调用哪些爬虫（关闭的平台直接跳过，不浪费时间和API调用）
         use_1688 = "ali1688" in enabled_codes
         use_mic = "madeinchina" in enabled_codes
+        use_customs = "topease_customs" in enabled_codes
 
-        if use_1688 and use_mic:
-            # 两个平台都启用：并行搜索（用线程池同时跑两个平台）
+        # 海关数据：所有英文关键词都搜（中文跳过），有数据就取，没数据跳过翻页
+        should_search_customs = use_customs and re.search(r'[a-zA-Z]', term)
+
+        # 根据启用的平台组合选择并行策略
+        if use_1688 and use_mic and should_search_customs:
+            # 三平台并行
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                future_1688 = pool.submit(crawl_1688, term, hit_kw, variants)
+                future_mic = pool.submit(crawl_made_in_china, term, hit_kw, variants)
+                future_customs = pool.submit(crawl_topease_customs, term, hit_kw, variants, hs_code)
+                try:
+                    results_1688 = future_1688.result(timeout=300)
+                except Exception as e:
+                    print(f"1688搜索'{term}'异常: {e}")
+                    results_1688 = []
+                try:
+                    results_mic = future_mic.result(timeout=180)
+                except Exception as e:
+                    print(f"Made-in-China搜索'{term}'异常: {e}")
+                    results_mic = []
+                try:
+                    results_customs = future_customs.result(timeout=300)
+                except Exception as e:
+                    print(f"海关数据搜索'{term}'异常: {e}")
+                    results_customs = []
+        elif use_1688 and use_mic:
+            # 1688 + MIC 并行
             with ThreadPoolExecutor(max_workers=2) as pool:
                 future_1688 = pool.submit(crawl_1688, term, hit_kw, variants)
                 future_mic = pool.submit(crawl_made_in_china, term, hit_kw, variants)
@@ -2169,6 +2504,36 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                 except Exception as e:
                     print(f"Made-in-China搜索'{term}'异常: {e}")
                     results_mic = []
+        elif use_1688 and should_search_customs:
+            # 1688 + 海关并行
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_1688 = pool.submit(crawl_1688, term, hit_kw, variants)
+                future_customs = pool.submit(crawl_topease_customs, term, hit_kw, variants, hs_code)
+                try:
+                    results_1688 = future_1688.result(timeout=300)
+                except Exception as e:
+                    print(f"1688搜索'{term}'异常: {e}")
+                    results_1688 = []
+                try:
+                    results_customs = future_customs.result(timeout=300)
+                except Exception as e:
+                    print(f"海关数据搜索'{term}'异常: {e}")
+                    results_customs = []
+        elif use_mic and should_search_customs:
+            # MIC + 海关并行
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_mic = pool.submit(crawl_made_in_china, term, hit_kw, variants)
+                future_customs = pool.submit(crawl_topease_customs, term, hit_kw, variants, hs_code)
+                try:
+                    results_mic = future_mic.result(timeout=180)
+                except Exception as e:
+                    print(f"Made-in-China搜索'{term}'异常: {e}")
+                    results_mic = []
+                try:
+                    results_customs = future_customs.result(timeout=300)
+                except Exception as e:
+                    print(f"海关数据搜索'{term}'异常: {e}")
+                    results_customs = []
         elif use_1688:
             # 只启用1688：单独搜索1688
             try:
@@ -2183,12 +2548,25 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
             except Exception as e:
                 print(f"Made-in-China搜索'{term}'异常: {e}")
                 results_mic = []
+        elif should_search_customs:
+            # 只启用海关数据
+            try:
+                results_customs = crawl_topease_customs(term, hit_kw, variants, hs_code)
+            except Exception as e:
+                print(f"海关数据搜索'{term}'异常: {e}")
+                results_customs = []
 
         for r in results_1688:
             r["source_platform"] = "1688"
             local_results.append(r)
         for r in results_mic:
             r["source_platform"] = "Made-in-China"
+            local_results.append(r)
+        for r in results_customs:
+            r["source_platform"] = "海关数据"
+            # 海关数据保留英文原名（天眼查补全时会用英文名匹配）
+            if not r.get("name_original_en"):
+                r["name_original_en"] = r.get("name", "")
             local_results.append(r)
 
         # 线程安全地合并结果
@@ -2310,11 +2688,11 @@ def search_suppliers(keywords_json, product_name, progress_callback=None):
                     print(f"天眼查未匹配({name})，最高相似度{best_ratio:.0%}")
 
             if matched_company:
-                # MIC来源：用天眼查返回的中文名替换英文名
-                if source_platform == "Made-in-China":
+                # MIC/海关数据来源：用天眼查返回的中文名替换英文名
+                if source_platform in ("Made-in-China", "海关数据"):
                     tyc_cn_name = matched_company.get("name", "").strip()
                     if tyc_cn_name and tyc_cn_name != name:
-                        print(f"天眼查匹配（MIC英文→中文）：'{name}' → '{tyc_cn_name}'")
+                        print(f"天眼查匹配（{source_platform}英文→中文）：'{name}' → '{tyc_cn_name}'")
                         supplier["name"] = tyc_cn_name
 
                 supplier["registered_capital"] = matched_company.get("registered_capital", "") or supplier.get("registered_capital", "")

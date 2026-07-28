@@ -70,6 +70,24 @@
                         <div class="info-grid__value">{{ supplier.source }}</div>
                     </div>
                     <div>
+                        <div class="info-grid__label">海关出口记录</div>
+                        <div class="info-grid__value">
+                            {% if supplier.customs_export_count and supplier.customs_export_count > 0 %}
+                            <span class="badge bg-info me-2">
+                                <i class="bi bi-globe2"></i> 出口{{ supplier.customs_export_count }}次
+                            </span>
+                            {% if supplier.customs_total_qty %}
+                            <span class="text-muted me-2">总量{{ '%.0f'|format(supplier.customs_total_qty) }}</span>
+                            {% endif %}
+                            {% if supplier.customs_total_amount %}
+                            <span class="text-success">${{ '%.0f'|format(supplier.customs_total_amount) }}</span>
+                            {% endif %}
+                            {% else %}
+                            <span class="text-muted">暂无海关出口记录</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div>
                         <div class="info-grid__label">命中关键词</div>
                         <div class="info-grid__value">{{ supplier.hit_keyword or '-' }}</div>
                     </div>
@@ -369,27 +387,59 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-chat-dots"></i> 沟通记录</span>
-                <a href="{{ url_for('communication_create', supplier_id=supplier.id) }}" class="btn btn-sm btn-outline-primary">
-                    <i class="bi bi-plus"></i> 记录
-                </a>
+                <div class="d-flex gap-1">
+                    {# 小白讲解：发邮件按钮，链接到发邮件页面 #}
+                    <a href="{{ url_for('supplier_send_email', supplier_id=supplier.id) }}"
+                       class="btn btn-sm btn-outline-primary">
+                        <i class="bi bi-envelope"></i> 发邮件
+                    </a>
+                    <a href="{{ url_for('communication_create', supplier_id=supplier.id) }}" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-plus"></i> 记录
+                    </a>
+                </div>
             </div>
             <div class="card-body">
                 {% if communications %}
-                {# 小白讲解：沟通记录用 timeline 时间线样式，按时间倒序展示往来记录 #}
+                {# 小白讲解：沟通记录用 timeline 时间线样式，按时间倒序展示往来记录
+                   direction=outbound=系统发出(右侧蓝色)，direction=inbound=供应商回复(左侧绿色)
+                   每条记录加"查看明细"按钮，点击弹出 Modal 显示完整内容 #}
                 <ul class="timeline">
                     {% for c in communications %}
                     <li class="timeline-item">
-                        <div class="timeline-item__title">
-                            <span class="badge bg-secondary">{{ c.channel }}</span>
-                            {% if c.conclusion %}<span class="text-muted ms-2">{{ c.conclusion }}</span>{% endif %}
+                        <div class="timeline-item__title d-flex align-items-center gap-2">
+                            <span class="badge {% if c.direction == 'inbound' %}bg-success{% else %}bg-primary{% endif %}">
+                                {% if c.direction == 'inbound' %}
+                                    <i class="bi bi-arrow-down-left"></i> 收到
+                                {% else %}
+                                    <i class="bi bi-arrow-up-right"></i> 发出
+                                {% endif %}
+                                {{ c.channel }}
+                            </span>
+                            {% if c.status == 'failed' %}
+                                <span class="badge bg-danger">发送失败</span>
+                            {% elif c.status == 'sent' %}
+                                <span class="badge bg-light text-muted">已送达</span>
+                            {% endif %}
+                            {% if c.conclusion and c.direction != 'inbound' and c.status != 'failed' %}
+                                <span class="text-muted small">{{ c.conclusion }}</span>
+                            {% endif %}
                         </div>
                         <div class="timeline-item__date">{{ c.comm_time }}</div>
+                        {% if c.subject %}
+                        <div class="timeline-item__desc"><strong>主题：</strong>{{ c.subject }}</div>
+                        {% endif %}
                         {% if c.content %}
                         <div class="timeline-item__desc">{{ c.content[:80] }}{{ '...' if c.content|length > 80 }}</div>
                         {% endif %}
                         {% if c.next_step %}
                         <div class="timeline-item__desc text-primary"><i class="bi bi-arrow-right-circle"></i> {{ c.next_step }}</div>
                         {% endif %}
+                        {# 查看明细按钮：点击弹出 Modal 显示完整内容 #}
+                        <div class="mt-1">
+                            <a href="#" class="small text-decoration-none" data-bs-toggle="modal" data-bs-target="#commModal{{ c.id }}">
+                                <i class="bi bi-eye"></i> 查看明细
+                            </a>
+                        </div>
                     </li>
                     {% endfor %}
                 </ul>
@@ -397,11 +447,124 @@
                 <div class="empty-state">
                     <div class="empty-state__icon"><i class="bi bi-chat-dots"></i></div>
                     <div class="empty-state__title">暂无沟通记录</div>
-                    <div class="empty-state__desc">点击右上角"记录"添加沟通</div>
+                    <div class="empty-state__desc">点击"发邮件"开始沟通，或"记录"手动添加</div>
                 </div>
                 {% endif %}
             </div>
         </div>
     </div>
 </div>
+
+{# ==================== 沟通记录明细弹窗 ====================
+   小白讲解：每条沟通记录对应一个 Modal，点"查看明细"按钮弹出。
+   Modal 显示完整字段：方向、渠道、状态、时间、主题、正文、结论、后续步骤。
+   邮件类记录还会显示发件人邮箱、邮件 ID 等额外信息。 #}
+{% if communications %}
+{% for c in communications %}
+<div class="modal fade" id="commModal{{ c.id }}" tabindex="-1" aria-labelledby="commModalLabel{{ c.id }}" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="commModalLabel{{ c.id }}">
+                    <i class="bi bi-chat-text"></i>
+                    沟通记录明细
+                    <span class="badge {% if c.direction == 'inbound' %}bg-success{% else %}bg-primary{% endif %} ms-2">
+                        {% if c.direction == 'inbound' %}收到{% else %}发出{% endif %}
+                    </span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                {# 基本信息区 #}
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label text-muted mb-0 small">沟通渠道</label>
+                        <div>{{ c.channel }}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label text-muted mb-0 small">沟通时间</label>
+                        <div>{{ c.comm_time or '—' }}</div>
+                    </div>
+                    {% if c.status %}
+                    <div class="col-md-6">
+                        <label class="form-label text-muted mb-0 small">发送状态</label>
+                        <div>
+                            {% if c.status == 'failed' %}
+                                <span class="badge bg-danger">发送失败</span>
+                            {% elif c.status == 'sent' %}
+                                <span class="badge bg-success">已送达</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ c.status }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if c.external_id %}
+                    <div class="col-md-6">
+                        <label class="form-label text-muted mb-0 small">邮件 ID</label>
+                        <div class="small text-break">{{ c.external_id }}</div>
+                    </div>
+                    {% endif %}
+                </div>
+
+                {# 邮件主题 #}
+                {% if c.subject %}
+                <div class="mb-3">
+                    <label class="form-label text-muted mb-0 small">主题</label>
+                    <div class="border rounded p-2 bg-light">{{ c.subject }}</div>
+                </div>
+                {% endif %}
+
+                {# 沟通内容/邮件正文 #}
+                {% if c.content %}
+                <div class="mb-3">
+                    <label class="form-label text-muted mb-0 small">{% if c.channel == '邮件' %}邮件正文{% else %}沟通内容{% endif %}</label>
+                    {# 小白讲解：邮件正文可能含 HTML 标签（发邮件时存的是 HTML），用 |safe 渲染原始格式；
+                       非邮件记录是纯文本，用 white-space: pre-wrap 保留换行 #}
+                    <div class="border rounded p-3 bg-light" style="max-height: 400px; overflow-y: auto;">
+                        {% if c.channel == '邮件' %}
+                            {{ c.content|safe }}
+                        {% else %}
+                            <div style="white-space: pre-wrap;">{{ c.content }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
+                {# 沟通结论 #}
+                {% if c.conclusion %}
+                <div class="mb-3">
+                    <label class="form-label text-muted mb-0 small">沟通结论</label>
+                    <div class="border rounded p-2 bg-light">{{ c.conclusion }}</div>
+                </div>
+                {% endif %}
+
+                {# 后续步骤 #}
+                {% if c.next_step %}
+                <div class="mb-3">
+                    <label class="form-label text-muted mb-0 small">后续步骤</label>
+                    <div class="border rounded p-2 bg-light text-primary">
+                        <i class="bi bi-arrow-right-circle"></i> {{ c.next_step }}
+                    </div>
+                </div>
+                {% endif %}
+
+                {# 创建时间（系统记录） #}
+                <div class="text-muted small mt-3 border-top pt-2">
+                    <i class="bi bi-clock"></i> 记录创建时间：{{ c.created_at }}
+                    {% if c.updated_at and c.updated_at != c.created_at %}
+                    · 更新时间：{{ c.updated_at }}
+                    {% endif %}
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-lg"></i> 关闭
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endif %}
 {% endblock %}

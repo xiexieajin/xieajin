@@ -65,6 +65,29 @@
     </div>
 
     <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-globe2"></i> 海关出口记录</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">出口次数</label>
+                    <input type="number" class="form-control" name="customs_export_count"
+                           value="{{ data.customs_export_count or 0 }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">出口总量</label>
+                    <input type="number" class="form-control" name="customs_total_qty" step="0.01"
+                           value="{{ data.customs_total_qty or 0 }}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">出口总金额（美元）</label>
+                    <input type="number" class="form-control" name="customs_total_amount" step="0.01"
+                           value="{{ data.customs_total_amount or 0 }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
         <div class="card-header"><i class="bi bi-telephone"></i> 联系方式</div>
         <div class="card-body">
             <div class="row">

@@ -870,6 +870,50 @@ def extract_json_from_text(text):
     return json.loads(text)
 
 
+def classify_hs_code(product_name):
+    """
+    用DeepSeek根据产品名称自动归类HS编码
+
+    小白讲解：海关数据搜索需要HS编码才能精准过滤产品。
+    不同产品的HS编码不一样（比如电视机柜是9403，LED灯是9405），不能写死。
+    这个函数用AI根据产品名称自动判断最可能的HS编码，省去手动查编码表。
+
+    参数：
+        product_name: 产品名称，如 "电视机柜"
+
+    返回：hs_code 字符串，如 "9403"，失败时返回空字符串
+    """
+    try:
+        result = call_deepseek(
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"请判断以下产品最可能的海关HS编码（前4位即可），返回JSON格式。\n\n"
+                    f"产品名称：{product_name}\n\n"
+                    f"要求：\n"
+                    f"1. 返回前4位HS编码（如9403代表家具），不需要后几位\n"
+                    f"2. 如果产品可能属于多个HS编码类别，选最匹配的那个\n"
+                    f"3. 同时返回该HS编码的中文描述\n\n"
+                    f"返回格式示例：{{\"hs_code\": \"9403\", \"description\": \"家具\"}}"
+                ),
+            }],
+            scene_code="req_parse",  # 复用需求解析场景配置（temperature低，输出稳定）
+            json_mode=True,
+            max_tokens=512,  # 思考模式需要足够token给推理+输出（100不够）
+        )
+        data = json.loads(result)
+        hs_code = data.get("hs_code", "").strip()
+        # 只保留数字（去除可能的空格、点号等）
+        hs_code = re.sub(r'[^0-9]', '', hs_code)
+        if len(hs_code) >= 4:
+            return hs_code[:4]
+        print(f"HS编码归类失败：返回格式异常 - {result}")
+        return ""
+    except Exception as e:
+        print(f"HS编码归类异常（产品：{product_name}）：{e}")
+        return ""
+
+
 # ==================== 功能1：AI解析需求（按需求确认SKILL逻辑）====================
 def parse_requirement(input_text, file_content=None, image_base64=None, previous_data=None, progress_callback=None):
     """
@@ -992,7 +1036,8 @@ JSON格式（只返回JSON）：
         {"role": "user", "content": extract_prompt},
     ]
 
-    result_text = call_deepseek(messages, scene_code="req_parse", temperature=0.2)  # 需求解析是结构化提取
+    # 小白讲解：temperature=None 表示用数据库场景配置里的温度值（管理员可在管理中心调整）
+    result_text = call_deepseek(messages, scene_code="req_parse", temperature=None)  # 需求解析是结构化提取
     parsed = extract_json_from_text(result_text)
 
     # 确保字段完整
@@ -1172,7 +1217,8 @@ def _generate_summary_and_keywords(parsed):
         {"role": "user", "content": prompt},
     ]
 
-    result_text = call_deepseek(messages, scene_code="keyword_gen", temperature=0.4)  # 关键词生成是规则明确任务
+    # 小白讲解：temperature=None 表示用数据库场景配置里的温度值（管理员可在管理中心调整）
+    result_text = call_deepseek(messages, scene_code="keyword_gen", temperature=None)  # 关键词生成是规则明确任务
     return extract_json_from_text(result_text)
 
 
@@ -1243,5 +1289,6 @@ def auto_screening(supplier, requirement):
         {"role": "user", "content": prompt},
     ]
 
-    result_text = call_deepseek(messages, scene_code="auto_screening", temperature=0.2)  # 风险评估需综合判断
+    # 小白讲解：temperature=None 表示用数据库场景配置里的温度值（管理员可在管理中心调整）
+    result_text = call_deepseek(messages, scene_code="auto_screening", temperature=None)  # 风险评估需综合判断
     return extract_json_from_text(result_text)

@@ -1,0 +1,408 @@
+{% extends "base.html" %}
+
+{% block title %}发邮件 - {{ supplier.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title"><i class="bi bi-envelope-send"></i> 发送邮件</h1>
+    <a href="{{ url_for('supplier_detail', id=supplier.id) }}" class="back-link">
+        <i class="bi bi-arrow-left"></i> 返回详情
+    </a>
+</div>
+
+{# 小白讲解：显示供应商基本信息，让用户确认收件人 #}
+<div class="alert alert-light border">
+    <strong>收件供应商：</strong>{{ supplier.name }}
+    {% if supplier.email %}
+        <span class="ms-3"><i class="bi bi-envelope"></i> {{ supplier.email }}</span>
+    {% else %}
+        <span class="ms-3 text-danger"><i class="bi bi-exclamation-triangle"></i> 该供应商未填写邮箱</span>
+    {% endif %}
+</div>
+
+{# 邮箱未配置时的提示 #}
+{% if not config or not config.is_enabled %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    <strong>邮件功能未启用</strong>。请管理员先到
+    <a href="{{ url_for('admin_email_config') }}">邮箱配置</a>
+    页面填写 Gmail 账号和应用专用密码并启用。
+</div>
+{% endif %}
+
+{# 供应商没邮箱时无法发送 #}
+{% if not supplier.email %}
+<div class="alert alert-danger">
+    该供应商未填写邮箱，无法发送邮件。请先
+    <a href="{{ url_for('supplier_edit', id=supplier.id) }}">编辑供应商信息</a>
+    填入邮箱。
+</div>
+{% else %}
+<form method="POST" action="{{ url_for('supplier_send_email', supplier_id=supplier.id) }}" id="emailForm" enctype="multipart/form-data">
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-pencil"></i> 邮件内容</span>
+            <button type="button" class="btn btn-success btn-sm" onclick="openSingleAiModal()">
+                <i class="bi bi-robot"></i> AI生成
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label required">收件人</label>
+                <input type="email" class="form-control" name="to_addr" value="{{ supplier.email }}" required>
+                <small class="text-muted">供应商邮箱，可修改</small>
+            </div>
+
+            {# 小白讲解：模板选择保留在表单页，AI提示词移到弹窗里 #}
+            <div class="row g-2 mb-3">
+                <div class="col-md-12">
+                    <label class="form-label small">选择模板（可选，AI生成时会参考模板风格）</label>
+                    <select class="form-select form-select-sm" id="templateSelect">
+                        <option value="">不使用模板</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label required">主题</label>
+                <input type="text" class="form-control" name="subject" id="subjectInput"
+                       value="采购合作询价 - {{ supplier.product_name or '' }}" required>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label required">正文</label>
+                <div class="mb-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="loadTemplate()">
+                        <i class="bi bi-file-text"></i> 加载询价模板
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearBody()">
+                        <i class="bi bi-eraser"></i> 清空
+                    </button>
+                </div>
+                <textarea class="form-control" name="body" id="bodyArea" rows="14" required
+                          placeholder="输入邮件正文...">{{ initial_body }}</textarea>
+                <small class="text-muted">支持HTML格式，可粘贴带样式的邮件内容</small>
+            </div>
+
+            {# 小白讲解：附件上传区，支持多选文件（图片、文档等），单个文件最大16MB #}
+            <div class="mb-3">
+                <label class="form-label"><i class="bi bi-paperclip"></i> 附件（可选）</label>
+                <input type="file" class="form-control" name="attachments" id="attachmentInput" multiple
+                       onchange="updateAttachmentList()">
+                <small class="text-muted">支持图片、文档等，可多选，单个文件最大16MB</small>
+                <div id="attachmentList" class="mt-2"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="text-end mt-4">
+        <button type="submit" class="btn btn-primary btn-lg" id="sendBtn">
+            <i class="bi bi-send"></i> 发送邮件
+        </button>
+        <a href="{{ url_for('supplier_detail', id=supplier.id) }}" class="btn btn-outline-secondary btn-lg">取消</a>
+    </div>
+</form>
+
+{# ==================== AI 生成弹窗（单发场景）==================== #}
+{# 小白讲解：用户点"AI生成"按钮后弹出这个 Modal，
+   可以填写提示词（可空）、选择语言（可多选），点生成后调AI接口，
+   AI 返回标题和正文显示在弹窗里，用户确认后填入邮件表单。
+   多语言时同时生成多版，确认填入时拼接成一封邮件。 #}
+<div class="modal fade" id="aiModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-robot"></i> AI 生成邮件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                {# 提示词输入区 #}
+                <div class="mb-3">
+                    <label class="form-label small">提示词（可选）</label>
+                    <textarea class="form-control" id="aiPromptInput" rows="2"
+                              placeholder="例如：强调交期、压价、要样品...留空使用默认提示词"></textarea>
+                </div>
+
+                {# 语言选择：可多选 #}
+                <div class="mb-3">
+                    <label class="form-label small">生成语言（可多选，多选则同时生成多版）</label>
+                    <div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="zh" id="langZh" checked>
+                            <label class="form-check-label" for="langZh">中文</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="en" id="langEn">
+                            <label class="form-check-label" for="langEn">英文</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="other" id="langOther">
+                            <label class="form-check-label" for="langOther">其他语言</label>
+                        </div>
+                    </div>
+                </div>
+
+                {# 加载中提示 #}
+                <div id="aiLoading" class="text-center py-3" style="display:none;">
+                    <div class="spinner-border text-primary"></div>
+                    <p class="mt-2 text-muted small">AI 正在生成，请稍候...</p>
+                </div>
+                {# 生成结果区（默认隐藏） #}
+                <div id="aiResult" style="display:none;">
+                    <div id="aiResultContainer"></div>
+                    <div class="d-flex justify-content-end gap-2 mt-2">
+                        <button class="btn btn-outline-secondary" onclick="regenerateSingle()">
+                            <i class="bi bi-arrow-repeat"></i> 重新生成
+                        </button>
+                        <button class="btn btn-primary" onclick="acceptSingleAi()">
+                            <i class="bi bi-check-lg"></i> 确认填入
+                        </button>
+                    </div>
+                </div>
+                {# 初始空状态：显示生成按钮 #}
+                <div id="aiEmpty">
+                    <p class="text-muted">点击下方按钮生成邮件：</p>
+                    <button class="btn btn-success" onclick="generateSingle()" id="genBtn">
+                        <i class="bi bi-magic"></i> 生成邮件
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+// 小白讲解：点"加载询价模板"按钮，跳转到带?template=1的URL，后端会自动把模板填进正文
+function loadTemplate() {
+    if (confirm('加载模板会覆盖当前正文，确定吗？')) {
+        window.location.href = '{{ url_for("supplier_send_email", supplier_id=supplier.id) }}?template=1';
+    }
+}
+
+// 清空正文
+function clearBody() {
+    if (confirm('确定清空正文？')) {
+        document.getElementById('bodyArea').value = '';
+    }
+}
+
+// 小白讲解：显示已选附件列表，让用户清楚自己加了哪些文件
+function updateAttachmentList() {
+    const input = document.getElementById('attachmentInput');
+    const listEl = document.getElementById('attachmentList');
+    const files = input.files;
+    if (!files || files.length === 0) {
+        listEl.innerHTML = '';
+        return;
+    }
+    // 列出每个文件名和大小
+    listEl.innerHTML = Array.from(files).map((f, i) => {
+        const sizeKb = (f.size / 1024).toFixed(1);
+        return `<div class="badge bg-light text-dark border me-2 mb-1 py-2 px-2">
+            <i class="bi bi-file-earmark"></i> ${f.name} <span class="text-muted">(${sizeKb} KB)</span>
+        </div>`;
+    }).join('');
+}
+
+// 发送时禁用按钮防止重复提交
+document.getElementById('emailForm')?.addEventListener('submit', function() {
+    const btn = document.getElementById('sendBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> 发送中...';
+});
+
+// ==================== AI 生成相关（单发场景）====================
+// 小白讲解：和群发邮件页一样的逻辑，区别是这里只传一个供应商ID，scene=single_send
+// 支持多语言：用户可勾选中文/英文/其他，多选时同时生成多版标题和正文
+let singleSupplierIds = [{{ supplier.id }}];  // 单发只有一个供应商
+let lastSingleLogId = null;                    // 记录上次AI生成的日志ID，用于重新生成和标记采纳
+let lastSingleResult = null;                   // 保存完整结果（含多语言版本）
+
+// 语言代码到中文名的映射
+const LANG_LABELS = {zh: '中文', en: '英文', other: '其他语言'};
+
+// 页面加载时拉取沟通模板列表，填到下拉框
+fetch('{{ url_for("admin_templates_api_list") }}')
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const sel = document.getElementById('templateSelect');
+            data.templates.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name + (t.description ? `（${t.description}）` : '');
+                sel.appendChild(opt);
+            });
+        }
+    });
+
+// 获取用户勾选的语言列表
+function getSelectedLanguages() {
+    const langs = [];
+    document.querySelectorAll('.ai-lang:checked').forEach(cb => langs.push(cb.value));
+    return langs.length > 0 ? langs : ['zh'];
+}
+
+// 属性转义（用于 input 的 value 属性）
+function escapeAttr(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// HTML转义
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// 打开AI生成弹窗，重置状态
+function openSingleAiModal() {
+    lastSingleLogId = null;
+    lastSingleResult = null;
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiLoading').style.display = 'none';
+    document.getElementById('aiEmpty').style.display = '';
+    document.getElementById('aiPromptInput').value = '';
+    // 默认勾选中文
+    document.querySelectorAll('.ai-lang').forEach(cb => cb.checked = (cb.value === 'zh'));
+    new bootstrap.Modal(document.getElementById('aiModal')).show();
+}
+
+// 调AI接口生成邮件
+function generateSingle() {
+    const prompt = document.getElementById('aiPromptInput').value.trim();
+    const templateId = document.getElementById('templateSelect').value;
+    const languages = getSelectedLanguages();
+
+    // 切换到加载中状态
+    document.getElementById('aiEmpty').style.display = 'none';
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiLoading').style.display = '';
+    const btn = document.getElementById('genBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 生成中...';
+
+    // 调后端 /communications/email/ai-generate-send 接口，scene=single_send
+    fetch('{{ url_for("communications_ai_generate_send") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            supplier_ids: singleSupplierIds,
+            user_prompt: prompt,
+            scene: 'single_send',
+            template_id: templateId ? parseInt(templateId) : null,
+            prev_log_id: lastSingleLogId,
+            languages: languages
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-magic"></i> 生成邮件';
+        document.getElementById('aiLoading').style.display = 'none';
+        if (data.success && data.data) {
+            // 生成成功，保存完整结果并渲染
+            lastSingleResult = data.data;
+            lastSingleLogId = data.data.log_id;
+            renderSingleResult(data.data, languages);
+            document.getElementById('aiResult').style.display = '';
+        } else {
+            alert('生成失败：' + (data.message || '未知错误'));
+            document.getElementById('aiEmpty').style.display = '';
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-magic"></i> 生成邮件';
+        document.getElementById('aiLoading').style.display = 'none';
+        alert('请求失败：' + err);
+        document.getElementById('aiEmpty').style.display = '';
+    });
+}
+
+// 渲染生成结果（单语言/多语言不同布局）
+function renderSingleResult(data, languages) {
+    const container = document.getElementById('aiResultContainer');
+    if (data.multi && data.versions) {
+        // 多语言
+        container.innerHTML = languages.map(lang => {
+            const v = data.versions[lang] || {subject: '', body: ''};
+            return `
+                <div class="mb-3 border rounded p-2">
+                    <div class="badge bg-secondary mb-2">${LANG_LABELS[lang] || lang}</div>
+                    <div class="mb-2">
+                        <label class="form-label small">标题（${LANG_LABELS[lang] || lang}）</label>
+                        <input type="text" class="form-control" value="${escapeAttr(v.subject)}" readonly>
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label small">正文（${LANG_LABELS[lang] || lang}）</label>
+                        <textarea class="form-control" rows="8" readonly>${escapeHtml(v.body)}</textarea>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } else {
+        // 单语言
+        container.innerHTML = `
+            <div class="mb-2">
+                <label class="form-label small">生成标题</label>
+                <input type="text" class="form-control" value="${escapeAttr(data.subject || '')}" readonly>
+            </div>
+            <div class="mb-2">
+                <label class="form-label small">生成正文</label>
+                <textarea class="form-control" rows="10" readonly>${escapeHtml(data.body || '')}</textarea>
+            </div>
+        `;
+    }
+}
+
+// 重新生成：隐藏结果，重新点生成按钮
+function regenerateSingle() {
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiEmpty').style.display = '';
+    document.getElementById('genBtn').click();
+}
+
+// 确认填入：把AI生成的标题和正文填到邮件表单，并标记为已采纳
+// 小白讲解：单语言直接填；多语言把各版本用分隔线拼接成一封邮件
+function acceptSingleAi() {
+    if (!lastSingleResult) {
+        alert('生成内容为空');
+        return;
+    }
+    let subject, body;
+    if (lastSingleResult.multi && lastSingleResult.versions) {
+        // 多语言：标题用各语言标题拼接，正文用各语言正文拼接（用分隔线分开）
+        const langs = Object.keys(lastSingleResult.versions);
+        subject = langs.map(l => lastSingleResult.versions[l].subject).filter(s => s).join(' / ');
+        body = langs.map(l => {
+            const v = lastSingleResult.versions[l];
+            return `【${LANG_LABELS[l] || l}】\n${v.body}`;
+        }).filter(b => b).join('\n\n——————\n\n');
+    } else {
+        // 单语言
+        subject = lastSingleResult.subject || '';
+        body = lastSingleResult.body || '';
+    }
+    if (!subject || !body) {
+        alert('生成内容为空');
+        return;
+    }
+    document.getElementById('subjectInput').value = subject;
+    document.getElementById('bodyArea').value = body;
+    // 异步标记采纳，不阻塞用户操作
+    if (lastSingleLogId) {
+        fetch('{{ url_for("communications_ai_accept") }}', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({log_id: lastSingleLogId})
+        });
+    }
+    bootstrap.Modal.getInstance(document.getElementById('aiModal')).hide();
+}
+</script>
+{% endblock %}

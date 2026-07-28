@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}待认领邮件 - 供应商寻源系统{% endblock %}
+
+{% block content %}
+{# 顶部子导航：归属到沟通管理下 #}
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('communications_email') }}">
+            <i class="bi bi-envelope"></i> 邮件管理
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('communications_sms') }}">
+            <i class="bi bi-phone"></i> 短信管理
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link active" href="{{ url_for('communications_pending') }}">
+            <i class="bi bi-envelope-paper"></i> 待认领邮件
+        </a>
+    </li>
+</ul>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title"><i class="bi bi-envelope-paper"></i> 待认领邮件</h1>
+    <a href="{{ url_for('communications_email') }}" class="back-link">
+        <i class="bi bi-arrow-left"></i> 返回邮件管理
+    </a>
+</div>
+
+{# 小白讲解：说明这个页面是干什么的 #}
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    以下邮件是供应商回复到你 Gmail 邮箱，但系统按发件人邮箱匹配不到对应供应商。
+    请确认是哪个供应商的回复，点「认领」关联到对应供应商，关联后邮件会显示在供应商详情页。
+</div>
+
+{% if pending_emails %}
+<div class="row g-3">
+    {% for email in pending_emails %}
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div>
+                        <h6 class="mb-1">{{ email.subject or '（无主题）' }}</h6>
+                        <div class="small text-muted">
+                            <i class="bi bi-person"></i> {{ email.from_name or '未知' }}
+                            &lt;{{ email.from_addr }}&gt;
+                            &nbsp;·&nbsp;
+                            <i class="bi bi-clock"></i> {{ email.received_time or email.created_at }}
+                        </div>
+                    </div>
+                    <span class="badge bg-warning">待认领</span>
+                </div>
+
+                <div class="bg-light p-3 rounded mb-3" style="white-space: pre-wrap; max-height: 150px; overflow-y: auto; font-size: 0.875rem;">
+                    {{ email.body_preview or '（无正文预览）' }}
+                </div>
+
+                {# 认领表单：选择供应商后提交 #}
+                <form method="POST" action="{{ url_for('pending_email_claim', pending_id=email.id) }}"
+                      class="d-flex align-items-center gap-2">
+                    <select name="supplier_id" class="form-select form-select-sm" required style="max-width: 400px;">
+                        <option value="">-- 选择供应商 --</option>
+                        {% for s in suppliers %}
+                        <option value="{{ s.id }}">
+                            {{ s.name }}
+                            {% if s.email %} ({{ s.email }}){% endif %}
+                            {% if s.main_product %} - {{ s.main_product }}{% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="btn btn-sm btn-primary">
+                        <i class="bi bi-link-45deg"></i> 认领
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <div class="empty-state__icon"><i class="bi bi-envelope"></i></div>
+    <div class="empty-state__title">暂无待认领邮件</div>
+    <div class="empty-state__desc">所有供应商回复邮件已自动匹配，或还没有收到回复</div>
+</div>
+{% endif %}
+{% endblock %}

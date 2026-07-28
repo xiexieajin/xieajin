@@ -54,6 +54,12 @@
                             <i class="bi bi-building"></i> 供应商管理
                         </a>
                     </li>
+                    <!-- 沟通管理：邮件管理 + 短信管理 + 待认领邮件 -->
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint and request.endpoint.startswith('communications') %}active{% endif %}" href="{{ url_for('communications_index') }}">
+                            <i class="bi bi-chat-dots"></i> 沟通管理
+                        </a>
+                    </li>
                     <!-- AI自动化：当路由以 ai 开头时高亮 -->
                     <li class="nav-item">
                         <a class="nav-link {% if request.endpoint and request.endpoint.startswith('ai') %}active{% endif %}" href="{{ url_for('ai_index') }}">

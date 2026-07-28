@@ -68,3 +68,11 @@ desktop.ini
 _check_match.py
 test_*.py
 inquiry_*.txt
+topease_tools_*.txt
+page_check.html
+cookies.txt
+
+# ============================================================
+# 用户上传的附件目录（运行时数据，不上传）
+# ============================================================
+uploads/

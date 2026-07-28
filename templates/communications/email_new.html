@@ -1,0 +1,572 @@
+{% extends "base.html" %}
+
+{% block title %}新建联系人 - 邮件管理{% endblock %}
+
+{% block content %}
+{# 顶部子导航 #}
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('communications_email') }}">
+            <i class="bi bi-envelope"></i> 邮件管理
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('communications_sms') }}">
+            <i class="bi bi-phone"></i> 短信管理
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('communications_pending') }}">
+            <i class="bi bi-envelope-paper"></i> 待认领邮件
+        </a>
+    </li>
+</ul>
+
+{% if available_suppliers is defined %}
+{# ==================== 第一步：选择供应商 ==================== #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="page-title mb-0"><i class="bi bi-person-plus"></i> 新建联系人</h1>
+    <a href="{{ url_for('communications_email') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回邮件管理
+    </a>
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    勾选要发邮件的供应商（可多选），点击"下一步"填写邮件内容后群发。
+    列表只显示<strong>未进行过邮件沟通</strong>且<strong>非"未通过初筛"</strong>且有邮箱的供应商。
+</div>
+
+{# 搜索框 #}
+<div class="mb-3">
+    <div class="input-group">
+        <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+        <input type="text" class="form-control" id="supplierSearchInput"
+               placeholder="搜索供应商名称或产品名称..." autocomplete="off">
+    </div>
+</div>
+
+<form id="selectForm" method="GET" action="{{ url_for('communications_email_new') }}">
+    {# 供应商列表 #}
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-list-check"></i> 可选供应商（共 {{ available_suppliers|length }} 家）</span>
+            <div>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectAll()">
+                    <i class="bi bi-check2-all"></i> 全选
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="deselectAll()">
+                    <i class="bi bi-x-circle"></i> 取消全选
+                </button>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            {% if available_suppliers %}
+            {# 小白讲解：按需求产品名称分组展示供应商，可展开/收起，和邮件管理页左侧分组保持一致 #}
+            <div style="max-height: 500px; overflow-y: auto;" id="supplierGroupList">
+                {% set groups = {} %}
+                {% for s in available_suppliers %}
+                    {% set gname = s.requirement_name or s.main_product or '未分类' %}
+                    {% if groups.update({gname: groups.get(gname, []) + [s]}) %}{% endif %}
+                {% endfor %}
+
+                {% for group_name, group_suppliers in groups.items() %}
+                <div class="supplier-group">
+                    <div class="px-3 py-2 bg-light border-bottom cursor-pointer d-flex align-items-center"
+                         onclick="toggleSupplierGroup(this)">
+                        <i class="bi bi-chevron-down me-2"></i>
+                        <strong>{{ group_name }}</strong>
+                        <span class="badge bg-secondary ms-2">{{ group_suppliers|length }}</span>
+                    </div>
+                    <div class="supplier-group-items">
+                        <table class="table table-hover mb-0 align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th width="40"><input type="checkbox" onchange="toggleGroupCheck(this)"></th>
+                                    <th>供应商名称</th>
+                                    <th>主营产品</th>
+                                    <th width="70">评分</th>
+                                    <th width="100">开发阶段</th>
+                                    <th width="180">邮箱</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for s in group_suppliers %}
+                                <tr>
+                                    <td><input type="checkbox" class="supplier-check" name="ids" value="{{ s.id }}"></td>
+                                    <td>
+                                        <strong>{{ s.name }}</strong>
+                                        {% if s.product_title %}
+                                        <div class="small text-muted">{{ s.product_title[:50] }}</div>
+                                        {% endif %}
+                                    </td>
+                                    <td class="small">{{ s.main_product or '—' }}</td>
+                                    <td>
+                                        {% if s.score %}
+                                        <span class="badge bg-success">{{ s.score }}</span>
+                                        {% else %}
+                                        <span class="text-muted">—</span>
+                                        {% endif %}
+                                    </td>
+                                    <td><span class="badge bg-info">{{ s.dev_stage }}</span></td>
+                                    <td class="small">{{ s.email or '—' }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center text-muted py-5">
+                <i class="bi bi-check-circle" style="font-size: 3rem;"></i>
+                <p class="mt-3">没有可选的供应商</p>
+                <p class="small">所有有邮箱的供应商都已进行过邮件沟通，或都未通过初筛</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if available_suppliers %}
+    <div class="text-end mt-3">
+        <span class="me-2 text-muted small">已选 <strong id="selectedCount">0</strong> 家</span>
+        <button type="submit" class="btn btn-primary btn-lg" id="nextBtn" disabled>
+            <i class="bi bi-arrow-right-circle"></i> 下一步：填写邮件
+        </button>
+    </div>
+    {% endif %}
+</form>
+
+<script>
+// 全选/取消全选（顶部按钮）
+function toggleAll(checkAllEl) {
+    document.querySelectorAll('.supplier-check').forEach(cb => cb.checked = checkAllEl.checked);
+    updateSelectedCount();
+}
+
+// 分组内全选
+function toggleGroupCheck(checkEl) {
+    const table = checkEl.closest('table');
+    table.querySelectorAll('.supplier-check').forEach(cb => cb.checked = checkEl.checked);
+    updateSelectedCount();
+}
+
+function selectAll() {
+    document.querySelectorAll('.supplier-check').forEach(cb => cb.checked = true);
+    updateSelectedCount();
+}
+
+function deselectAll() {
+    document.querySelectorAll('.supplier-check').forEach(cb => cb.checked = false);
+    updateSelectedCount();
+}
+
+// 展开/收起分组
+function toggleSupplierGroup(headerEl) {
+    const items = headerEl.nextElementSibling;
+    const icon = headerEl.querySelector('i');
+    if (items.style.display === 'none') {
+        items.style.display = '';
+        icon.className = 'bi bi-chevron-down me-2';
+    } else {
+        items.style.display = 'none';
+        icon.className = 'bi bi-chevron-right me-2';
+    }
+}
+
+// 更新已选数量
+document.querySelectorAll('.supplier-check').forEach(cb => {
+    cb.addEventListener('change', updateSelectedCount);
+});
+
+function updateSelectedCount() {
+    const checked = document.querySelectorAll('.supplier-check:checked').length;
+    document.getElementById('selectedCount').textContent = checked;
+    document.getElementById('nextBtn').disabled = checked === 0;
+}
+
+// 搜索过滤（跨分组匹配，匹配到则显示所在分组并高亮）
+document.getElementById('supplierSearchInput').addEventListener('input', function() {
+    const q = this.value.trim().toLowerCase();
+    document.querySelectorAll('#supplierGroupList .supplier-group').forEach(group => {
+        let hasMatch = false;
+        group.querySelectorAll('tbody tr').forEach(tr => {
+            const text = tr.textContent.toLowerCase();
+            const match = q === '' || text.includes(q);
+            tr.style.display = match ? '' : 'none';
+            if (match) hasMatch = true;
+        });
+        // 搜索时自动展开所有分组
+        group.querySelector('.supplier-group-items').style.display = '';
+        group.querySelector('i').className = 'bi bi-chevron-down me-2';
+        group.style.display = (q === '' || hasMatch) ? '' : 'none';
+    });
+});
+
+// 表单提交前把选中的ID拼成 ids=1,2,3 格式
+document.getElementById('selectForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const checked = Array.from(document.querySelectorAll('.supplier-check:checked')).map(cb => cb.value);
+    if (checked.length === 0) return;
+    window.location.href = '{{ url_for("communications_email_new") }}?ids=' + checked.join(',');
+});
+</script>
+
+{% elif selected_suppliers is defined %}
+{# ==================== 第二步：填写邮件内容并群发 ==================== #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="page-title mb-0"><i class="bi bi-send"></i> 群发邮件</h1>
+    <a href="{{ url_for('communications_email_new') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回重新选择
+    </a>
+</div>
+
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    邮件将群发给以下 <strong>{{ selected_suppliers|length }}</strong> 家供应商，每家各发一封。
+</div>
+
+<form method="POST" action="{{ url_for('communications_email_new') }}" enctype="multipart/form-data">
+    {# 隐藏字段：供应商ID列表 #}
+    <input type="hidden" name="supplier_ids"
+           value="{{ selected_suppliers|map(attribute='id')|join(',') }}">
+
+    {# 收件人列表 #}
+    <div class="card mb-3">
+        <div class="card-header"><i class="bi bi-people"></i> 收件人（{{ selected_suppliers|length }} 家）</div>
+        <div class="card-body">
+            <div class="row g-2">
+                {% for s in selected_suppliers %}
+                <div class="col-md-6">
+                    <div class="border rounded p-2">
+                        <strong>{{ s.name }}</strong>
+                        <div class="small text-muted">
+                            {% if s.main_product %}{{ s.main_product }}{% endif %}
+                            {% if s.score %} · 评分 {{ s.score }}{% endif %}
+                        </div>
+                        <div class="small">{{ s.email or '（无邮箱）' }}</div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    {# 邮件内容 #}
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-pencil"></i> 邮件内容</span>
+            <button type="button" class="btn btn-success btn-sm" onclick="openBulkAiModal()">
+                <i class="bi bi-robot"></i> AI生成
+            </button>
+        </div>
+        <div class="card-body">
+            {# 模板选择：保留在表单页，因为模板是发送配置的一部分 #}
+            <div class="row g-2 mb-3">
+                <div class="col-md-12">
+                    <label class="form-label small">选择模板（可选，AI生成时会参考模板风格）</label>
+                    <select class="form-select form-select-sm" id="templateSelect">
+                        <option value="">不使用模板</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label required">邮件主题</label>
+                <input type="text" class="form-control" name="subject" id="subjectInput" required
+                       placeholder="如：采购合作询价 - XX产品">
+            </div>
+            <div class="mb-3">
+                <label class="form-label required">邮件正文</label>
+                <textarea class="form-control" name="body" id="bodyInput" rows="14" required>{{ initial_body }}</textarea>
+                <small class="text-muted">支持纯文本，相同的主题和正文将发送给所有选中的供应商</small>
+            </div>
+
+            {# 小白讲解：附件上传区，所有选中供应商都会收到同样的附件 #}
+            <div class="mb-3">
+                <label class="form-label"><i class="bi bi-paperclip"></i> 附件（可选，所有供应商共用）</label>
+                <input type="file" class="form-control" name="attachments" id="attachmentInput" multiple
+                       onchange="updateAttachmentList()">
+                <small class="text-muted">支持图片、文档等，可多选，单个文件最大16MB</small>
+                <div id="attachmentList" class="mt-2"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="text-end mb-4">
+        <a href="{{ url_for('communications_email_new') }}" class="btn btn-outline-secondary btn-lg me-2">
+            <i class="bi bi-arrow-left"></i> 返回
+        </a>
+        <button type="submit" class="btn btn-primary btn-lg">
+            <i class="bi bi-send"></i> 发送给 {{ selected_suppliers|length }} 家供应商
+        </button>
+    </div>
+</form>
+
+{# AI 生成结果弹窗（群发场景）
+   小白讲解：弹窗内含提示词输入、语言选择、生成结果区。
+   多语言时结果区显示多组标题和正文，确认填入时拼接成一封邮件。 #}
+<div class="modal fade" id="aiModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-robot"></i> AI 生成邮件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                {# 提示词输入区 #}
+                <div class="mb-3">
+                    <label class="form-label small">提示词（可选）</label>
+                    <textarea class="form-control" id="aiPromptInput" rows="2"
+                              placeholder="例如：强调交期、压价、要样品...留空使用默认提示词"></textarea>
+                </div>
+
+                {# 语言选择：可多选 #}
+                <div class="mb-3">
+                    <label class="form-label small">生成语言（可多选，多选则同时生成多版）</label>
+                    <div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="zh" id="langZh" checked>
+                            <label class="form-check-label" for="langZh">中文</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="en" id="langEn">
+                            <label class="form-check-label" for="langEn">英文</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="other" id="langOther">
+                            <label class="form-check-label" for="langOther">其他语言</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="aiLoading" class="text-center py-3" style="display:none;">
+                    <div class="spinner-border text-primary"></div>
+                    <p class="mt-2 text-muted small">AI 正在生成，请稍候...</p>
+                </div>
+                <div id="aiResult" style="display:none;">
+                    <div id="aiResultContainer"></div>
+                    <div class="d-flex justify-content-end gap-2 mt-2">
+                        <button class="btn btn-outline-secondary" onclick="regenerateBulk()">
+                            <i class="bi bi-arrow-repeat"></i> 重新生成
+                        </button>
+                        <button class="btn btn-primary" onclick="acceptBulkAi()">
+                            <i class="bi bi-check-lg"></i> 确认填入
+                        </button>
+                    </div>
+                </div>
+                <div id="aiEmpty">
+                    <p class="text-muted">点击下方按钮生成邮件：</p>
+                    <button class="btn btn-success" onclick="generateBulk()" id="genBtn">
+                        <i class="bi bi-magic"></i> 生成邮件
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 群发邮件 AI 生成相关
+// 小白讲解：支持多语言生成，多选时同时生成多版标题和正文
+let bulkSupplierIds = [{{ selected_suppliers|map(attribute='id')|join(',') }}];
+let lastBulkLogId = null;
+let lastBulkResult = null;  // 保存完整结果（含多语言版本）
+
+// 语言代码到中文名的映射
+const LANG_LABELS = {zh: '中文', en: '英文', other: '其他语言'};
+
+// 小白讲解：显示已选附件列表，让用户清楚加了哪些文件
+function updateAttachmentList() {
+    const input = document.getElementById('attachmentInput');
+    const listEl = document.getElementById('attachmentList');
+    const files = input.files;
+    if (!files || files.length === 0) {
+        listEl.innerHTML = '';
+        return;
+    }
+    listEl.innerHTML = Array.from(files).map(f => {
+        const sizeKb = (f.size / 1024).toFixed(1);
+        return `<div class="badge bg-light text-dark border me-2 mb-1 py-2 px-2">
+            <i class="bi bi-file-earmark"></i> ${f.name} <span class="text-muted">(${sizeKb} KB)</span>
+        </div>`;
+    }).join('');
+}
+
+// 加载模板列表
+fetch('{{ url_for("admin_templates_api_list") }}')
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const sel = document.getElementById('templateSelect');
+            data.templates.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name + (t.description ? `（${t.description}）` : '');
+                sel.appendChild(opt);
+            });
+        }
+    });
+
+// 获取用户勾选的语言列表
+function getSelectedLanguages() {
+    const langs = [];
+    document.querySelectorAll('.ai-lang:checked').forEach(cb => langs.push(cb.value));
+    return langs.length > 0 ? langs : ['zh'];
+}
+
+// 属性转义（用于 input 的 value 属性）
+function escapeAttr(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// HTML转义
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function openBulkAiModal() {
+    lastBulkLogId = null;
+    lastBulkResult = null;
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiLoading').style.display = 'none';
+    document.getElementById('aiEmpty').style.display = '';
+    document.getElementById('aiPromptInput').value = '';
+    // 默认勾选中文
+    document.querySelectorAll('.ai-lang').forEach(cb => cb.checked = (cb.value === 'zh'));
+    new bootstrap.Modal(document.getElementById('aiModal')).show();
+}
+
+function generateBulk() {
+    const prompt = document.getElementById('aiPromptInput').value.trim();
+    const templateId = document.getElementById('templateSelect').value;
+    const languages = getSelectedLanguages();
+
+    document.getElementById('aiEmpty').style.display = 'none';
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiLoading').style.display = '';
+    const btn = document.getElementById('genBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 生成中...';
+
+    fetch('{{ url_for("communications_ai_generate_send") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            supplier_ids: bulkSupplierIds,
+            user_prompt: prompt,
+            scene: 'bulk_send',
+            template_id: templateId ? parseInt(templateId) : null,
+            prev_log_id: lastBulkLogId,
+            languages: languages
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-magic"></i> 生成邮件';
+        document.getElementById('aiLoading').style.display = 'none';
+        if (data.success && data.data) {
+            lastBulkResult = data.data;
+            lastBulkLogId = data.data.log_id;
+            renderBulkResult(data.data, languages);
+            document.getElementById('aiResult').style.display = '';
+        } else {
+            alert('生成失败：' + (data.message || '未知错误'));
+            document.getElementById('aiEmpty').style.display = '';
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-magic"></i> 生成邮件';
+        document.getElementById('aiLoading').style.display = 'none';
+        alert('请求失败：' + err);
+        document.getElementById('aiEmpty').style.display = '';
+    });
+}
+
+// 渲染生成结果（单语言/多语言不同布局）
+function renderBulkResult(data, languages) {
+    const container = document.getElementById('aiResultContainer');
+    if (data.multi && data.versions) {
+        // 多语言
+        container.innerHTML = languages.map(lang => {
+            const v = data.versions[lang] || {subject: '', body: ''};
+            return `
+                <div class="mb-3 border rounded p-2">
+                    <div class="badge bg-secondary mb-2">${LANG_LABELS[lang] || lang}</div>
+                    <div class="mb-2">
+                        <label class="form-label small">标题（${LANG_LABELS[lang] || lang}）</label>
+                        <input type="text" class="form-control" value="${escapeAttr(v.subject)}" readonly>
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label small">正文（${LANG_LABELS[lang] || lang}）</label>
+                        <textarea class="form-control" rows="8" readonly>${escapeHtml(v.body)}</textarea>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } else {
+        // 单语言
+        container.innerHTML = `
+            <div class="mb-2">
+                <label class="form-label small">生成标题</label>
+                <input type="text" class="form-control" value="${escapeAttr(data.subject || '')}" readonly>
+            </div>
+            <div class="mb-2">
+                <label class="form-label small">生成正文</label>
+                <textarea class="form-control" rows="10" readonly>${escapeHtml(data.body || '')}</textarea>
+            </div>
+        `;
+    }
+}
+
+function regenerateBulk() {
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiEmpty').style.display = '';
+    document.getElementById('genBtn').click();
+}
+
+// 确认填入：单语言直接填；多语言把各版本用分隔线拼接
+function acceptBulkAi() {
+    if (!lastBulkResult) {
+        alert('生成内容为空');
+        return;
+    }
+    let subject, body;
+    if (lastBulkResult.multi && lastBulkResult.versions) {
+        const langs = Object.keys(lastBulkResult.versions);
+        subject = langs.map(l => lastBulkResult.versions[l].subject).filter(s => s).join(' / ');
+        body = langs.map(l => {
+            const v = lastBulkResult.versions[l];
+            return `【${LANG_LABELS[l] || l}】\n${v.body}`;
+        }).filter(b => b).join('\n\n——————\n\n');
+    } else {
+        subject = lastBulkResult.subject || '';
+        body = lastBulkResult.body || '';
+    }
+    if (!subject || !body) {
+        alert('生成内容为空');
+        return;
+    }
+    document.getElementById('subjectInput').value = subject;
+    document.getElementById('bodyInput').value = body;
+    if (lastBulkLogId) {
+        fetch('{{ url_for("communications_ai_accept") }}', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({log_id: lastBulkLogId})
+        });
+    }
+    bootstrap.Modal.getInstance(document.getElementById('aiModal')).hide();
+}
+</script>
+
+{% endif %}
+{% endblock %}

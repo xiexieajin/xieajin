@@ -301,7 +301,18 @@ function toggleAllCheckbox(name, checked) {
                                 <span class="badge bg-secondary">{{ s.dev_stage }}</span>
                             {% endif %}
                         </td>
-                        <td><small>{{ s.source }}</small></td>
+                        <td>
+                            <small>{{ s.source }}</small>
+                            {% if s.customs_export_count and s.customs_export_count > 0 %}
+                            <br>
+                            <span class="badge bg-info mt-1" title="海关出口{{ s.customs_export_count }}次，总金额${{ '%.0f'|format(s.customs_total_amount or 0) }}">
+                                <i class="bi bi-globe2"></i> 出口{{ s.customs_export_count }}次
+                            </span>
+                            {% if s.customs_total_amount %}
+                            <small class="text-success d-block" style="font-size:0.7rem;">${{ '%.0f'|format(s.customs_total_amount) }}</small>
+                            {% endif %}
+                            {% endif %}
+                        </td>
                         <td>
                             <a href="{{ url_for('supplier_detail', id=s.id) }}" class="action-link" title="查看">
                                 <i class="bi bi-eye"></i>

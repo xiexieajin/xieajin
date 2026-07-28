@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}沟通模板管理 - 模型与平台管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-file-earmark-text"></i> 沟通模板管理</h1>
+    <div>
+        <a href="{{ url_for('admin_models_index') }}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> 返回
+        </a>
+        <a href="{{ url_for('admin_template_edit') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-plus-lg"></i> 新建模板
+        </a>
+    </div>
+</div>
+
+<div class="alert alert-info">
+    <h6 class="alert-heading"><i class="bi bi-info-circle"></i> 模板说明</h6>
+    <ul class="mb-0 small">
+        <li>模板用于 AI 生成邮件时参考，支持变量：<code>{product_name}</code> <code>{supplier_name}</code> <code>{main_product}</code> <code>{target_market}</code></li>
+        <li>变量在 AI 生成时由系统替换成实际值后传给 AI，AI 会参考模板风格但不会完全照搬</li>
+        <li>适用场景：<code>inquiry</code>=首次询价、<code>follow_up</code>=跟进、<code>negotiation</code>=议价、<code>general</code>=通用</li>
+    </ul>
+</div>
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-list-ul"></i> 模板列表（共 {{ templates|length }} 个）</div>
+    <div class="card-body">
+        {% if templates %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th width="60">ID</th>
+                        <th>模板名称</th>
+                        <th>适用场景</th>
+                        <th>标题模板</th>
+                        <th>正文预览</th>
+                        <th width="80">状态</th>
+                        <th width="180">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in templates %}
+                    <tr>
+                        <td>{{ t.id }}</td>
+                        <td>
+                            <strong>{{ t.name }}</strong>
+                            {% if t.description %}
+                            <div class="small text-muted">{{ t.description }}</div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if t.scene == 'inquiry' %}<span class="badge bg-primary">首次询价</span>
+                            {% elif t.scene == 'follow_up' %}<span class="badge bg-info">跟进</span>
+                            {% elif t.scene == 'negotiation' %}<span class="badge bg-warning">议价</span>
+                            {% else %}<span class="badge bg-secondary">通用</span>{% endif %}
+                        </td>
+                        <td class="small text-truncate" style="max-width: 200px;">{{ t.subject_template or '—' }}</td>
+                        <td class="small text-truncate" style="max-width: 250px;">{{ (t.body_template or '')[:80] }}{{ '...' if t.body_template and t.body_template|length > 80 }}</td>
+                        <td>
+                            {% if t.is_enabled %}
+                                <span class="badge bg-success">启用</span>
+                            {% else %}
+                                <span class="badge bg-secondary">禁用</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{{ url_for('admin_template_edit', template_id=t.id) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-pencil"></i> 编辑
+                            </a>
+                            <form method="POST" action="{{ url_for('admin_template_delete', template_id=t.id) }}"
+                                  class="d-inline"
+                                  onsubmit="return confirm('确定删除模板「{{ t.name }}」吗？');">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash"></i> 删除
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-5">
+            <i class="bi bi-inbox" style="font-size: 3rem;"></i>
+            <p class="mt-3">暂无模板</p>
+            <a href="{{ url_for('admin_template_edit') }}" class="btn btn-primary">
+                <i class="bi bi-plus-lg"></i> 新建第一个模板
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ==================== AI系统提示词配置卡片 ==================== -->
+<!-- 小白讲解：这个卡片让管理员直接在页面上编辑AI的4个提示词，
+     修改后点保存就立即生效，下次AI生成邮件时会用新的提示词。 -->
+<div class="card mt-4">
+    <div class="card-header"><i class="bi bi-robot"></i> AI系统提示词配置</div>
+    <div class="card-body">
+        <div class="alert alert-secondary small mb-3">
+            <h6 class="alert-heading">说明</h6>
+            <ul class="mb-0">
+                <li><strong>系统提示词</strong>：定义AI的角色和生成邮件的基本要求，每次生成都必带</li>
+                <li><strong>场景默认提示词</strong>：用户未填写提示词时自动使用，分会话回复/群发/单发三种</li>
+                <li>修改后点击"保存"，<strong>立即生效</strong>，无需重启服务</li>
+            </ul>
+        </div>
+
+        {# 提示词编辑区由JS动态生成 #}
+        <div id="aiPromptList"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // 小白讲解：页面加载时从后端拉取所有提示词，动态生成编辑卡片
+    (function () {
+        const $list = document.getElementById('aiPromptList');
+
+        // 提示词中文标签
+        const PROMPT_LABELS = {
+            'comm_system_prompt': { title: '系统提示词', rows: 10, icon: 'bi-gear' },
+            'prompt_session_reply': { title: '会话回复 - 默认提示词', rows: 3, icon: 'bi-chat-dots' },
+            'prompt_bulk_send': { title: '群发邮件 - 默认提示词', rows: 3, icon: 'bi-send' },
+            'prompt_single_send': { title: '单发邮件 - 默认提示词', rows: 3, icon: 'bi-envelope' },
+        };
+
+        function showMsg(msgEl, text, type) {
+            msgEl.textContent = text;
+            msgEl.className = 'ms-3 small text-' + (type === 'success' ? 'success' : (type === 'danger' ? 'danger' : 'muted'));
+        }
+
+        // 从后端拉取所有提示词
+        function loadAll() {
+            fetch('/admin/models/ai-prompt', { method: 'GET' })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (!data.success || !data.prompts) {
+                        $list.innerHTML = '<div class="text-danger">' + (data.message || '加载失败') + '</div>';
+                        return;
+                    }
+                    $list.innerHTML = '';
+                    Object.keys(data.prompts).forEach(function (key) {
+                        var p = data.prompts[key];
+                        var label = PROMPT_LABELS[key] || { title: key, rows: 5, icon: 'bi-file-text' };
+                        var card = document.createElement('div');
+                        card.className = 'border rounded p-3 mb-3';
+                        card.innerHTML =
+                            '<div class="d-flex align-items-center mb-2">' +
+                            '<i class="bi ' + label.icon + ' me-2"></i>' +
+                            '<label class="form-label fw-bold mb-0">' + label.title + '</label>' +
+                            '</div>' +
+                            '<div class="text-muted small mb-2">' + (p.description || '') + '</div>' +
+                            '<textarea class="form-control mb-2" rows="' + label.rows + '" id="ta_' + key + '">' + (p.value || '') + '</textarea>' +
+                            '<div class="d-flex align-items-center">' +
+                            '<button class="btn btn-primary btn-sm" id="btn_' + key + '"><i class="bi bi-save"></i> 保存</button>' +
+                            '<span class="ms-3 small text-muted" id="msg_' + key + '"></span>' +
+                            '</div>';
+                        $list.appendChild(card);
+
+                        // 绑定保存按钮
+                        document.getElementById('btn_' + key).addEventListener('click', function () {
+                            saveOne(key);
+                        });
+                    });
+                })
+                .catch(function (err) {
+                    $list.innerHTML = '<div class="text-danger">请求失败：' + err + '</div>';
+                });
+        }
+
+        // 保存单个提示词
+        function saveOne(key) {
+            var ta = document.getElementById('ta_' + key);
+            var btn = document.getElementById('btn_' + key);
+            var msg = document.getElementById('msg_' + key);
+            var value = ta.value.trim();
+            if (!value) {
+                showMsg(msg, '提示词不能为空', 'danger');
+                return;
+            }
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 保存中...';
+            fetch('/admin/models/ai-prompt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: key, value: value })
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.success) {
+                        showMsg(msg, '保存成功，立即生效', 'success');
+                    } else {
+                        showMsg(msg, data.message || '保存失败', 'danger');
+                    }
+                })
+                .catch(function (err) {
+                    showMsg(msg, '请求失败：' + err, 'danger');
+                })
+                .finally(function () {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-save"></i> 保存';
+                });
+        }
+
+        // 页面加载时自动拉取
+        loadAll();
+    })();
+</script>
+{% endblock %}

@@ -1,0 +1,865 @@
+{% extends "base.html" %}
+
+{% block title %}邮件管理 - 沟通管理{% endblock %}
+
+{% block content %}
+{# 小白讲解：邮件管理页布局——页面可以正常滚动，会话框设为较大的固定高度，
+   让用户能看到更多邮件内容。会话框内消息多时在框内独立滚动。 #}
+<style>
+/* 卡片内部 row 跟随卡片高度 */
+.email-layout-card > .row {
+    height: 100% !important;
+    min-height: 0;
+}
+/* 左右两列都要能正确收缩，防止内容撑开卡片 */
+.email-layout-card .col-4,
+.email-layout-card .col-8 {
+    min-height: 0;
+    overflow: hidden;
+}
+/* 会话内容区也要能收缩，让消息列表在内部滚动而不是撑开整个区域 */
+#sessionContent {
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+/* 消息列表是唯一滚动容器——会话框范围内滚动，不超出 */
+#messageList {
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    flex-shrink: 1 !important;
+}
+/* 会话头部和底部输入区固定不收缩 */
+#sessionHeader, #composeArea {
+    flex-shrink: 0;
+}
+</style>
+
+{# 顶部子导航：邮件管理 / 短信管理 / 待认领邮件（减小 margin 让卡片更大）#}
+<ul class="nav nav-tabs mb-2">
+    <li class="nav-item">
+        <a class="nav-link active" href="{{ url_for('communications_email') }}">
+            <i class="bi bi-envelope"></i> 邮件管理
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('communications_sms') }}">
+            <i class="bi bi-phone"></i> 短信管理
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('communications_pending') }}">
+            <i class="bi bi-envelope-paper"></i> 待认领邮件
+        </a>
+    </li>
+</ul>
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h1 class="page-title mb-0"><i class="bi bi-chat-left-text"></i> 邮件管理</h1>
+    <a href="{{ url_for('communications_email_new') }}" class="btn btn-primary btn-sm">
+        <i class="bi bi-person-plus"></i> 新建联系人
+    </a>
+</div>
+
+{# 邮箱未配置提示 #}
+{% if not email_config or not email_config.is_enabled %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    邮件功能未启用，请先到
+    <a href="{{ url_for('admin_models_email') }}" class="alert-link">模型与平台管理 → 邮件管理</a>
+    配置 Gmail 账号并启用。
+</div>
+{% endif %}
+
+{# ==================== 类微信布局：左侧联系人 + 右侧会话框 ==================== #}
+{# 小白讲解：卡片高度设为视口的80%，让会话框足够大；页面整体可滚动 #}
+<div class="card email-layout-card" style="height: 80vh; min-height: 500px;">
+    <div class="row g-0 h-100">
+        {# ---------- 左侧：联系人列表 ---------- #}
+        <div class="col-4 border-end d-flex flex-column">
+            {# 搜索框 #}
+            <div class="p-2 border-bottom">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+                    <input type="text" class="form-control" id="searchInput"
+                           placeholder="搜索标题、供应商、正文..." autocomplete="off">
+                </div>
+            </div>
+
+            {# 联系人列表（按需求分组，可展开收起） #}
+            <div class="flex-grow-1 overflow-auto" id="contactList">
+                {% if contacts %}
+                    {# 按分组名归类 #}
+                    {% set groups = {} %}
+                    {% for c in contacts %}
+                        {% if groups.update({c.group_name: groups.get(c.group_name, []) + [c]}) %}{% endif %}
+                    {% endfor %}
+
+                    {% for group_name, group_contacts in groups.items() %}
+                    <div class="contact-group">
+                        <div class="contact-group-header px-3 py-2 bg-light border-bottom cursor-pointer"
+                             onclick="toggleGroup(this)">
+                            <i class="bi bi-chevron-down"></i>
+                            <strong class="ms-1">{{ group_name }}</strong>
+                            <span class="badge bg-secondary ms-1">{{ group_contacts|length }}</span>
+                        </div>
+                        <div class="contact-group-items">
+                            {% for c in group_contacts %}
+                            <div class="contact-item px-3 py-2 border-bottom {% if loop.first and group_contacts %}active{% endif %}"
+                                 data-supplier-id="{{ c.id }}"
+                                 data-supplier-name="{{ c.name }}"
+                                 onclick="loadSession({{ c.id }})">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div class="flex-grow-1 text-truncate">
+                                        <div class="fw-bold small">{{ c.name }}</div>
+                                        <div class="text-muted" style="font-size: 0.75rem;">
+                                            {{ c.last_comm_time or '—' }}
+                                        </div>
+                                    </div>
+                                    {% if c.unread_count > 0 %}
+                                    <span class="badge bg-danger rounded-pill">{{ c.unread_count }}</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                <div class="text-center text-muted py-5">
+                    <i class="bi bi-inbox" style="font-size: 2.5rem;"></i>
+                    <p class="mt-2 small">暂无邮件沟通记录</p>
+                    <p class="small">点击右上角"新建联系人"开始发邮件</p>
+                </div>
+                {% endif %}
+
+                {# ==================== 归档区（已完成需求的会话）==================== #}
+                {# 小白讲解：需求状态为"已完成"的供应商会话进入归档区，
+                   默认折叠，点击展开后显示需求名称，再点击需求名称展开相关供应商会话 #}
+                {% if archived_contacts %}
+                <div class="border-top mt-2">
+                    <div class="contact-group-header px-3 py-2 bg-light border-bottom cursor-pointer"
+                         onclick="toggleGroup(this)">
+                        <i class="bi bi-chevron-down"></i>
+                        <strong class="ms-1">归档区</strong>
+                        <span class="badge bg-secondary ms-1">{{ archived_contacts|length }}</span>
+                    </div>
+                    <div class="contact-group-items" style="display:none;">
+                        {# 归档区按需求名称二级分组 #}
+                        {% set archive_groups = {} %}
+                        {% for c in archived_contacts %}
+                            {% set gname = c.requirement_name or c.main_product or '未分类' %}
+                            {% if archive_groups.update({gname: archive_groups.get(gname, []) + [c]}) %}{% endif %}
+                        {% endfor %}
+
+                        {% for req_name, req_contacts in archive_groups.items() %}
+                        <div class="contact-group">
+                            <div class="contact-group-header px-3 py-1 bg-white border-bottom cursor-pointer"
+                                 onclick="toggleGroup(this)" style="font-size:0.85rem;">
+                                <i class="bi bi-chevron-down"></i>
+                                <span class="ms-1">{{ req_name }}</span>
+                                <span class="badge bg-light text-secondary ms-1">{{ req_contacts|length }}</span>
+                            </div>
+                            <div class="contact-group-items" style="display:none;">
+                                {% for c in req_contacts %}
+                                <div class="contact-item px-3 py-2 border-bottom"
+                                     data-supplier-id="{{ c.id }}"
+                                     data-supplier-name="{{ c.name }}"
+                                     onclick="loadSession({{ c.id }})">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <div class="flex-grow-1 text-truncate">
+                                            <div class="fw-bold small text-muted">{{ c.name }}</div>
+                                            <div class="text-muted" style="font-size: 0.75rem;">
+                                                {{ c.last_comm_time or '—' }}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        {# ---------- 右侧：会话框 ---------- #}
+        {# 小白讲解：右侧会话框整列设 height:100% + overflow:hidden，
+           确保它继承卡片高度，不会按内容撑开导致整页溢出 #}
+        <div class="col-8 d-flex flex-column" id="sessionPanel"
+             style="height:100%; min-height:0; overflow:hidden;">
+            {# 默认提示（未选中联系人时） #}
+            <div class="flex-grow-1 d-flex align-items-center justify-content-center text-muted" id="emptySession">
+                <div class="text-center">
+                    <i class="bi bi-chat-dots" style="font-size: 3rem;"></i>
+                    <p class="mt-3">选择左侧联系人查看邮件往来</p>
+                </div>
+            </div>
+
+            {# 会话内容区（选中联系人后显示）
+               小白讲解：这里设 height:100% + overflow:hidden + min-height:0，
+               让消息列表在内部滚动，而不是撑开整个会话区 #}
+            <div class="d-none flex-grow-1 d-flex flex-column" id="sessionContent"
+                 style="height:100%; min-height:0; overflow:hidden;">
+                {# 会话头部：供应商名称 + 邮箱（固定不收缩）#}
+                <div class="px-3 py-2 border-bottom bg-light" id="sessionHeader"
+                     style="flex-shrink:0;">
+                    <strong id="sessionSupplierName"></strong>
+                    <small class="text-muted ms-2" id="sessionSupplierEmail"></small>
+                </div>
+
+                {# 邮件消息列表（唯一滚动区，在会话框范围内滚动）#}
+                <div class="flex-grow-1 overflow-auto p-3" id="messageList"
+                     style="min-height:0; overflow-y:auto; flex-shrink:1;">
+                    {# 消息由 JavaScript 动态插入 #}
+                </div>
+
+                {# 底部输入区：发邮件（固定不收缩，紧凑布局）#}
+                <div class="border-top p-2" id="composeArea"
+                     style="flex-shrink:0;">
+                    <div class="mb-1 d-flex gap-2">
+                        <input type="text" class="form-control form-control-sm" id="composeSubject"
+                               placeholder="邮件主题">
+                        <button class="btn btn-outline-success btn-sm text-nowrap" onclick="openAiModal()" id="aiBtn">
+                            <i class="bi bi-robot"></i> AI生成
+                        </button>
+                    </div>
+                    <textarea class="form-control form-control-sm mb-1" id="composeBody" rows="2"
+                              placeholder="输入邮件正文..."></textarea>
+                    <div id="composeAttachmentList" class="mb-1"></div>
+                    {# 附件按钮和发送按钮放同一行 #}
+                    <input type="file" id="composeAttachments" multiple style="display:none;"
+                           onchange="updateComposeAttachments()">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <button type="button" class="btn btn-outline-secondary btn-sm"
+                                onclick="document.getElementById('composeAttachments').click()">
+                            <i class="bi bi-paperclip"></i>
+                        </button>
+                        <button class="btn btn-primary btn-sm" onclick="sendEmail()" id="sendBtn">
+                            <i class="bi bi-send"></i> 发送
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ==================== AI 生成弹窗 ====================
+   小白讲解：用户点"AI生成"按钮后弹出这个 Modal，
+   可以填写提示词（可空），点生成后调AI接口，
+   AI 返回标题和正文显示在弹窗里，用户确认后填入会话框。 #}
+<div class="modal fade" id="aiGenerateModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-robot"></i> AI 生成回复</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                {# 模板选择（可选，AI生成时参考模板风格）#}
+                <div class="mb-3">
+                    <label class="form-label small">选择模板（可选，AI生成时参考模板风格）</label>
+                    <select class="form-select form-select-sm" id="aiTemplateSelect">
+                        <option value="">不使用模板</option>
+                    </select>
+                </div>
+
+                {# 提示词输入区 #}
+                <div class="mb-3">
+                    <label class="form-label small">提示词（可选）</label>
+                    <textarea class="form-control" id="aiPrompt" rows="2"
+                              placeholder="例如：继续追问交期、压价、要样品...留空将根据沟通记录自动生成"></textarea>
+                    <small class="text-muted">留空时系统会使用默认提示词，根据往来记录生成得体回复</small>
+                </div>
+
+                {# 语言选择：可多选，多选时同时生成多版 #}
+                <div class="mb-3">
+                    <label class="form-label small">生成语言（可多选，多选则同时生成多版）</label>
+                    <div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="zh" id="langZh" checked>
+                            <label class="form-check-label" for="langZh">中文</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="en" id="langEn">
+                            <label class="form-check-label" for="langEn">英文</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input ai-lang" type="checkbox" value="other" id="langOther">
+                            <label class="form-check-label" for="langOther">其他语言</label>
+                        </div>
+                    </div>
+                </div>
+
+                {# 生成按钮 #}
+                <div class="mb-3">
+                    <button class="btn btn-success" onclick="generateAiReply()" id="generateBtn">
+                        <i class="bi bi-magic"></i> 生成邮件
+                    </button>
+                </div>
+
+                {# 生成结果区（默认隐藏，生成后显示）
+                   小白讲解：单语言显示一个标题+正文输入框；
+                   多语言时动态生成多个区块，每个语言一版。 #}
+                <div id="aiResultArea" style="display: none;">
+                    <hr>
+                    <div id="aiResultContainer"></div>
+                    <div class="d-flex justify-content-end gap-2 mt-2">
+                        <button class="btn btn-outline-secondary" onclick="regenerateAi()">
+                            <i class="bi bi-arrow-repeat"></i> 重新生成
+                        </button>
+                        <button class="btn btn-primary" onclick="acceptAiResult()">
+                            <i class="bi bi-check-lg"></i> 确认填入
+                        </button>
+                    </div>
+                </div>
+
+                {# 加载提示 #}
+                <div id="aiLoading" class="text-center py-3" style="display: none;">
+                    <div class="spinner-border text-primary"></div>
+                    <p class="mt-2 text-muted small">AI 正在生成，请稍候...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ==================== 页面布局：确保会话框内部正确滚动 ====================
+// 小白讲解：卡片高度已由 inline style 设为 80vh（视口80%），页面可正常滚动。
+// 这里只负责设置会话框内部各层的高度继承链路，让消息列表在会话框内独立滚动。
+function forceSessionLayout() {
+    const card = document.querySelector('.email-layout-card');
+    if (!card) return;
+    const col8 = card.querySelector('.col-8');
+    const sessionPanel = document.getElementById('sessionPanel');
+    const sessionContent = document.getElementById('sessionContent');
+    const messageList = document.getElementById('messageList');
+    const composeArea = document.getElementById('composeArea');
+    const sessionHeader = document.getElementById('sessionHeader');
+    // 每一层都继承父级高度，确保消息列表在会话框范围内滚动
+    if (col8) { col8.style.height = '100%'; col8.style.minHeight = '0'; col8.style.overflow = 'hidden'; }
+    if (sessionPanel) { sessionPanel.style.height = '100%'; sessionPanel.style.minHeight = '0'; sessionPanel.style.overflow = 'hidden'; }
+    if (sessionContent) { sessionContent.style.height = '100%'; sessionContent.style.minHeight = '0'; sessionContent.style.overflow = 'hidden'; }
+    if (messageList) { messageList.style.minHeight = '0'; messageList.style.overflowY = 'auto'; messageList.style.flexShrink = '1'; }
+    if (sessionHeader) sessionHeader.style.flexShrink = '0';
+    if (composeArea) composeArea.style.flexShrink = '0';
+}
+window.addEventListener('load', forceSessionLayout);
+window.addEventListener('resize', forceSessionLayout);
+if (document.readyState !== 'loading') {
+    forceSessionLayout();
+} else {
+    document.addEventListener('DOMContentLoaded', forceSessionLayout);
+}
+
+// ==================== 邮件管理页交互逻辑 ====================
+// 小白讲解：这个脚本负责左侧联系人点击、右侧会话加载、底部发邮件三个交互。
+
+let currentSupplierId = null;  // 当前选中的供应商ID
+
+// 页面加载时拉取沟通模板列表，填到AI弹窗的下拉框
+fetch('{{ url_for("admin_templates_api_list") }}')
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const sel = document.getElementById('aiTemplateSelect');
+            data.templates.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name + (t.description ? `（${t.description}）` : '');
+                sel.appendChild(opt);
+            });
+        }
+    });
+
+// 展开/收起分组
+function toggleGroup(headerEl) {
+    const items = headerEl.nextElementSibling;
+    const icon = headerEl.querySelector('i');
+    if (items.style.display === 'none') {
+        items.style.display = '';
+        icon.className = 'bi bi-chevron-down';
+    } else {
+        items.style.display = 'none';
+        icon.className = 'bi bi-chevron-right';
+    }
+}
+
+// 加载某供应商的邮件会话
+function loadSession(supplierId) {
+    currentSupplierId = supplierId;
+
+    // 切换高亮：通过 supplierId 找到对应联系人元素来高亮，不依赖 event 对象
+    // 小白讲解：loadSession 有两种调用场景：
+    //   1. 用户点击联系人调用 → 有 event 对象
+    //   2. 发送邮件成功后刷新调用 → 没有 event 对象
+    // 之前用 event.currentTarget 高亮联系人，场景2会报错"Cannot read properties of undefined"。
+    // 现在改用 data-supplier-id 属性查找联系人元素，两种场景都能正常工作。
+    document.querySelectorAll('.contact-item').forEach(el => el.classList.remove('active'));
+    const contactEl = document.querySelector(`.contact-item[data-supplier-id="${supplierId}"]`);
+    if (contactEl) {
+        contactEl.classList.add('active');
+    }
+
+    // 显示会话区
+    document.getElementById('emptySession').classList.add('d-none');
+    document.getElementById('sessionContent').classList.remove('d-none');
+    document.getElementById('sessionContent').classList.add('d-flex');
+
+    // 清空消息列表，显示加载中
+    document.getElementById('messageList').innerHTML = '<div class="text-center text-muted py-3">加载中...</div>';
+
+    // 调API获取会话数据
+    fetch(`{{ url_for('communications_email_session', supplier_id=0) }}`.replace('/0', '/' + supplierId))
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                renderSession(data.supplier, data.messages);
+                // 清除该联系人的未读红点
+                const contactEl = document.querySelector(`.contact-item[data-supplier-id="${supplierId}"]`);
+                if (contactEl) {
+                    const badge = contactEl.querySelector('.badge.bg-danger');
+                    if (badge) badge.remove();
+                }
+            } else {
+                document.getElementById('messageList').innerHTML = `<div class="text-danger">${data.message}</div>`;
+            }
+        })
+        .catch(err => {
+            document.getElementById('messageList').innerHTML = `<div class="text-danger">加载失败：${err}</div>`;
+        });
+}
+
+// 渲染会话内容
+function renderSession(supplier, messages) {
+    document.getElementById('sessionSupplierName').textContent = supplier.name;
+    document.getElementById('sessionSupplierEmail').textContent = supplier.email || '(无邮箱)';
+
+    // 小白讲解：用 JS 强制设置内联样式，确保 flex 子项能正确收缩。
+    // 关键：从 col-8 到 messageList 整条链路都要设 height:100% + min-height:0，
+    // 否则任何一环按内容撑开都会导致整页溢出。
+    const col8 = document.querySelector('.email-layout-card .col-8');
+    const sessionPanel = document.getElementById('sessionPanel');
+    const sessionContent = document.getElementById('sessionContent');
+    const listEl = document.getElementById('messageList');
+    const composeArea = document.getElementById('composeArea');
+    const sessionHeader = document.getElementById('sessionHeader');
+    // col-8：继承卡片高度
+    if (col8) { col8.style.height = '100%'; col8.style.minHeight = '0'; col8.style.overflow = 'hidden'; }
+    // sessionPanel：继承 col-8 高度
+    if (sessionPanel) { sessionPanel.style.height = '100%'; sessionPanel.style.minHeight = '0'; sessionPanel.style.overflow = 'hidden'; }
+    // 会话内容区：继承 sessionPanel 高度，不溢出
+    if (sessionContent) { sessionContent.style.height = '100%'; sessionContent.style.minHeight = '0'; sessionContent.style.overflow = 'hidden'; }
+    // 消息列表：唯一滚动区，可收缩
+    listEl.style.minHeight = '0';
+    listEl.style.overflowY = 'auto';
+    listEl.style.flexShrink = '1';
+    // 头部和输入区：固定不收缩
+    if (sessionHeader) sessionHeader.style.flexShrink = '0';
+    if (composeArea) composeArea.style.flexShrink = '0';
+
+    if (messages.length === 0) {
+        listEl.innerHTML = '<div class="text-center text-muted py-3">暂无邮件记录</div>';
+        return;
+    }
+
+    // 渲染每条邮件消息（发出的靠右蓝色，收到的靠左绿色）
+    // 小白讲解：修复消息出界问题——给外层flex行和气泡都加 min-width:0，
+    // 正文用 overflow-wrap:anywhere + word-break:break-all 强制长URL/连续字符换行
+    listEl.innerHTML = messages.map(m => {
+        const isOutbound = m.direction === 'outbound';
+        const alignClass = isOutbound ? 'justify-content-end' : 'justify-content-start';
+        const bgClass = isOutbound ? 'bg-primary text-white' : 'bg-light';
+        const arrow = isOutbound ? '↗ 发出' : '↙ 收到';
+        const statusBadge = m.status === 'failed' ? '<span class="badge bg-danger">发送失败</span>' :
+                           m.status === 'sent' ? '<span class="badge bg-success">已送达</span>' : '';
+        const subject = m.subject ? `<div class="fw-bold small" style="overflow-wrap:anywhere;">${escapeHtml(m.subject)}</div>` : '';
+        // 小白讲解：正文渲染保留换行，强制长字符串换行防止出界
+        // 不再给单封邮件设 max-height 和滚动条——整个消息列表统一滚动
+        const bodyHtml = m.content
+            ? `<div class="small mt-1" style="white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all;">${escapeHtml(m.content)}</div>`
+            : '';
+        const time = m.comm_time || m.created_at || '';
+
+        // 小白讲解：渲染附件区域。图片附件显示缩略图（点击可放大），
+        // 其他附件显示文件名图标（无下载链接，因为非图片文件已删除）。
+        // 图片保留在 uploads 目录，通过 /communications/attachment/<id> 访问。
+        let attachmentsHtml = '';
+        if (m.attachments && m.attachments.length > 0) {
+            attachmentsHtml = '<div class="d-flex flex-wrap gap-2 mt-2">';
+            m.attachments.forEach(att => {
+                if (att.is_image == 1) {
+                    // 图片：缩略图，点击用新窗口打开大图
+                    attachmentsHtml += `
+                        <a href="/communications/attachment/${att.id}" target="_blank" class="d-block">
+                            <img src="/communications/attachment/${att.id}"
+                                 style="max-width:120px; max-height:120px; object-fit:cover; border-radius:4px; border:1px solid rgba(0,0,0,0.1);"
+                                 alt="${escapeHtml(att.original_filename)}"
+                                 title="${escapeHtml(att.original_filename)}">
+                        </a>`;
+                } else {
+                    // 非图片：显示文件名图标（文件已删除，仅显示文件名）
+                    attachmentsHtml += `
+                        <span class="badge bg-light text-dark border d-inline-flex align-items-center" style="font-size:0.7rem;">
+                            <i class="bi bi-file-earmark me-1"></i>${escapeHtml(att.original_filename)}
+                        </span>`;
+                }
+            });
+            attachmentsHtml += '</div>';
+        }
+
+        return `
+            <div class="d-flex ${alignClass} mb-3" style="min-width:0;" data-msg-id="${m.id}">
+                <div class="${bgClass} rounded p-2 position-relative" style="max-width: 75%; min-width:0; overflow-wrap:anywhere;">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="badge ${isOutbound ? 'bg-light text-primary' : 'bg-success text-white'}">${arrow}</span>
+                        <div class="d-flex align-items-center gap-1">
+                            ${statusBadge}
+                            <button class="btn btn-sm p-0 border-0 ${isOutbound ? 'text-white-50' : 'text-muted'}"
+                                    style="font-size:0.7rem; background:transparent;"
+                                    onclick="deleteMessage(${m.id})" title="删除此邮件">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                    ${subject}
+                    ${bodyHtml}
+                    ${attachmentsHtml}
+                    <div class="text-muted mt-1" style="font-size: 0.7rem;">${time}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // 滚动到底部（显示最新邮件）
+    listEl.scrollTop = listEl.scrollHeight;
+
+    // 小白讲解：渲染完消息后，重新设置高度链路并滚动到底部
+    requestAnimationFrame(() => {
+        forceSessionLayout();
+        listEl.scrollTop = listEl.scrollHeight;
+    });
+}
+
+// 删除单条邮件消息
+function deleteMessage(msgId) {
+    if (!confirm('确定删除这条邮件吗？删除后不可恢复。')) return;
+    fetch(`{{ url_for('communications_email_message_delete', msg_id=0) }}`.replace('/0', '/' + msgId), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // 从DOM中移除该消息
+            const msgEl = document.querySelector(`[data-msg-id="${msgId}"]`);
+            if (msgEl) msgEl.remove();
+        } else {
+            alert('删除失败：' + (data.message || '未知错误'));
+        }
+    })
+    .catch(err => alert('请求失败：' + err));
+}
+
+// 小白讲解：显示会话框底部已选附件列表
+function updateComposeAttachments() {
+    const input = document.getElementById('composeAttachments');
+    const listEl = document.getElementById('composeAttachmentList');
+    const files = input.files;
+    if (!files || files.length === 0) {
+        listEl.innerHTML = '';
+        return;
+    }
+    listEl.innerHTML = Array.from(files).map(f => {
+        const sizeKb = (f.size / 1024).toFixed(1);
+        return `<div class="badge bg-light text-dark border me-2 mb-1 py-1 px-2" style="font-size:0.7rem;">
+            <i class="bi bi-file-earmark"></i> ${f.name} <span class="text-muted">(${sizeKb} KB)</span>
+        </div>`;
+    }).join('');
+}
+
+// 发送邮件（支持附件，用 FormData 提交）
+function sendEmail() {
+    if (!currentSupplierId) {
+        alert('请先选择联系人');
+        return;
+    }
+    const subject = document.getElementById('composeSubject').value.trim();
+    const body = document.getElementById('composeBody').value.trim();
+    if (!subject || !body) {
+        alert('主题和正文都不能为空');
+        return;
+    }
+
+    const btn = document.getElementById('sendBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass"></i> 发送中...';
+
+    // 小白讲解：用 FormData 提交，既能传文本又能传附件文件
+    // 注意：用 FormData 时不要手动设 Content-Type，浏览器会自动加上 boundary
+    const formData = new FormData();
+    formData.append('supplier_id', currentSupplierId);
+    formData.append('subject', subject);
+    formData.append('body', body);
+    // 把选中的附件文件都加进去
+    const attachInput = document.getElementById('composeAttachments');
+    if (attachInput.files) {
+        for (const file of attachInput.files) {
+            formData.append('attachments', file);
+        }
+    }
+
+    // 小白讲解：用 AbortController 给 fetch 加超时检测
+    // 后端 SMTP 最坏 60秒×2次重试 = 120 秒，前端给 150 秒兜底
+    // 超过 150 秒自动中止请求，提示用户网络问题
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 150000);
+    // 30 秒后如果还在发送中，提示用户可能是网络问题
+    const hintId = setTimeout(() => {
+        if (btn.disabled) {
+            btn.innerHTML = '<i class="bi bi-hourglass-bottom"></i> 发送中（耗时较长，可能是网络问题）...';
+        }
+    }, 30000);
+
+    fetch('{{ url_for("communications_email_send") }}', {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal
+    })
+    .then(r => r.json())
+    .then(data => {
+        clearTimeout(timeoutId);
+        clearTimeout(hintId);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-send"></i> 发送';
+        if (data.success) {
+            // 清空输入框和附件
+            document.getElementById('composeSubject').value = '';
+            document.getElementById('composeBody').value = '';
+            attachInput.value = '';
+            updateComposeAttachments();
+            // 重新加载会话，显示新邮件
+            loadSession(currentSupplierId);
+        } else {
+            alert('发送失败：' + data.message);
+        }
+    })
+    .catch(err => {
+        clearTimeout(timeoutId);
+        clearTimeout(hintId);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-send"></i> 发送';
+        // 小白讲解：AbortController 超时会抛 AbortError，给用户更友好的提示
+        if (err.name === 'AbortError') {
+            alert('发送超时：连接 Gmail 服务器时间过长，请检查网络/VPN 后重试');
+        } else {
+            alert('请求失败：' + err);
+        }
+    });
+}
+
+// ==================== AI 生成相关函数 ====================
+// 小白讲解：以下函数处理 AI 生成邮件的交互，包括打开弹窗、生成、重新生成、确认填入。
+// 支持多语言：用户可勾选中文/英文/其他，多选时同时生成多版标题和正文。
+let lastAiLogId = null;  // 上次 AI 生成的日志ID，重新生成时传给后端
+let lastAiResult = null; // 上次 AI 生成的完整结果（含多语言版本），确认填入时用
+
+// 语言代码到中文名的映射
+const LANG_LABELS = {zh: '中文', en: '英文', other: '其他语言'};
+
+// 打开 AI 生成弹窗
+function openAiModal() {
+    if (!currentSupplierId) {
+        alert('请先选择联系人');
+        return;
+    }
+    // 重置状态
+    lastAiLogId = null;
+    lastAiResult = null;
+    document.getElementById('aiPrompt').value = '';
+    document.getElementById('aiResultArea').style.display = 'none';
+    document.getElementById('aiLoading').style.display = 'none';
+    // 默认勾选中文
+    document.querySelectorAll('.ai-lang').forEach(cb => cb.checked = (cb.value === 'zh'));
+    // 显示弹窗
+    new bootstrap.Modal(document.getElementById('aiGenerateModal')).show();
+}
+
+// 获取用户勾选的语言列表
+function getSelectedLanguages() {
+    const langs = [];
+    document.querySelectorAll('.ai-lang:checked').forEach(cb => langs.push(cb.value));
+    return langs.length > 0 ? langs : ['zh'];
+}
+
+// 调用 AI 生成回复
+function generateAiReply() {
+    if (!currentSupplierId) {
+        alert('请先选择联系人');
+        return;
+    }
+    const prompt = document.getElementById('aiPrompt').value.trim();
+    const languages = getSelectedLanguages();
+    const templateId = document.getElementById('aiTemplateSelect').value;
+
+    // 显示加载中
+    document.getElementById('aiLoading').style.display = '';
+    document.getElementById('aiResultArea').style.display = 'none';
+    const btn = document.getElementById('generateBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 生成中...';
+
+    fetch('{{ url_for("communications_ai_generate") }}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            supplier_id: currentSupplierId,
+            user_prompt: prompt,
+            prev_log_id: lastAiLogId,  // 重新生成时带上次日志ID
+            languages: languages,       // 用户选的语言列表
+            template_id: templateId ? parseInt(templateId) : null  // 模板ID
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-magic"></i> 生成邮件';
+        document.getElementById('aiLoading').style.display = 'none';
+        if (data.success && data.data) {
+            // 保存完整结果，确认填入时用
+            lastAiResult = data.data;
+            lastAiLogId = data.data.log_id;
+            // 渲染结果区（单语言/多语言不同布局）
+            renderAiResult(data.data, languages);
+            document.getElementById('aiResultArea').style.display = '';
+        } else {
+            alert('生成失败：' + (data.message || '未知错误'));
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-magic"></i> 生成邮件';
+        document.getElementById('aiLoading').style.display = 'none';
+        alert('请求失败：' + err);
+    });
+}
+
+// 渲染 AI 生成结果（单语言/多语言不同布局）
+// 小白讲解：单语言显示一组标题+正文；多语言显示多组，每组带语言标签
+function renderAiResult(data, languages) {
+    const container = document.getElementById('aiResultContainer');
+    if (data.multi && data.versions) {
+        // 多语言：为每种语言生成一个区块
+        container.innerHTML = languages.map(lang => {
+            const v = data.versions[lang] || {subject: '', body: ''};
+            return `
+                <div class="mb-3 border rounded p-2">
+                    <div class="badge bg-secondary mb-2">${LANG_LABELS[lang] || lang}</div>
+                    <div class="mb-2">
+                        <label class="form-label small">标题（${LANG_LABELS[lang] || lang}）</label>
+                        <input type="text" class="form-control ai-subject" data-lang="${lang}" value="${escapeAttr(v.subject)}" readonly>
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label small">正文（${LANG_LABELS[lang] || lang}）</label>
+                        <textarea class="form-control ai-body" data-lang="${lang}" rows="8" readonly>${escapeHtml(v.body)}</textarea>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } else {
+        // 单语言：只有一组标题+正文
+        container.innerHTML = `
+            <div class="mb-2">
+                <label class="form-label small">生成的标题</label>
+                <input type="text" class="form-control ai-subject" data-lang="${languages[0]}" value="${escapeAttr(data.subject || '')}" readonly>
+            </div>
+            <div class="mb-2">
+                <label class="form-label small">生成的正文</label>
+                <textarea class="form-control ai-body" data-lang="${languages[0]}" rows="8" readonly>${escapeHtml(data.body || '')}</textarea>
+            </div>
+        `;
+    }
+}
+
+// 重新生成（保留提示词和语言选择，带上次结果作为错误示例）
+function regenerateAi() {
+    generateAiReply();
+}
+
+// 确认填入：把 AI 生成的标题和正文填入会话框输入区
+// 小白讲解：单语言直接填入；多语言把各语言版本用分隔线拼接成一封邮件
+function acceptAiResult() {
+    if (!lastAiResult) {
+        alert('生成内容为空');
+        return;
+    }
+
+    let subject, body;
+    if (lastAiResult.multi && lastAiResult.versions) {
+        // 多语言：标题用各语言标题拼接，正文用各语言正文拼接（用分隔线分开）
+        const langs = Object.keys(lastAiResult.versions);
+        subject = langs.map(l => lastAiResult.versions[l].subject).filter(s => s).join(' / ');
+        body = langs.map(l => {
+            const v = lastAiResult.versions[l];
+            return `【${LANG_LABELS[l] || l}】\n${v.body}`;
+        }).filter(b => b).join('\n\n——————\n\n');
+    } else {
+        // 单语言
+        subject = lastAiResult.subject || '';
+        body = lastAiResult.body || '';
+    }
+
+    if (!subject || !body) {
+        alert('生成内容为空');
+        return;
+    }
+    // 填入会话框
+    document.getElementById('composeSubject').value = subject;
+    document.getElementById('composeBody').value = body;
+    // 标记本次生成已采纳
+    if (lastAiLogId) {
+        fetch('{{ url_for("communications_ai_accept") }}', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({log_id: lastAiLogId})
+        });
+    }
+    // 关闭弹窗
+    bootstrap.Modal.getInstance(document.getElementById('aiGenerateModal')).hide();
+}
+
+// 搜索功能
+document.getElementById('searchInput').addEventListener('input', function() {
+    const q = this.value.trim().toLowerCase();
+    const items = document.querySelectorAll('.contact-item');
+    items.forEach(item => {
+        const name = item.querySelector('.fw-bold').textContent.toLowerCase();
+        if (q === '' || name.includes(q)) {
+            item.style.display = '';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+});
+
+// HTML转义（防止 XSS）
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// 属性转义（用于 input 的 value 属性，防止引号破坏HTML）
+function escapeAttr(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+</script>
+{% endblock %}

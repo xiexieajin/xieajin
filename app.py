@@ -187,6 +187,117 @@ def _uid_clause(alias=""):
     return (f"AND {alias}user_id = %s", [g.user_id])
 
 
+def _save_uploaded_attachments(files):
+    """
+    把前端上传的附件文件保存到 uploads 目录，返回附件信息列表
+
+    小白讲解：邮件附件保存到 uploads 目录。
+    返回的是字典列表，每个字典包含：file_path（路径）、original_filename（原文件名）、
+    mime_type（MIME类型）、file_size（大小）、is_image（是否图片）。
+    调用方发完邮件后用 _cleanup_attachments 删除非图片附件（图片保留以便会话中查看）。
+
+    参数：files - request.files.getlist(...) 拿到的文件列表
+    返回：附件信息字典列表（没文件则空列表）
+    """
+    import time as _time
+    upload_dir = app.config["UPLOAD_FOLDER"]
+    os.makedirs(upload_dir, exist_ok=True)  # 确保目录存在
+    saved_files = []
+    for f in files:
+        if not f or not f.filename:
+            continue  # 跳过空文件
+        # 用 werkzeug 的安全文件名，防止 ../ 之类的路径穿越攻击
+        from werkzeug.utils import secure_filename
+        safe_name = secure_filename(f.filename) or "attachment"
+        # 加时间戳前缀避免重名
+        unique_name = f"{int(_time.time() * 1000)}_{safe_name}"
+        file_path = os.path.join(upload_dir, unique_name)
+        f.save(file_path)
+
+        # 小白讲解：获取文件MIME类型和大小，判断是否图片
+        # MIME类型从上传文件的mimetype字段取（浏览器根据文件扩展名判断）
+        mime_type = f.mimetype or "application/octet-stream"
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        is_image = 1 if mime_type.startswith("image/") else 0
+
+        saved_files.append({
+            "file_path": file_path,
+            "original_filename": f.filename,
+            "saved_filename": unique_name,
+            "mime_type": mime_type,
+            "file_size": file_size,
+            "is_image": is_image,
+        })
+    return saved_files
+
+
+def _cleanup_attachments(attachments):
+    """
+    发完邮件后删除非图片附件的临时文件（图片保留以便会话中查看）
+
+    小白讲解：附件参数既支持旧的"路径列表"格式（兼容老代码），
+    也支持新的"字典列表"格式（含文件信息）。
+    图片附件保留在 uploads 目录，其他附件删除节省空间。
+    """
+    if not attachments:
+        return
+    import os as _os
+    for item in attachments:
+        # 兼容两种格式：字符串路径（旧）或字典（新）
+        if isinstance(item, str):
+            path = item
+            is_image = False
+        elif isinstance(item, dict):
+            path = item.get("file_path")
+            is_image = item.get("is_image") == 1
+        else:
+            continue
+        # 图片附件保留，其他删除
+        if is_image:
+            continue
+        try:
+            if path and _os.path.exists(path):
+                _os.remove(path)
+        except OSError:
+            pass  # 删除失败就算了，不影响主流程
+
+
+def _save_attachments_to_db(cursor, conn, communication_id, attachments):
+    """
+    把附件信息写入 communication_attachments 表（图片附件可后续查看）
+
+    小白讲解：发送邮件成功后调用这个函数，把附件的文件名、类型等信息存数据库。
+    图片附件的文件保留在 uploads 目录，用户在会话中可以查看图片。
+    非图片附件的文件已删除，但数据库记录仍保留（显示文件名，无下载链接）。
+
+    参数：
+        cursor: 数据库游标
+        conn: 数据库连接
+        communication_id: 关联的沟通记录ID
+        attachments: 附件信息字典列表（来自 _save_uploaded_attachments 的返回值）
+    """
+    from db import now_str
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        cursor.execute("""
+            INSERT INTO communication_attachments
+            (communication_id, original_filename, saved_filename, file_path,
+             mime_type, file_size, is_image, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            communication_id,
+            att.get("original_filename", ""),
+            att.get("saved_filename", ""),
+            att.get("file_path", ""),
+            att.get("mime_type", ""),
+            att.get("file_size", 0),
+            att.get("is_image", 0),
+            now_str(),
+        ))
+    conn.commit()
+
+
 # ==================== 登录/登出 ====================
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -789,11 +900,14 @@ def supplier_create():
               data["main_product"], establish_years, data["establish_date"],
               data["operating_status"], data["has_cross_border_exp"],
               data["source"], now_str(), now_str(), _owner_id))
+        # 小白讲解：先保存刚插入的供应商ID，因为后面的 recalc_requirement_status
+        # 会执行其他SQL（SELECT/UPDATE），会覆盖 cursor.lastrowid，导致取不到ID
+        new_supplier_id = cursor.lastrowid
         # 手动新增了供应商（默认"已寻源待初筛"），需求状态应推进到"寻源中"
         recalc_requirement_status(cursor, data["requirement_id"])
         g.db.commit()
 
-        return redirect(url_for("supplier_detail", id=cursor.lastrowid))
+        return redirect(url_for("supplier_detail", id=new_supplier_id))
 
     # GET请求：显示空表单（加uid过滤，普通用户只能选自己的需求）
     uid_sql, uid_params = _uid_clause()
@@ -824,6 +938,9 @@ def supplier_edit(id):
             "operating_status": request.form.get("operating_status", "存续"),
             "has_cross_border_exp": 1 if request.form.get("has_cross_border_exp") else 0,
             "dev_stage": request.form.get("dev_stage", "已寻源待初筛"),
+            "customs_export_count": int(request.form.get("customs_export_count", 0) or 0),
+            "customs_total_qty": float(request.form.get("customs_total_qty", 0) or 0),
+            "customs_total_amount": float(request.form.get("customs_total_amount", 0) or 0),
         }
 
         if not data["name"]:
@@ -851,11 +968,14 @@ def supplier_edit(id):
             UPDATE suppliers SET
                 name=%s, intro=%s, factory_address=%s, email=%s, phone=%s,
                 main_product=%s, establish_years=%s, establish_date=%s, operating_status=%s,
-                has_cross_border_exp=%s, dev_stage=%s, updated_at=%s
+                has_cross_border_exp=%s, dev_stage=%s,
+                customs_export_count=%s, customs_total_qty=%s, customs_total_amount=%s,
+                updated_at=%s
             WHERE id=%s {uid_sql}
         """, (data["name"], data["intro"], data["factory_address"], data["email"],
               data["phone"], data["main_product"], establish_years, data["establish_date"],
               data["operating_status"], data["has_cross_border_exp"], data["dev_stage"],
+              data["customs_export_count"], data["customs_total_qty"], data["customs_total_amount"],
               now_str(), id, *uid_params))
         # 供应商开发阶段可能被手动改了，重新推断所属需求的状态
         cursor.execute("SELECT requirement_id FROM suppliers WHERE id=%s", (id,))
@@ -1486,7 +1606,19 @@ def ai_save_requirement():
         "required_certs": request.form.get("required_certs", "").strip(),
         "requirement_summary": request.form.get("requirement_summary", "").strip(),
         "customization_req": request.form.get("other_requirements", "").strip(),
+        "hs_code": request.form.get("hs_code", "").strip(),
     }
+
+    # 如果前端没传HS编码，用DeepSeek自动归类
+    if not data["hs_code"]:
+        try:
+            from ai_helper import classify_hs_code
+            data["hs_code"] = classify_hs_code(data["product_name"])
+            if data["hs_code"]:
+                print(f"HS编码自动归类：{data['product_name']} → {data['hs_code']}")
+        except Exception as e:
+            print(f"HS编码自动归异常：{e}")
+            data["hs_code"] = ""
 
     # keywords 是JSON字符串（从前端隐藏域传过来）
     # 小白讲解：前端tojson可能把中文转成了\uXXXX编码，这里做兜底转换还原成中文
@@ -1520,13 +1652,14 @@ def ai_save_requirement():
                 product_aliases=%s, core_functions=%s, material=%s, spec_size=%s,
                 first_purchase_qty=%s, acceptable_moq=%s, min_ship_qty=%s,
                 acceptable_lead_time=%s, target_market=%s, required_certs=%s,
-                requirement_summary=%s, keywords=%s, customization_req=%s, status='寻源中', updated_at=%s
+                requirement_summary=%s, keywords=%s, customization_req=%s,
+                hs_code=%s, status='寻源中', updated_at=%s
             WHERE id=%s {uid_sql}
         """, (data["product_aliases"], data["core_functions"], data["material"],
               data["spec_size"], data["first_purchase_qty"], data["acceptable_moq"],
               data["min_ship_qty"], data["acceptable_lead_time"], data["target_market"],
               data["required_certs"], data["requirement_summary"], keywords_json,
-              data["customization_req"], now_str(), req_id, *uid_params))
+              data["customization_req"], data["hs_code"], now_str(), req_id, *uid_params))
         g.db.commit()
         flash("需求已更新（产品名称已存在，已覆盖更新）！", "success")
         return redirect(url_for("requirement_detail", id=req_id))
@@ -1537,13 +1670,14 @@ def ai_save_requirement():
             (product_name, product_aliases, core_functions, material, spec_size,
              first_purchase_qty, acceptable_moq, min_ship_qty, acceptable_lead_time,
              target_market, required_certs, requirement_summary, keywords, customization_req,
-             status, created_at, updated_at, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '寻源中', %s, %s, %s)
+             hs_code, status, created_at, updated_at, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '寻源中', %s, %s, %s)
         """, (data["product_name"], data["product_aliases"], data["core_functions"],
               data["material"], data["spec_size"], data["first_purchase_qty"],
               data["acceptable_moq"], data["min_ship_qty"], data["acceptable_lead_time"],
               data["target_market"], data["required_certs"], data["requirement_summary"],
-              keywords_json, data["customization_req"], now_str(), now_str(), g.user_id))
+              keywords_json, data["customization_req"], data["hs_code"],
+              now_str(), now_str(), g.user_id))
         g.db.commit()
         flash("需求已确认并保存！可以开始AI搜索供应商了", "success")
         return redirect(url_for("requirement_detail", id=cursor.lastrowid))
@@ -1610,7 +1744,10 @@ def ai_search_suppliers(req_id):
         try:
             from supplier_search import search_suppliers
             keywords = requirement["keywords"] or requirement["product_name"]
-            suppliers = search_suppliers(keywords, requirement["product_name"], progress_callback)
+            hs_code = requirement.get("hs_code", "") or ""
+            if hs_code:
+                print(f"海关搜索使用HS编码：{hs_code}")
+            suppliers = search_suppliers(keywords, requirement["product_name"], progress_callback, hs_code)
 
             saved_count = 0
             for s in suppliers:
@@ -1624,11 +1761,14 @@ def ai_search_suppliers(req_id):
                      supplier_type, contact_status, registered_capital, legal_person,
                      operating_status, establish_years, establish_date, has_cross_border_exp,
                      product_title, product_link, price, moq,
+                     customs_export_count, customs_total_qty, customs_total_amount,
                      created_at, updated_at, user_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '已寻源待初筛',
                             %s,
                             %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s)
+                            %s, %s, %s, %s,
+                            %s, %s, %s,
+                        %s, %s)
                 """, (req_id, s.get("name", ""), s.get("intro", ""),
                       s.get("factory_address", ""), s.get("email", ""),
                       s.get("phone", ""), s.get("main_product", ""),
@@ -1641,6 +1781,9 @@ def ai_search_suppliers(req_id):
                       s.get("has_cross_border_exp", 0),
                       s.get("product_title", ""), s.get("product_link", ""),
                       s.get("price", ""), s.get("moq", ""),
+                      s.get("customs_export_count", 0),
+                      s.get("customs_total_qty", 0),
+                      s.get("customs_total_amount", 0),
                       now_str(), now_str(), user_id))
                 saved_count += 1
             # 新增了供应商（都是"已寻源待初筛"），需求状态应从"需求确认中"推进到"寻源中"
@@ -2286,9 +2429,18 @@ def admin_index():
     config_count = cursor.fetchone()["cnt"]
     cursor.execute("SELECT COUNT(*) as cnt FROM search_platforms WHERE is_enabled=1")
     platform_count = cursor.fetchone()["cnt"]
+
+    # 小白讲解：查邮箱配置状态，用于管理中心首页显示卡片状态徽章
+    email_config = get_email_config()
+    email_configured = bool(email_config and email_config.get("gmail_address"))
+    email_enabled = bool(email_config and email_config.get("is_enabled"))
+    email_address = email_config.get("gmail_address", "") if email_config else ""
+
     return render_template("admin/index.html",
                            user_count=user_count, provider_count=provider_count,
-                           config_count=config_count, platform_count=platform_count)
+                           config_count=config_count, platform_count=platform_count,
+                           email_configured=email_configured, email_enabled=email_enabled,
+                           email_address=email_address)
 
 
 # ---------- 用户管理 ----------
@@ -2618,6 +2770,1081 @@ def admin_platform_edit(id):
     return render_template("admin/platforms/form.html", platform=platform)
 
 
+# ==================== 邮件收发功能 ====================
+# 小白讲解：以下路由处理邮件发送、邮箱配置、待认领邮件三个功能。
+# 邮件核心逻辑在 email_service.py，这里只负责接收网页请求、调用服务、返回页面。
+import email_service
+from email_service import send_email, get_email_config, poll_inbox_once, claim_pending_email, get_inquiry_template
+
+
+@app.route("/suppliers/<int:supplier_id>/send-email", methods=["GET", "POST"])
+@login_required
+def supplier_send_email(supplier_id):
+    """
+    给供应商发邮件 - GET显示发邮件表单，POST调用Gmail SMTP发送
+
+    小白讲解：用户在供应商详情页点"发邮件"按钮，来到这个页面。
+    表单里收件人自动填供应商邮箱，可一键加载询价模板。
+    点发送后，系统连Gmail把邮件发出去，成功后自动写一条沟通记录。
+    """
+    cursor = g.db.cursor()
+    # 查供应商信息（加uid过滤）
+    uid_sql, uid_params = _uid_clause()
+    cursor.execute(f"SELECT * FROM suppliers WHERE id = %s {uid_sql}", (supplier_id, *uid_params))
+    supplier = cursor.fetchone()
+    if not supplier:
+        return "供应商不存在", 404
+
+    # 检查邮箱配置是否启用
+    config = get_email_config()
+
+    if request.method == "POST":
+        # POST：发送邮件
+        to_addr = request.form.get("to_addr", "").strip()
+        subject = request.form.get("subject", "").strip()
+        body = request.form.get("body", "").strip()
+
+        if not to_addr or not subject or not body:
+            flash("收件人、主题、正文都不能为空", "danger")
+            return redirect(url_for("supplier_send_email", supplier_id=supplier_id))
+
+        # 小白讲解：保存用户上传的附件到临时目录，发完邮件后删除
+        attachments = _save_uploaded_attachments(request.files.getlist("attachments"))
+
+        # 调用email_service发送（带附件）
+        success, message, _ = send_email(
+            to_addr=to_addr,
+            subject=subject,
+            body=body,
+            supplier_id=supplier_id,
+            user_id=g.user_id,
+            attachments=attachments,
+        )
+
+        # 无论成功失败，都清理临时附件文件
+        _cleanup_attachments(attachments)
+
+        if success:
+            flash(message, "success")
+        else:
+            flash(message, "danger")
+        return redirect(url_for("supplier_detail", id=supplier_id))
+
+    # GET：显示发邮件表单
+    # 小白讲解：如果URL带?template=1参数，自动加载询价模板到正文
+    load_template = request.args.get("template", "0") == "1"
+    initial_body = get_inquiry_template() if load_template else ""
+
+    return render_template("supplier/send_email.html",
+                           supplier=supplier, config=config,
+                           initial_body=initial_body)
+
+
+@app.route("/suppliers/<int:supplier_id>/send-email/ajax", methods=["POST"])
+@login_required
+def supplier_send_email_ajax(supplier_id):
+    """
+    AJAX方式发送邮件（不刷新页面，前端用fetch调用）
+
+    小白讲解：前端页面用JavaScript调这个接口发送邮件，不用刷新页面。
+    返回JSON格式 {success: true/false, message: "..."}。
+    """
+    cursor = g.db.cursor()
+    uid_sql, uid_params = _uid_clause()
+    cursor.execute(f"SELECT id, email FROM suppliers WHERE id = %s {uid_sql}", (supplier_id, *uid_params))
+    supplier = cursor.fetchone()
+    if not supplier:
+        return jsonify({"success": False, "message": "供应商不存在"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "message": "请求数据为空"}), 400
+
+    to_addr = data.get("to_addr", "").strip()
+    subject = data.get("subject", "").strip()
+    body = data.get("body", "").strip()
+
+    if not to_addr or not subject or not body:
+        return jsonify({"success": False, "message": "收件人、主题、正文都不能为空"})
+
+    success, message, _ = send_email(
+        to_addr=to_addr, subject=subject, body=body,
+        supplier_id=supplier_id, user_id=g.user_id,
+    )
+    return jsonify({"success": success, "message": message})
+
+
+# ==================== 邮件管理（邮箱配置 + 剔除规则，合并到模型与平台管理）====================
+@app.route("/admin/models/email", methods=["GET", "POST"])
+@admin_required
+def admin_models_email():
+    """
+    邮件管理统一页 - 用Tab切换"邮箱配置"和"邮件剔除规则"两个板块
+
+    小白讲解：原来邮箱配置和剔除规则是两个独立页面，分散在管理中心首页。
+    现在合并到「模型与平台管理」下，一个页面用Tab切换，方便集中管理。
+    GET 显示页面，POST 保存邮箱配置（剔除规则的增删改走独立路由）。
+    """
+    cursor = g.db.cursor()
+
+    if request.method == "POST":
+        # POST：保存邮箱配置
+        gmail_address = request.form.get("gmail_address", "").strip()
+        app_password = request.form.get("app_password", "").strip()
+        sender_name = request.form.get("sender_name", "").strip()
+        poll_interval = int(request.form.get("poll_interval", 300))
+        is_enabled = 1 if request.form.get("is_enabled") else 0
+
+        # 小白讲解：email_config表只有一条记录(id=1)，用INSERT ON DUPLICATE KEY UPDATE
+        # 实现存在就更新、不存在就插入（upsert）
+        cursor.execute("""
+            INSERT INTO email_config (id, gmail_address, app_password, sender_name,
+                                       poll_interval, is_enabled, created_at, updated_at)
+            VALUES (1, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                gmail_address = VALUES(gmail_address),
+                app_password = VALUES(app_password),
+                sender_name = VALUES(sender_name),
+                poll_interval = VALUES(poll_interval),
+                is_enabled = VALUES(is_enabled),
+                updated_at = VALUES(updated_at)
+        """, (gmail_address, app_password, sender_name, poll_interval,
+              is_enabled, now_str(), now_str()))
+        g.db.commit()
+
+        flash("邮箱配置已保存", "success")
+        return redirect(url_for("admin_models_email"))
+
+    # GET：显示统一页面（包含邮箱配置表单 + 剔除规则列表）
+    config = get_email_config()
+    # 查所有剔除规则，按优先级升序排列
+    cursor.execute("""
+        SELECT * FROM email_filter_rules
+        ORDER BY priority ASC, id ASC
+    """)
+    rules = cursor.fetchall()
+    return render_template("admin/models/email.html", config=config, rules=rules)
+
+
+# 旧路由保留重定向，避免收藏夹或旧链接失效
+@app.route("/admin/email-config", methods=["GET", "POST"])
+@admin_required
+def admin_email_config():
+    """旧邮箱配置路由 - 重定向到新的合并页"""
+    return redirect(url_for("admin_models_email"), code=301 if request.method == "GET" else 307)
+
+
+@app.route("/admin/email-config/test", methods=["POST"])
+@admin_required
+def admin_email_config_test():
+    """
+    测试发送一封邮件，验证Gmail配置是否正确
+
+    小白讲解：管理员配置完Gmail后，点"测试发送"给自己发一封测试邮件，
+    如果收到说明配置正确，如果失败说明账号或密码有问题。
+    """
+    config = get_email_config()
+    if not config or not config.get("is_enabled"):
+        return jsonify({"success": False, "message": "请先保存并启用邮箱配置"})
+
+    test_addr = request.form.get("test_addr", "").strip() or config.get("gmail_address", "")
+    if not test_addr:
+        return jsonify({"success": False, "message": "请填写测试收件邮箱"})
+
+    # 发一封简单的测试邮件
+    test_subject = "供应商寻源系统 - 邮件测试"
+    test_body = """\
+<div style="font-family: Arial, sans-serif; line-height: 1.8;">
+    <p>这是一封测试邮件。</p>
+    <p>如果您收到此邮件，说明 Gmail 邮箱配置正确，供应商寻源系统可以正常发送邮件。</p>
+    <p style="color: #888; font-size: 12px;">此邮件由系统自动发送，请勿回复。</p>
+</div>
+"""
+    success, message, _ = send_email(
+        to_addr=test_addr, subject=test_subject, body=test_body,
+        supplier_id=None, user_id=g.user_id,
+    )
+    return jsonify({"success": success, "message": message})
+
+
+@app.route("/admin/email-config/poll-now", methods=["POST"])
+@admin_required
+def admin_email_config_poll_now():
+    """
+    手动触发一次IMAP收件（不等轮询间隔）
+
+    小白讲解：管理员想立刻看看有没有新邮件，不用等5分钟轮询，点这个按钮立即收一次。
+    """
+    try:
+        count = poll_inbox_once()
+        return jsonify({"success": True, "message": f"收件完成，本次新增 {count} 封邮件"})
+    except Exception as e:
+        return jsonify({"success": False, "message": f"收件失败：{str(e)}"})
+
+
+# ==================== 待认领邮件 ====================
+@app.route("/pending-emails")
+@login_required
+def pending_email_list():
+    """
+    待认领邮件列表 - 显示匹配不到供应商的邮件，用户手动认领
+
+    小白讲解：供应商换了邮箱回复，或新供应商主动发邮件来，系统按邮箱匹配不到供应商，
+    邮件就出现在这个列表里。用户看到后点"认领"，选择是哪个供应商的回复。
+    """
+    cursor = g.db.cursor()
+    # 查未认领的邮件（is_claimed=0），按收件时间倒序
+    cursor.execute("""
+        SELECT * FROM pending_emails
+        WHERE is_claimed = 0
+        ORDER BY created_at DESC
+    """)
+    pending_emails = cursor.fetchall()
+
+    # 查所有供应商（用于认领时下拉选择）
+    uid_sql, uid_params = _uid_clause()
+    cursor.execute(f"""
+        SELECT id, name, email, phone, main_product
+        FROM suppliers
+        WHERE 1=1 {uid_sql}
+        ORDER BY name
+    """, uid_params)
+    suppliers = cursor.fetchall()
+
+    return render_template("pending_emails.html",
+                           pending_emails=pending_emails, suppliers=suppliers)
+
+
+@app.route("/pending-emails/<int:pending_id>/claim", methods=["POST"])
+@login_required
+def pending_email_claim(pending_id):
+    """
+    认领一封待认领邮件，关联到指定供应商
+
+    小白讲解：用户在待认领邮件列表点"认领"，选择供应商后提交。
+    系统把这封邮件从pending_emails转到communications表，供应商详情页就能看到了。
+    """
+    supplier_id = request.form.get("supplier_id", type=int)
+    if not supplier_id:
+        flash("请选择供应商", "danger")
+        return redirect(url_for("pending_email_list"))
+
+    success, message = claim_pending_email(pending_id, supplier_id, g.user_id)
+    if success:
+        flash(message, "success")
+    else:
+        flash(message, "danger")
+    return redirect(url_for("pending_email_list"))
+
+
+# ==================== 邮件剔除规则管理（管理员）====================
+# 旧路由保留重定向到合并页
+@app.route("/admin/email-filter-rules")
+@admin_required
+def admin_email_filter_rules():
+    """旧剔除规则列表路由 - 重定向到新的合并页"""
+    return redirect(url_for("admin_models_email"))
+
+
+@app.route("/admin/email-filter-rules/cleanup", methods=["POST"])
+@admin_required
+def admin_email_filter_rule_cleanup():
+    """
+    一键清理已入库的应剔除邮件
+
+    小白讲解：剔除规则只对"新拉取的邮件"生效，已经躺在 pending_emails 表里的旧邮件不会自动消失。
+    管理员新增或调整规则后，点这个按钮，系统会扫描 pending_emails 表，把命中剔除规则的旧邮件一次性删掉。
+    """
+    from email_service import _should_filter_email
+    cursor = g.db.cursor()
+    # 查所有未认领的待认领邮件
+    cursor.execute("SELECT id, from_addr, from_name, subject, body_preview FROM pending_emails WHERE is_claimed = 0")
+    rows = cursor.fetchall()
+
+    deleted_ids = []
+    for r in rows:
+        should_filter, _ = _should_filter_email(
+            r["from_addr"], r["from_name"], r["subject"], r.get("body_preview") or ""
+        )
+        if should_filter:
+            deleted_ids.append(r["id"])
+
+    if deleted_ids:
+        placeholders = ",".join(["%s"] * len(deleted_ids))
+        cursor.execute(f"DELETE FROM pending_emails WHERE id IN ({placeholders})", deleted_ids)
+        g.db.commit()
+        flash(f"已清理 {len(deleted_ids)} 封应被剔除的旧邮件", "success")
+    else:
+        flash("没有需要清理的邮件（待认领列表里没有命中剔除规则的邮件）", "info")
+    return redirect(url_for("admin_models_email"))
+
+
+@app.route("/admin/email-filter-rules/add", methods=["POST"])
+@admin_required
+def admin_email_filter_rule_add():
+    """
+    新增一条自定义剔除规则
+
+    小白讲解：管理员填写规则名、检查字段、匹配方式、匹配值后提交。
+    新增的规则默认是自定义规则（is_builtin=0），可以随时删除。
+    """
+    rule_name = request.form.get("rule_name", "").strip()
+    field = request.form.get("field", "").strip()
+    match_type = request.form.get("match_type", "").strip()
+    match_value = request.form.get("match_value", "").strip()
+    priority = request.form.get("priority", type=int, default=100)
+    description = request.form.get("description", "").strip()
+
+    # 参数校验
+    if not rule_name or not field or not match_type or not match_value:
+        flash("规则名称、检查字段、匹配方式、匹配值都不能为空", "danger")
+        return redirect(url_for("admin_email_filter_rules"))
+
+    # 字段白名单校验（防止SQL注入或写错字段名）
+    if field not in ("from_addr", "from_name", "subject", "body"):
+        flash("检查字段非法", "danger")
+        return redirect(url_for("admin_email_filter_rules"))
+    if match_type not in ("contains", "equals", "startswith", "regex"):
+        flash("匹配方式非法", "danger")
+        return redirect(url_for("admin_email_filter_rules"))
+
+    # 优先级范围限制
+    if priority < 1 or priority > 999:
+        priority = 100
+
+    from db import now_str
+    cursor = g.db.cursor()
+    cursor.execute("""
+        INSERT INTO email_filter_rules
+        (rule_name, field, match_type, match_value, action, is_enabled, priority, is_builtin, description, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, 'skip', 1, %s, 0, %s, %s, %s)
+    """, (rule_name, field, match_type, match_value, priority, description, now_str(), now_str()))
+    g.db.commit()
+    flash(f"规则「{rule_name}」已添加", "success")
+    return redirect(url_for("admin_email_filter_rules"))
+
+
+@app.route("/admin/email-filter-rules/<int:rule_id>/toggle", methods=["POST"])
+@admin_required
+def admin_email_filter_rule_toggle(rule_id):
+    """
+    启用/禁用一条剔除规则（点一下切换状态）
+
+    小白讲解：规则不删只禁用，方便以后再启用。内置规则被禁用后也不会丢，可以随时开回来。
+    """
+    from db import now_str
+    cursor = g.db.cursor()
+    # 先查当前状态，然后切换
+    cursor.execute("SELECT is_enabled FROM email_filter_rules WHERE id = %s", (rule_id,))
+    row = cursor.fetchone()
+    if not row:
+        flash("规则不存在", "danger")
+        return redirect(url_for("admin_email_filter_rules"))
+
+    new_status = 0 if row["is_enabled"] else 1
+    cursor.execute(
+        "UPDATE email_filter_rules SET is_enabled = %s, updated_at = %s WHERE id = %s",
+        (new_status, now_str(), rule_id)
+    )
+    g.db.commit()
+    action_text = "已启用" if new_status else "已禁用"
+    flash(f"规则{action_text}", "success")
+    return redirect(url_for("admin_email_filter_rules"))
+
+
+@app.route("/admin/email-filter-rules/<int:rule_id>/delete", methods=["POST"])
+@admin_required
+def admin_email_filter_rule_delete(rule_id):
+    """
+    删除一条自定义剔除规则
+
+    小白讲解：内置规则（is_builtin=1）不能删除，只能禁用，避免误删后无法恢复。
+    自定义规则（is_builtin=0）可以删除。
+    """
+    cursor = g.db.cursor()
+    # 先查是不是内置规则
+    cursor.execute("SELECT is_builtin, rule_name FROM email_filter_rules WHERE id = %s", (rule_id,))
+    row = cursor.fetchone()
+    if not row:
+        flash("规则不存在", "danger")
+        return redirect(url_for("admin_email_filter_rules"))
+
+    if row["is_builtin"]:
+        flash("内置规则不能删除，请使用「禁用」功能", "warning")
+        return redirect(url_for("admin_email_filter_rules"))
+
+    cursor.execute("DELETE FROM email_filter_rules WHERE id = %s", (rule_id,))
+    g.db.commit()
+    flash(f"规则「{row['rule_name']}」已删除", "success")
+    return redirect(url_for("admin_email_filter_rules"))
+
+
+# ==================== 沟通管理模块（邮件管理 + 短信管理 + 待认领邮件）====================
+# 小白讲解：原来"待认领邮件"是独立模块，现在整合到"沟通管理"下，与邮件管理、短信管理并列。
+# 邮件管理是类微信的会话界面，左边联系人列表，右边会话框，可以查看往来邮件并直接回复。
+
+@app.route("/communications")
+@login_required
+def communications_index():
+    """沟通管理首页 - 重定向到邮件管理"""
+    return redirect(url_for("communications_email"))
+
+
+@app.route("/communications/email")
+@login_required
+def communications_email():
+    """
+    邮件管理页 - 类微信会话界面
+
+    小白讲解：左边显示所有有过邮件沟通的供应商（按需求分组，可展开收起），
+    右边显示选中供应商的邮件往来记录。可以在这里直接回复邮件。
+    顶部有搜索框和新建联系人按钮。
+    """
+    cursor = g.db.cursor()
+    uid_sql, uid_params = _uid_clause()
+
+    # 查所有有过邮件沟通的供应商，按最后沟通时间降序
+    # 小白讲解：关联 communications 表找有邮件记录的供应商，
+    # 同时统计每个供应商的未读邮件数（is_read=0 且 direction=inbound）
+    cursor.execute(f"""
+        SELECT s.id, s.name, s.email, s.main_product, s.requirement_id,
+               s.product_title,
+               (SELECT MAX(comm_time) FROM communications
+                WHERE supplier_id = s.id AND channel = '邮件') AS last_comm_time,
+               (SELECT COUNT(*) FROM communications
+                WHERE supplier_id = s.id AND channel = '邮件'
+                  AND direction = 'inbound' AND is_read = 0) AS unread_count,
+               (SELECT COUNT(*) FROM communications
+                WHERE supplier_id = s.id AND channel = '邮件') AS total_count
+        FROM suppliers s
+        WHERE 1=1 {uid_sql}
+          AND EXISTS (
+              SELECT 1 FROM communications c
+              WHERE c.supplier_id = s.id AND c.channel = '邮件'
+          )
+        ORDER BY last_comm_time DESC
+    """, uid_params)
+    contacts = cursor.fetchall()
+
+    # 查每个联系人对应的需求名称和状态（用于左侧分组和归档）
+    req_ids = [c["requirement_id"] for c in contacts if c["requirement_id"]]
+    requirements_map = {}
+    if req_ids:
+        placeholders = ",".join(["%s"] * len(set(req_ids)))
+        cursor.execute(f"""
+            SELECT id, product_name, status FROM requirements WHERE id IN ({placeholders})
+        """, list(set(req_ids)))
+        requirements_map = {r["id"]: {"product_name": r["product_name"], "status": r["status"]} for r in cursor.fetchall()}
+
+    # 给每个联系人加上需求名称、分组名，并区分活跃/归档
+    active_contacts = []
+    archived_contacts = []
+    for c in contacts:
+        req_info = requirements_map.get(c["requirement_id"], {})
+        c["requirement_name"] = req_info.get("product_name", "")
+        c["requirement_status"] = req_info.get("status", "")
+        c["group_name"] = c["requirement_name"] or c["main_product"] or "未分类"
+        # 需求状态为"已完成"的联系人进入归档区
+        if c["requirement_status"] == "已完成":
+            archived_contacts.append(c)
+        else:
+            active_contacts.append(c)
+
+    return render_template("communications/email.html",
+                           contacts=active_contacts,
+                           archived_contacts=archived_contacts,
+                           email_config=get_email_config())
+
+
+@app.route("/communications/email/session/<int:supplier_id>")
+@login_required
+def communications_email_session(supplier_id):
+    """
+    获取某供应商的邮件会话数据（JSON API）
+
+    小白讲解：前端用户点击左侧联系人后，用 JavaScript 调这个接口，
+    拿到该供应商所有邮件往来记录，渲染到右侧会话框。
+    同时把这个供应商的未读邮件标记为已读。
+    """
+    cursor = g.db.cursor()
+    uid_sql, uid_params = _uid_clause()
+
+    # 校验供应商归属
+    cursor.execute(f"SELECT id, name, email FROM suppliers WHERE id = %s {uid_sql}",
+                   (supplier_id, *uid_params))
+    supplier = cursor.fetchone()
+    if not supplier:
+        return jsonify({"success": False, "message": "供应商不存在"}), 404
+
+    # 查该供应商所有邮件记录，按时间正序（旧→新，方便会话展示）
+    cursor.execute("""
+        SELECT id, channel, content, subject, direction, status, is_read,
+               comm_time, created_at, external_id
+        FROM communications
+        WHERE supplier_id = %s AND channel = '邮件'
+        ORDER BY comm_time ASC, id ASC
+    """, (supplier_id,))
+    messages = cursor.fetchall()
+
+    # 小白讲解：查出每条邮件的附件信息，组装成字典方便前端展示图片附件。
+    # 前端渲染时，图片附件显示缩略图（点击放大），其他附件显示文件名。
+    if messages:
+        msg_ids = [m["id"] for m in messages]
+        placeholders = ",".join(["%s"] * len(msg_ids))
+        cursor.execute(f"""
+            SELECT id, communication_id, original_filename, mime_type, file_size, is_image
+            FROM communication_attachments
+            WHERE communication_id IN ({placeholders})
+        """, msg_ids)
+        all_attachments = cursor.fetchall()
+        # 按通信ID分组
+        att_map = {}
+        for att in all_attachments:
+            att_map.setdefault(att["communication_id"], []).append(att)
+        # 挂到每条邮件上
+        for m in messages:
+            m["attachments"] = att_map.get(m["id"], [])
+
+    # 标记该供应商的未读邮件为已读
+    cursor.execute("""
+        UPDATE communications
+        SET is_read = 1
+        WHERE supplier_id = %s AND channel = '邮件' AND direction = 'inbound' AND is_read = 0
+    """, (supplier_id,))
+    g.db.commit()
+
+    return jsonify({
+        "success": True,
+        "supplier": supplier,
+        "messages": messages
+    })
+
+
+@app.route("/communications/email/send", methods=["POST"])
+@login_required
+def communications_email_send():
+    """
+    在邮件管理会话界面直接发送邮件（AJAX）
+
+    小白讲解：用户在右侧会话框底部输入主题和正文，点发送，
+    系统调用 Gmail SMTP 发送邮件，成功后写入 communications 表，
+    前端不刷新页面，直接把新邮件追加到会话框。
+    """
+    cursor = g.db.cursor()
+    uid_sql, uid_params = _uid_clause()
+
+    # 小白讲解：会话框发送支持附件，所以改用 FormData（multipart/form-data）提交。
+    # 前端用 FormData 把主题、正文、供应商ID、附件一起发过来。
+    # 同时兼容旧的 JSON 提交方式（无附件时仍可用JSON）。
+    if request.content_type and "application/json" in request.content_type:
+        data = request.get_json() or {}
+        supplier_id = data.get("supplier_id")
+        subject = (data.get("subject") or "").strip()
+        body = (data.get("body") or "").strip()
+        attachments = []
+    else:
+        supplier_id = request.form.get("supplier_id")
+        subject = (request.form.get("subject") or "").strip()
+        body = (request.form.get("body") or "").strip()
+        # 保存上传的附件
+        attachments = _save_uploaded_attachments(request.files.getlist("attachments"))
+
+    if not supplier_id or not subject or not body:
+        _cleanup_attachments(attachments)
+        return jsonify({"success": False, "message": "供应商、主题、正文都不能为空"})
+
+    # 校验供应商
+    cursor.execute(f"SELECT id, email, name FROM suppliers WHERE id = %s {uid_sql}",
+                   (supplier_id, *uid_params))
+    supplier = cursor.fetchone()
+    if not supplier:
+        _cleanup_attachments(attachments)
+        return jsonify({"success": False, "message": "供应商不存在"})
+
+    if not supplier["email"]:
+        _cleanup_attachments(attachments)
+        return jsonify({"success": False, "message": "该供应商没有邮箱地址"})
+
+    # 调用 email_service 发送（带附件）
+    # 小白讲解：send_email 返回3个值：成功标志、消息、沟通记录ID
+    success, message, comm_id = send_email(
+        to_addr=supplier["email"],
+        subject=subject,
+        body=body,
+        supplier_id=supplier_id,
+        user_id=g.user_id,
+        attachments=attachments,
+    )
+
+    # 发送成功且有附件：把附件信息存数据库（图片附件可在会话中查看）
+    if success and comm_id and attachments:
+        _save_attachments_to_db(cursor, g.db, comm_id, attachments)
+
+    # 发送完清理临时附件（图片附件保留，其他删除）
+    _cleanup_attachments(attachments)
+
+    return jsonify({"success": success, "message": message})
+
+
+@app.route("/communications/attachment/<int:attachment_id>")
+@login_required
+def communications_attachment_view(attachment_id):
+    """
+    查看邮件附件（图片直接显示，其他文件下载）
+
+    小白讲解：会话中图片附件要能查看，需要这个接口把 uploads 目录的文件返回给浏览器。
+    前端 <img src="/communications/attachment/123"> 就能直接显示图片。
+    非图片文件会触发下载。
+    """
+    cursor = g.db.cursor()
+    cursor.execute("""
+        SELECT id, original_filename, file_path, mime_type, is_image
+        FROM communication_attachments WHERE id = %s
+    """, (attachment_id,))
+    att = cursor.fetchone()
+    if not att:
+        return "附件不存在", 404
+
+    import os as _os
+    if not att["file_path"] or not _os.path.exists(att["file_path"]):
+        return "附件文件已删除", 404
+
+    # 小白讲解：send_file 会读取文件并返回给浏览器，inline 表示在线显示（图片直接打开）
+    from flask import send_file
+    return send_file(
+        att["file_path"],
+        mimetype=att["mime_type"] or "application/octet-stream",
+        as_attachment=not bool(att["is_image"]),  # 图片在线显示，其他文件下载
+        download_name=att["original_filename"] or "attachment",
+    )
+
+
+@app.route("/communications/email/search")
+@login_required
+def communications_email_search():
+    """
+    搜索邮件（模糊匹配标题、供应商名称、正文内容）
+
+    小白讲解：前端搜索框输入关键字后，实时调这个接口，
+    返回匹配的邮件列表，前端高亮显示匹配的联系人。
+    """
+    cursor = g.db.cursor()
+    uid_sql, uid_params = _uid_clause()
+    q = request.args.get("q", "").strip()
+
+    if not q:
+        return jsonify({"success": True, "results": []})
+
+    like_q = f"%{q}%"
+    # 搜索 communications 的 subject/content，关联 suppliers 的 name
+    cursor.execute(f"""
+        SELECT DISTINCT c.supplier_id, s.name AS supplier_name, s.email,
+               s.main_product, s.requirement_id, s.product_title
+        FROM communications c
+        JOIN suppliers s ON c.supplier_id = s.id
+        WHERE 1=1 {uid_sql}
+          AND c.channel = '邮件'
+          AND (c.subject LIKE %s OR c.content LIKE %s OR s.name LIKE %s OR s.main_product LIKE %s)
+        ORDER BY c.comm_time DESC
+        LIMIT 50
+    """, (*uid_params, like_q, like_q, like_q, like_q))
+    results = cursor.fetchall()
+
+    return jsonify({
+        "success": True,
+        "results": results
+    })
+
+
+@app.route("/communications/email/new", methods=["GET", "POST"])
+@login_required
+def communications_email_new():
+    """
+    新建联系人 + 群发邮件
+
+    小白讲解：
+    GET 不带参数：显示供应商选择弹窗页（未进行邮件沟通且不是"未通过初筛"的供应商）
+    GET 带 ?ids=1,2,3：显示群发邮件表单（给选中的多个供应商发邮件）
+    POST：发送群发邮件，给每个供应商都发一封，各自创建一条 communications 记录
+    """
+    cursor = g.db.cursor()
+    uid_sql, uid_params = _uid_clause()
+
+    if request.method == "POST":
+        # POST：群发邮件
+        supplier_ids = request.form.get("supplier_ids", "")
+        subject = request.form.get("subject", "").strip()
+        body = request.form.get("body", "").strip()
+
+        if not supplier_ids or not subject or not body:
+            flash("收件人、主题、正文都不能为空", "danger")
+            return redirect(url_for("communications_email_new"))
+
+        # 解析供应商ID列表
+        try:
+            id_list = [int(x) for x in supplier_ids.split(",") if x.strip()]
+        except ValueError:
+            flash("供应商ID格式错误", "danger")
+            return redirect(url_for("communications_email_new"))
+
+        if not id_list:
+            flash("请至少选择一个供应商", "danger")
+            return redirect(url_for("communications_email_new"))
+
+        # 查这些供应商
+        placeholders = ",".join(["%s"] * len(id_list))
+        cursor.execute(f"""
+            SELECT id, name, email FROM suppliers
+            WHERE id IN ({placeholders}) {uid_sql}
+        """, (*id_list, *uid_params))
+        suppliers = cursor.fetchall()
+
+        if not suppliers:
+            flash("未找到有效的供应商", "danger")
+            return redirect(url_for("communications_email_new"))
+
+        # 小白讲解：保存群发邮件的附件，所有供应商共用同一份附件
+        attachments = _save_uploaded_attachments(request.files.getlist("attachments"))
+
+        # 逐个发送邮件（每个供应商都带同样的附件）
+        success_count = 0
+        fail_count = 0
+        fail_list = []
+        for s in suppliers:
+            if not s["email"]:
+                fail_count += 1
+                fail_list.append(f"{s['name']}（无邮箱）")
+                continue
+            success, msg, _ = send_email(
+                to_addr=s["email"],
+                subject=subject,
+                body=body,
+                supplier_id=s["id"],
+                user_id=g.user_id,
+                attachments=attachments,
+            )
+            if success:
+                success_count += 1
+            else:
+                fail_count += 1
+                fail_list.append(f"{s['name']}（{msg}）")
+
+        # 群发完成，清理临时附件文件
+        _cleanup_attachments(attachments)
+
+        if fail_count == 0:
+            flash(f"群发成功，共发送 {success_count} 封邮件", "success")
+        else:
+            flash(f"成功 {success_count} 封，失败 {fail_count} 封：{'；'.join(fail_list)}", "warning")
+        return redirect(url_for("communications_email"))
+
+    # GET：判断是显示选择页还是群发表单
+    ids_param = request.args.get("ids", "").strip()
+    if ids_param:
+        # 已选择供应商，显示群发邮件表单
+        try:
+            id_list = [int(x) for x in ids_param.split(",") if x.strip()]
+        except ValueError:
+            flash("供应商ID格式错误", "danger")
+            return redirect(url_for("communications_email_new"))
+
+        placeholders = ",".join(["%s"] * len(id_list))
+        cursor.execute(f"""
+            SELECT s.id, s.name, s.email, s.main_product, s.product_title,
+                   (SELECT quality_score FROM screenings WHERE supplier_id = s.id ORDER BY id DESC LIMIT 1) AS score
+            FROM suppliers s
+            WHERE s.id IN ({placeholders}) {uid_sql}
+            ORDER BY s.name
+        """, (*id_list, *uid_params))
+        selected_suppliers = cursor.fetchall()
+
+        return render_template("communications/email_new.html",
+                               selected_suppliers=selected_suppliers,
+                               email_config=get_email_config(),
+                               initial_body=get_inquiry_template())
+    else:
+        # 显示供应商选择页
+        # 查未进行邮件沟通且不是"未通过初筛"的供应商
+        # 小白讲解：LEFT JOIN requirements 表带出需求产品名称，用于前端按需求分组展示
+        cursor.execute(f"""
+            SELECT s.id, s.name, s.email, s.main_product, s.product_title,
+                   s.requirement_id, s.dev_stage,
+                   r.product_name AS requirement_name,
+                   (SELECT quality_score FROM screenings WHERE supplier_id = s.id ORDER BY id DESC LIMIT 1) AS score
+            FROM suppliers s
+            LEFT JOIN requirements r ON s.requirement_id = r.id
+            WHERE 1=1 {uid_sql}
+              AND s.dev_stage != '未通过初筛'
+              AND s.email != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM communications c
+                  WHERE c.supplier_id = s.id AND c.channel = '邮件'
+              )
+            ORDER BY r.product_name ASC, s.name ASC
+        """, uid_params)
+        available_suppliers = cursor.fetchall()
+
+        return render_template("communications/email_new.html",
+                               available_suppliers=available_suppliers,
+                               email_config=get_email_config())
+
+
+@app.route("/communications/sms")
+@login_required
+def communications_sms():
+    """短信管理（占位页，暂未开发）"""
+    return render_template("communications/sms.html")
+
+
+@app.route("/communications/pending")
+@login_required
+def communications_pending():
+    """待认领邮件 - 重定向到原 /pending-emails 路由"""
+    return redirect(url_for("pending_email_list"))
+
+
+# ==================== 沟通模板管理（管理员）====================
+# 小白讲解：管理员可以在这里新建、编辑、删除邮件模板，AI 生成邮件时可选用模板。
+
+@app.route("/admin/models/templates")
+@admin_required
+def admin_templates_list():
+    """沟通模板列表页"""
+    cursor = g.db.cursor()
+    cursor.execute("SELECT * FROM communication_templates ORDER BY id DESC")
+    templates = cursor.fetchall()
+    return render_template("admin/models/templates.html", templates=templates)
+
+
+@app.route("/admin/models/templates/new", methods=["GET", "POST"])
+@app.route("/admin/models/templates/<int:template_id>/edit", methods=["GET", "POST"])
+@admin_required
+def admin_template_edit(template_id=None):
+    """新建/编辑模板"""
+    cursor = g.db.cursor()
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        subject_template = request.form.get("subject_template", "").strip()
+        body_template = request.form.get("body_template", "").strip()
+        description = request.form.get("description", "").strip()
+        scene = request.form.get("scene", "general").strip()
+        is_enabled = 1 if request.form.get("is_enabled") else 0
+
+        if not name:
+            flash("模板名称不能为空", "danger")
+            return redirect(request.url)
+
+        if template_id:
+            cursor.execute("""
+                UPDATE communication_templates
+                SET name=%s, subject_template=%s, body_template=%s,
+                    description=%s, scene=%s, is_enabled=%s, updated_at=%s
+                WHERE id=%s
+            """, (name, subject_template, body_template, description, scene,
+                  is_enabled, now_str(), template_id))
+            flash("模板已更新", "success")
+        else:
+            cursor.execute("""
+                INSERT INTO communication_templates
+                (name, subject_template, body_template, description, scene,
+                 is_enabled, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (name, subject_template, body_template, description, scene,
+                  is_enabled, now_str(), now_str()))
+            flash("模板已创建", "success")
+        g.db.commit()
+        return redirect(url_for("admin_templates_list"))
+
+    # GET：显示表单
+    template = None
+    if template_id:
+        cursor.execute("SELECT * FROM communication_templates WHERE id=%s", (template_id,))
+        template = cursor.fetchone()
+        if not template:
+            flash("模板不存在", "danger")
+            return redirect(url_for("admin_templates_list"))
+
+    return render_template("admin/models/template_form.html", template=template)
+
+
+@app.route("/admin/models/templates/<int:template_id>/delete", methods=["POST"])
+@admin_required
+def admin_template_delete(template_id):
+    """删除模板"""
+    cursor = g.db.cursor()
+    cursor.execute("SELECT name FROM communication_templates WHERE id=%s", (template_id,))
+    row = cursor.fetchone()
+    if not row:
+        flash("模板不存在", "danger")
+        return redirect(url_for("admin_templates_list"))
+
+    cursor.execute("DELETE FROM communication_templates WHERE id=%s", (template_id,))
+    g.db.commit()
+    flash(f"模板「{row['name']}」已删除", "success")
+    return redirect(url_for("admin_templates_list"))
+
+
+@app.route("/admin/models/templates/api/list")
+@login_required
+def admin_templates_api_list():
+    """获取启用的模板列表（前端 AI 生成时下拉选择用）"""
+    cursor = g.db.cursor()
+    cursor.execute("""
+        SELECT id, name, subject_template, body_template, scene, description
+        FROM communication_templates
+        WHERE is_enabled = 1
+        ORDER BY scene, name
+    """)
+    return jsonify({"success": True, "templates": cursor.fetchall()})
+
+
+# ==================== AI系统提示词配置 ====================
+# 小白讲解：以下2个路由专门给"沟通模板管理页面"里的 AI 提示词编辑卡片用。
+# GET 取出来填到文本框里，POST 把改完的内容保存回数据库。
+
+@app.route("/admin/models/ai-prompt", methods=["GET"])
+@login_required
+def admin_ai_prompt_get():
+    """获取所有AI提示词（前端打开页面时调用，把内容填到编辑框）"""
+    cursor = g.db.cursor()
+    cursor.execute("SELECT setting_key, setting_value, description, updated_at FROM ai_prompt_settings ORDER BY id")
+    rows = cursor.fetchall()
+    if not rows:
+        return jsonify({"success": False, "message": "提示词配置不存在，请重启服务以初始化"})
+    prompts = {r["setting_key"]: {"value": r["setting_value"], "description": r["description"], "updated_at": r["updated_at"]} for r in rows}
+    return jsonify({"success": True, "prompts": prompts})
+
+
+@app.route("/admin/models/ai-prompt", methods=["POST"])
+@login_required
+def admin_ai_prompt_save():
+    """保存AI提示词（前端点"保存"按钮时调用，写入数据库立即生效）"""
+    from datetime import datetime
+    data = request.get_json()
+    if not data or "key" not in data or "value" not in data:
+        return jsonify({"success": False, "message": "缺少参数"}), 400
+    key = data["key"]
+    value = data["value"].strip()
+    if not value:
+        return jsonify({"success": False, "message": "提示词不能为空"}), 400
+    cursor = g.db.cursor()
+    cursor.execute("""
+        UPDATE ai_prompt_settings SET setting_value = %s, updated_at = %s
+        WHERE setting_key = %s
+    """, (value, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), key))
+    g.db.commit()
+    return jsonify({"success": True})
+
+
+# ==================== AI 生成邮件 ====================
+# 小白讲解：以下 4 个路由处理 AI 生成邮件的请求，对应 3 个场景 + 1 个重新生成。
+# 所有路由返回 JSON，前端用 fetch 调用，不刷新页面。
+
+@app.route("/communications/email/ai-generate", methods=["POST"])
+@login_required
+def communications_ai_generate():
+    """
+    会话回复场景：AI 生成回复邮件
+
+    小白讲解：用户在邮件管理会话框点"AI生成"时调用。
+    读取该供应商的沟通记录，结合用户提示词生成回复。
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "message": "请求数据为空"}), 400
+
+    supplier_id = data.get("supplier_id")
+    user_prompt = data.get("user_prompt", "")
+    prev_log_id = data.get("prev_log_id")
+    languages = data.get("languages") or ["zh"]
+    template_id = data.get("template_id")
+
+    if not supplier_id:
+        return jsonify({"success": False, "message": "缺少供应商ID"})
+
+    from communication_ai import generate_session_reply
+    success, result = generate_session_reply(supplier_id, user_prompt, prev_log_id, languages, template_id)
+    return jsonify({"success": success, "message": result if not success else "",
+                    "data": result if success else None})
+
+
+@app.route("/communications/email/ai-generate-send", methods=["POST"])
+@login_required
+def communications_ai_generate_send():
+    """
+    群发/单发场景：AI 生成询价邮件
+
+    小白讲解：用户在群发邮件或单发邮件界面点"AI生成"时调用。
+    读取产品需求数据，结合选用的模板生成邮件。
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "message": "请求数据为空"}), 400
+
+    supplier_ids = data.get("supplier_ids", [])
+    user_prompt = data.get("user_prompt", "")
+    scene = data.get("scene", "bulk_send")
+    template_id = data.get("template_id")
+    prev_log_id = data.get("prev_log_id")
+    languages = data.get("languages") or ["zh"]
+
+    if not supplier_ids:
+        return jsonify({"success": False, "message": "请至少选择一个供应商"})
+
+    from communication_ai import generate_bulk_or_single
+    success, result = generate_bulk_or_single(
+        supplier_ids=supplier_ids,
+        user_prompt=user_prompt,
+        scene=scene,
+        template_id=template_id,
+        prev_log_id=prev_log_id,
+        languages=languages,
+    )
+    return jsonify({"success": success, "message": result if not success else "",
+                    "data": result if success else None})
+
+
+@app.route("/communications/email/ai-accept", methods=["POST"])
+@login_required
+def communications_ai_accept():
+    """标记 AI 生成结果为已采纳"""
+    data = request.get_json()
+    if not data or not data.get("log_id"):
+        return jsonify({"success": False, "message": "缺少 log_id"}), 400
+
+    from communication_ai import accept_generation
+    accept_generation(data["log_id"])
+    return jsonify({"success": True})
+
+
+@app.route("/communications/email/message/<int:msg_id>/delete", methods=["POST"])
+@login_required
+def communications_email_message_delete(msg_id):
+    """
+    删除单条邮件沟通记录
+
+    小白讲解：用户在会话框中删除没发出去或无意义的邮件，
+    删除后该记录不再显示，AI生成时也不会读取到。
+    """
+    cursor = g.db.cursor()
+    uid_sql, uid_params = _uid_clause()
+
+    # 校验该记录归属当前用户
+    cursor.execute(f"""
+        SELECT c.id, c.supplier_id FROM communications c
+        JOIN suppliers s ON c.supplier_id = s.id
+        WHERE c.id = %s {uid_sql}
+    """, (msg_id, *uid_params))
+    row = cursor.fetchone()
+    if not row:
+        return jsonify({"success": False, "message": "记录不存在或无权删除"}), 404
+
+    cursor.execute("DELETE FROM communications WHERE id = %s", (msg_id,))
+    g.db.commit()
+    return jsonify({"success": True})
+
+
 # ==================== 健康检查接口（Railway等云平台需要200 OK响应）====================
 @app.route("/health")
 def health():
@@ -2635,6 +3862,14 @@ try:
     model_config.load_model_configs_from_db()
 except Exception as e:
     print(f"[启动] 数据库初始化失败（可能还未配置MySQL）: {e}")
+
+# ==================== 启动邮件接收后台线程 ====================
+# 小白讲解：启动一个后台线程，每隔几分钟连一次Gmail拉未读邮件。
+# 即使邮箱配置没开，线程也会跑（poll_inbox_once会直接返回），等管理员开启配置后自动开始收件。
+try:
+    email_service.start_polling()
+except Exception as e:
+    print(f"[启动] 邮件后台线程启动失败: {e}")
 
 if __name__ == "__main__":
     # 本地开发直接运行 python app.py 时，数据库已在上面初始化过了

@@ -208,6 +208,7 @@ def get_db():
 
 def init_db():
     """初始化数据库：创建所有需要的表（如果表不存在的话）"""
+    from datetime import datetime
     conn = get_db()
     cursor = conn.cursor()
 
@@ -235,6 +236,7 @@ def init_db():
         requirement_summary TEXT,                              -- AI生成的完整需求总结（长文本）
         keywords            TEXT,                              -- AI生成的P0-P3关键词（JSON格式，可能很长）
         status              VARCHAR(50) DEFAULT '需求确认中', -- 状态：需求确认中/寻源中/初筛中/沟通中/已完成
+        hs_code             VARCHAR(20) DEFAULT '',          -- HS编码（DeepSeek自动归类，如9403）
         created_at          TEXT NOT NULL,
         updated_at          TEXT NOT NULL
     )
@@ -269,6 +271,10 @@ def init_db():
         product_link        VARCHAR(1000) DEFAULT '',         -- 产品链接（产品页URL）
         price               VARCHAR(200) DEFAULT '',          -- 价格（如"176.63"或"US$105.00-155.00"）
         moq                 VARCHAR(200) DEFAULT '',          -- 起订量MOQ（如"1件"或"30 Pieces (MOQ)"）
+        -- 海关出口数据字段（topease海关数据搜索返回，用于出口经验评分）
+        customs_export_count INT DEFAULT 0,                   -- 海关出口次数
+        customs_total_qty   DECIMAL(18,2) DEFAULT 0,         -- 海关出口总量（千克/件）
+        customs_total_amount DECIMAL(18,2) DEFAULT 0,        -- 海关出口总金额（美元）
         created_at          TEXT NOT NULL,
         updated_at          TEXT NOT NULL,
         FOREIGN KEY (requirement_id) REFERENCES requirements (id)
@@ -289,6 +295,10 @@ def init_db():
     _add_column_if_not_exists(cursor, "suppliers", "product_link", "VARCHAR(1000) DEFAULT ''")
     _add_column_if_not_exists(cursor, "suppliers", "price", "VARCHAR(200) DEFAULT ''")
     _add_column_if_not_exists(cursor, "suppliers", "moq", "VARCHAR(200) DEFAULT ''")
+    # 海关出口数据字段（topease海关数据搜索返回，用于出口经验评分）
+    _add_column_if_not_exists(cursor, "suppliers", "customs_export_count", "INT DEFAULT 0")
+    _add_column_if_not_exists(cursor, "suppliers", "customs_total_qty", "DECIMAL(18,2) DEFAULT 0")
+    _add_column_if_not_exists(cursor, "suppliers", "customs_total_amount", "DECIMAL(18,2) DEFAULT 0")
 
     # 清理已废弃的旧字段（price_moq已拆分成price和moq两个独立字段，需删除旧的合并字段）
     _drop_column_if_exists(cursor, "suppliers", "price_moq")
@@ -316,20 +326,41 @@ def init_db():
 
     # ==================== 4. 沟通记录表 ====================
     # 对应工作流的"阶段4-供应商开发"，记录每次沟通内容和结论
+    # 小白讲解：supplier_id 允许为 NULL，因为测试邮件或待认领邮件场景下可能没有关联供应商。
+    # 外键约束也去掉，方便测试邮件入库（外键会强制 supplier_id 必须在 suppliers 表存在）。
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS communications (
         id              INT AUTO_INCREMENT PRIMARY KEY,
-        supplier_id     INTEGER NOT NULL,
+        supplier_id     INTEGER,
         channel         VARCHAR(100) DEFAULT '微信/企微',   -- 沟通渠道
         content         VARCHAR(1000) DEFAULT '',            -- 沟通内容
         conclusion      VARCHAR(1000) DEFAULT '',            -- 沟通结论
         next_step       VARCHAR(1000) DEFAULT '',            -- 后续步骤
         comm_time       VARCHAR(1000) DEFAULT '',            -- 沟通时间
         created_at      TEXT NOT NULL,
-        updated_at      TEXT NOT NULL,
-        FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+        updated_at      TEXT NOT NULL
     )
     """)
+
+    # 兼容旧数据库：把已存在的 communications.supplier_id 改成允许 NULL
+    # 小白讲解：旧版表把 supplier_id 设为 NOT NULL 还加了外键，导致测试邮件（无供应商）无法入库。
+    # 这里用 ALTER TABLE 把约束改宽松：允许 NULL，并删掉外键（如果存在）。
+    try:
+        cursor.execute("""
+            SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'communications'
+            AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+        """, (MYSQL_DATABASE,))
+        for fk_row in cursor.fetchall():
+            fk_name = fk_row["CONSTRAINT_NAME"]
+            cursor.execute(f"ALTER TABLE communications DROP FOREIGN KEY {fk_name}")
+    except Exception as e:
+        print(f"[db] 清理 communications 外键时跳过（可能不存在）：{e}")
+
+    try:
+        cursor.execute("ALTER TABLE communications MODIFY COLUMN supplier_id INTEGER NULL")
+    except Exception as e:
+        print(f"[db] 修改 communications.supplier_id 为 NULL 时跳过：{e}")
 
     # ==================== 5. 用户表 ====================
     # 小白讲解：存放系统登录账号，密码用bcrypt加密存储（永不明文）。
@@ -506,6 +537,7 @@ def init_db():
     # ==================== 给现有4张业务表加 user_id 列（实现数据隔离）====================
     # 小白讲解：DEFAULT 1 确保旧数据自动归属给id=1的初始管理员，不报错不丢数据
     _add_column_if_not_exists(cursor, "requirements", "user_id", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_not_exists(cursor, "requirements", "hs_code", "VARCHAR(20) DEFAULT ''")
     _add_column_if_not_exists(cursor, "suppliers", "user_id", "INTEGER NOT NULL DEFAULT 1")
     _add_column_if_not_exists(cursor, "screenings", "user_id", "INTEGER NOT NULL DEFAULT 1")
     _add_column_if_not_exists(cursor, "communications", "user_id", "INTEGER NOT NULL DEFAULT 1")
@@ -523,6 +555,194 @@ def init_db():
         except pymysql.err.OperationalError as e:
             if e.args[0] != 1061:  # 1061=索引已存在，忽略；其他错误抛出
                 raise
+
+    # ==================== 邮件功能扩展：communications表加4个字段 ====================
+    # 小白讲解：接入Gmail邮件收发后，沟通记录需要区分"发出"还是"收到"，还要存邮件主题、
+    # Gmail邮件ID（用于去重，防止同一封邮件重复入库）、发送状态。
+    # direction: outbound=系统发出 / inbound=系统收到（旧数据默认outbound，兼容老记录）
+    # subject: 邮件主题（短信等渠道为空）
+    # external_id: Gmail的MessageID，用于去重（每封Gmail邮件唯一）
+    # status: 发送状态 sent=已发送/delivered=已送达/failed=发送失败（仅outbound有值）
+    _add_column_if_not_exists(cursor, "communications", "direction", "VARCHAR(10) NOT NULL DEFAULT 'outbound'")
+    _add_column_if_not_exists(cursor, "communications", "subject", "VARCHAR(500) DEFAULT ''")
+    _add_column_if_not_exists(cursor, "communications", "external_id", "VARCHAR(200) DEFAULT ''")
+    _add_column_if_not_exists(cursor, "communications", "status", "VARCHAR(20) DEFAULT ''")
+    # 邮件已读标记：0=未读，1=已读。发出的邮件默认已读，收到的邮件默认未读。
+    # 小白讲解：用户在"邮件管理"页面点击某个供应商会话后，系统把该供应商收到的邮件标记为已读，
+    # 联系人列表上的红点未读数字会消失。
+    _add_column_if_not_exists(cursor, "communications", "is_read", "INTEGER NOT NULL DEFAULT 0")
+
+    # 给external_id建索引，加速去重查询（每次收邮件先查这个ID是否已存在）
+    try:
+        cursor.execute("CREATE INDEX idx_communications_external_id ON communications(external_id(100))")
+    except pymysql.err.OperationalError as e:
+        if e.args[0] != 1061:
+            raise
+
+    # ==================== 12. 邮箱配置表 ====================
+    # 小白讲解：存Gmail账号和应用专用密码，管理员在"邮箱配置"页面填写。
+    # 只有一条记录（id=1），更新覆盖即可。密码存明文是因为Gmail应用专用密码本身
+    # 就是16位专用密码（非登录密码），且需要原文发送给SMTP服务器验证。
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS email_config (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        gmail_address   VARCHAR(200) NOT NULL DEFAULT '',   -- Gmail邮箱地址（如 yourname@gmail.com）
+        app_password    VARCHAR(200) NOT NULL DEFAULT '',   -- 16位应用专用密码（非登录密码）
+        sender_name     VARCHAR(100) NOT NULL DEFAULT '',   -- 发件人显示名称（如"XX公司采购部"）
+        poll_interval   INTEGER NOT NULL DEFAULT 300,       -- IMAP轮询间隔（秒，默认5分钟=300秒）
+        is_enabled      INTEGER NOT NULL DEFAULT 0,         -- 是否启用邮件收发（0关/1开）
+        last_poll_time  VARCHAR(30) DEFAULT '',             -- 上次轮询时间（用于显示和排查）
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+    """)
+
+    # ==================== 13. 待认领邮件表 ====================
+    # 小白讲解：供应商回复邮件到你的Gmail，但发件人邮箱匹配不到系统里任何供应商时，
+    # 邮件内容先存这张表。用户在"待认领邮件"页面手动关联到某个供应商后，记录转入
+    # communications表，本表记录删除。
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pending_emails (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        from_addr       VARCHAR(200) NOT NULL DEFAULT '',   -- 发件人邮箱
+        from_name       VARCHAR(200) DEFAULT '',             -- 发件人名称（可能为空）
+        subject         VARCHAR(500) DEFAULT '',             -- 邮件主题
+        body_preview    TEXT,                                -- 正文预览（前500字）
+        external_id     VARCHAR(200) DEFAULT '',             -- Gmail邮件ID（去重用）
+        received_time   VARCHAR(30) DEFAULT '',              -- 收件时间
+        user_id         INTEGER NOT NULL DEFAULT 1,          -- 所属用户（先归管理员，认领后转移）
+        is_claimed      INTEGER NOT NULL DEFAULT 0,          -- 是否已认领（0未认领/1已认领）
+        claimed_supplier_id INTEGER DEFAULT NULL,            -- 认领到的供应商ID
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+    """)
+
+    # 给pending_emails的external_id建索引（去重查询用）
+    try:
+        cursor.execute("CREATE INDEX idx_pending_emails_external_id ON pending_emails(external_id(100))")
+    except pymysql.err.OperationalError as e:
+        if e.args[0] != 1061:
+            raise
+
+    # ==================== 邮件剔除规则表 ====================
+    # 小白讲解：Gmail 收件箱里会混进来很多"不是供应商真实回复"的邮件，
+    # 比如 Google 安全提醒、二步验证码、noreply 类通知邮件。
+    # 这些邮件不该进待认领列表污染用户视野，本表存储剔除规则。
+    # 每条规则检查一个字段（发件人/主题等），命中就跳过入库。
+    # 用户可在「邮件剔除规则」页面自行增删规则，灵活适配新场景。
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS email_filter_rules (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        rule_name       VARCHAR(100) NOT NULL,           -- 规则名称（如"Google安全提醒"）
+        field           VARCHAR(20) NOT NULL,             -- 检查字段：from_addr/from_name/subject/body
+        match_type      VARCHAR(20) NOT NULL,             -- 匹配方式：contains/regex/equals/startswith
+        match_value     VARCHAR(500) NOT NULL,            -- 匹配值（如noreply、验证码、安全提醒）
+        action          VARCHAR(20) NOT NULL DEFAULT 'skip',  -- 动作：skip=跳过入库（标记已读）
+        is_enabled      INTEGER NOT NULL DEFAULT 1,       -- 是否启用（1启用/0禁用）
+        priority        INTEGER NOT NULL DEFAULT 100,     -- 优先级（数字小的先匹配，命中即跳过）
+        is_builtin      INTEGER NOT NULL DEFAULT 0,       -- 是否内置规则（1内置/0自定义），内置规则只能禁用不能删
+        description     VARCHAR(500) DEFAULT '',          -- 规则说明（管理员可看）
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+    """)
+
+    # 给 email_filter_rules 建索引（按启用状态+优先级查询最快）
+    try:
+        cursor.execute("CREATE INDEX idx_filter_rules_enabled ON email_filter_rules(is_enabled, priority)")
+    except pymysql.err.OperationalError as e:
+        if e.args[0] != 1061:
+            raise
+
+    # ==================== 沟通模板表 ====================
+    # 小白讲解：管理员可以新建多个邮件模板（询价模板、跟进模板等），
+    # 模板里支持 {product_name} {supplier_name} 等变量，AI生成邮件时会自动替换。
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS communication_templates (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        name            VARCHAR(100) NOT NULL,           -- 模板名称（如"询价模板"）
+        subject_template VARCHAR(500) NOT NULL DEFAULT '',  -- 标题模板（支持变量）
+        body_template   TEXT,                            -- 正文模板（支持变量）
+        description     VARCHAR(500) DEFAULT '',          -- 模板说明
+        scene           VARCHAR(50) NOT NULL DEFAULT 'general',  -- 适用场景：inquiry/follow_up/negotiation/general
+        is_enabled      INTEGER NOT NULL DEFAULT 1,       -- 是否启用
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+    """)
+
+    # ==================== AI系统设置表 ====================
+    # 小白讲解：存储AI系统提示词等可编辑配置，管理员可在沟通模板管理页面
+    # 直接修改提示词内容，修改后立即生效，不用改代码、不用重启服务。
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ai_prompt_settings (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            setting_key     VARCHAR(100) NOT NULL UNIQUE,
+            setting_value   TEXT,
+            description     VARCHAR(500) DEFAULT '',
+            updated_at      TEXT NOT NULL
+        )
+    """)
+    # 小白讲解：初始化4个AI提示词（系统提示词 + 3个场景默认提示词）
+    _ai_defaults = [
+        ("comm_system_prompt",
+         "你是一位专业的采购沟通助手。你的任务是根据供应商沟通记录和产品需求，生成一封专业、礼貌、清晰的商务邮件。\n\n要求：\n1. 邮件标题简洁明确，包含关键信息（产品名、目的）\n2. 正文结构：称呼 → 开场白 → 核心内容 → 期待回复 → 落款\n3. 语气专业但友好，避免过度客气\n4. 涉及具体参数（价格、MOQ、交期）时保留原数值，不要编造",
+         "系统提示词：定义AI的角色和生成邮件的基本要求，每次生成都必带"),
+        ("prompt_session_reply",
+         "请根据以上沟通记录，生成一封得体的回复邮件。",
+         "会话回复默认提示词：用户在会话框点AI生成且未填写提示词时使用"),
+        ("prompt_bulk_send",
+         "请根据该供应商的产品和需求信息，生成一封首次询价邮件。",
+         "群发邮件默认提示词：群发询价邮件时用户未填写提示词时使用"),
+        ("prompt_single_send",
+         "请根据该供应商的产品和需求信息，生成一封首次询价邮件。",
+         "单发邮件默认提示词：单发询价邮件时用户未填写提示词时使用"),
+    ]
+    for key, value, desc in _ai_defaults:
+        cursor.execute("SELECT COUNT(*) AS cnt FROM ai_prompt_settings WHERE setting_key = %s", (key,))
+        if cursor.fetchone()["cnt"] == 0:
+            cursor.execute("""
+                INSERT INTO ai_prompt_settings (setting_key, setting_value, description, updated_at)
+                VALUES (%s, %s, %s, %s)
+            """, (key, value, desc, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+    # ==================== AI生成记录表 ====================
+    # 小白讲解：记录每次AI生成邮件的结果，用户点"重新生成"时，
+    # 系统把上次生成的不满意结果作为"错误示例"发给AI，让AI避免同样的问题。
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ai_generation_logs (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        user_id         INTEGER NOT NULL DEFAULT 1,
+        scene           VARCHAR(50) NOT NULL,             -- 场景：session_reply/bulk_send/single_send
+        supplier_id     INTEGER,                          -- 关联供应商（群发时为NULL）
+        user_prompt     TEXT,                             -- 用户填写的提示词（可为空）
+        system_prompt   TEXT,                             -- 系统提示词
+        generated_subject VARCHAR(500) DEFAULT '',        -- AI生成的标题
+        generated_body  TEXT,                             -- AI生成的正文
+        is_accepted     INTEGER NOT NULL DEFAULT 0,       -- 0未采纳/1已采纳
+        created_at      TEXT NOT NULL
+    )
+    """)
+
+    # ==================== 14. 邮件附件表 ====================
+    # 小白讲解：邮件发完后附件要能查看（尤其是图片），所以要把附件信息存数据库。
+    # 附件文件本身保存在 uploads 目录，这里只存"元信息"（文件名、类型、路径、关联哪封邮件）。
+    # 图片附件永久保留，其他附件发送后删除临时文件（只留数据库记录用于展示文件名）。
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS communication_attachments (
+        id                  INT AUTO_INCREMENT PRIMARY KEY,
+        communication_id    INTEGER NOT NULL,                 -- 关联的沟通记录ID
+        original_filename   VARCHAR(500) DEFAULT '',           -- 原始文件名（用户上传时的名字）
+        saved_filename      VARCHAR(500) DEFAULT '',           -- 保存到uploads目录的文件名（带时间戳）
+        file_path           VARCHAR(1000) DEFAULT '',          -- 完整文件路径
+        mime_type           VARCHAR(200) DEFAULT '',           -- 文件MIME类型（如 image/jpeg）
+        file_size           INTEGER DEFAULT 0,                 -- 文件大小（字节）
+        is_image            INTEGER DEFAULT 0,                 -- 是否图片（1是/0否，方便快速判断）
+        created_at          TEXT NOT NULL,
+        FOREIGN KEY (communication_id) REFERENCES communications (id) ON DELETE CASCADE
+    )
+    """)
 
     conn.commit()
 
@@ -569,6 +789,8 @@ def _seed_initial_data(cursor, conn):
         ("智谱AI", "zhipu", "ai_model", ZHIPU_BASE_URL, ZHIPU_API_KEY),
         ("1688", "ali1688", "search_platform", "https://api.1688.com", ALI_1688_AK),
         ("中国制造网", "madeinchina", "search_platform", "https://mcp.chexb.com/sse", ""),
+        ("海关贸易数据", "topease_customs", "search_platform", "https://mcp.topease.net/mcp",
+         "trdmcp_live_gh-CN9jbAnZrRd99lJR9MNSG8avtLdnXZKoY0NaE8c4"),
         ("天眼查", "tianyancha", "data_api", TYC_MCP_URL, TYC_MCP_AUTH),
         ("Jina Reader", "jina_reader", "data_api", "https://r.jina.ai", ""),
         ("Firecrawl", "firecrawl", "data_api", "https://api.firecrawl.dev/v1", ""),
@@ -620,20 +842,42 @@ def _seed_initial_data(cursor, conn):
         conn.commit()
         print("[初始化] 已预置7个AI模型场景配置")
 
+    # ---------- 3.5 沟通管理AI场景配置（补丁式插入，已存在则跳过）----------
+    # 小白讲解：后续版本新增的"会话回复"和"群发/单发邮件"两个AI场景，
+    # 用 INSERT IGNORE 确保只在首次运行时插入，不会重复。
+    cursor.execute("SELECT id FROM ai_model_configs WHERE scene_code='comm_reply' LIMIT 1")
+    if not cursor.fetchone():
+        cursor.execute("SELECT id FROM ai_providers WHERE provider_code='deepseek' LIMIT 1")
+        ds_row = cursor.fetchone()
+        if ds_row:
+            ds_id = ds_row["id"]
+            now = now_str()
+            cursor.execute("""
+                INSERT INTO ai_model_configs
+                (provider_id, scene_code, scene_name, model_name, thinking_enabled, thinking_effort,
+                 max_tokens, temperature, timeout_seconds, extra_params, sort_order, is_enabled, created_at, updated_at)
+                VALUES
+                (%s, 'comm_reply', '沟通-会话回复', %s, 0, '', 1024, 0.7, %s, '{}', 8, 1, %s, %s),
+                (%s, 'comm_send', '沟通-邮件生成', %s, 0, '', 1024, 0.7, %s, '{}', 9, 1, %s, %s)
+            """, (ds_id, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT, now, now,
+                  ds_id, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT, now, now))
+            conn.commit()
+            print("[初始化] 已补丁插入2个沟通管理AI场景配置（comm_reply / comm_send）")
+
     # ---------- 4. 搜索平台配置预置 ----------
     cursor.execute("SELECT COUNT(*) as cnt FROM search_platforms")
     if cursor.fetchone()["cnt"] == 0:
         cursor.execute("SELECT id, provider_code FROM ai_providers WHERE provider_type='search_platform'")
         now = now_str()
         for row in cursor.fetchall():
-            # 1688优先级1，中国制造网优先级2
-            priority = 1 if row["provider_code"] == "ali1688" else 2
+            # 优先级：1688=1，中国制造网=2，海关贸易数据=3
+            priority = {"ali1688": 1, "madeinchina": 2, "topease_customs": 3}.get(row["provider_code"], 9)
             cursor.execute("""
                 INSERT INTO search_platforms (provider_id, is_enabled, priority, max_results, extra_config, created_at, updated_at)
                 VALUES (%s, 1, %s, 50, '{}', %s, %s)
             """, (row["id"], priority, now, now))
         conn.commit()
-        print("[初始化] 已预置2个搜索平台配置")
+        print("[初始化] 已预置搜索平台配置")
 
     # ---------- 5. 初筛规则模板预置（11条一票否决 + 6条评分规则）----------
     _seed_screening_rules(cursor, conn)
@@ -642,6 +886,40 @@ def _seed_initial_data(cursor, conn):
     # 小白讲解：以前管理员帮用户搜索供应商时，数据 user_id 写成了管理员 ID，用户看不到。
     # 这里把所有数据的 user_id 对齐到"所属需求的所有者 user_id"，幂等可重复执行。
     _realign_user_id_to_requirement_owner(cursor, conn)
+
+    # ---------- 7. 邮件剔除规则预置（内置规则，首次启动自动插入）----------
+    # 小白讲解：Gmail 收件箱里会有 Google 安全提醒、验证码、noreply 通知等"非供应商回复"邮件，
+    # 这些邮件不该进系统。这里预置一批常见剔除规则，用户可在「邮件剔除规则」页面禁用或新增。
+    # 内置规则用 is_builtin=1 标记，只能禁用不能删除，避免用户误删后无法恢复。
+    cursor.execute("SELECT COUNT(*) as cnt FROM email_filter_rules WHERE is_builtin = 1")
+    if cursor.fetchone()["cnt"] == 0:
+        now = now_str()
+        # 内置规则清单：(规则名, 检查字段, 匹配方式, 匹配值, 优先级, 说明)
+        builtin_rules = [
+            # --- 发件人维度：剔除 noreply / no-reply / google 官方通知 ---
+            ("noreply 发件人",       "from_addr", "contains", "noreply",     10, "发件人地址含 noreply，通常是系统通知邮件"),
+            ("no-reply 发件人",      "from_addr", "contains", "no-reply",    10, "发件人地址含 no-reply，通常是系统通知邮件"),
+            ("google.com 官方发件人", "from_addr", "contains", "google.com",  20, "发件人是 google.com 域名（如 google-noreply@google.com），通常是 Google 官方通知"),
+            ("mailer-daemon 发件人", "from_addr", "contains", "mailer-daemon", 20, "退信通知邮件，通常是邮件投递失败的系统通知"),
+            ("postmaster 发件人",    "from_addr", "contains", "postmaster",  20, "邮局管理员通知邮件，通常是系统通知"),
+            # --- 主题维度：剔除安全提醒 / 验证码 / 二步验证等 ---
+            ("主题-安全提醒",        "subject", "contains", "安全提醒",      30, "主题含『安全提醒』，通常是 Google 安全通知"),
+            ("主题-Security alert", "subject", "contains", "security alert", 30, "主题含『Security alert』，Google 安全通知英文版"),
+            ("主题-验证码",          "subject", "contains", "验证码",        30, "主题含『验证码』，通常是网站注册/登录验证码邮件"),
+            ("主题-Verification code", "subject", "contains", "verification code", 30, "主题含『Verification code』，验证码邮件英文版"),
+            ("主题-二步验证",        "subject", "contains", "二步验证",      30, "主题含『二步验证』，Google 二步验证相关邮件"),
+            ("主题-Two-step",       "subject", "contains", "two-step",     30, "主题含『Two-step』，二步验证英文版"),
+            ("主题-确认订阅",        "subject", "contains", "确认订阅",      40, "主题含『确认订阅』，邮件列表订阅确认邮件"),
+            ("主题-Unsubscribe",    "subject", "contains", "unsubscribe",  40, "主题含『Unsubscribe』，退订确认邮件"),
+        ]
+        for rule_name, field, match_type, match_value, priority, desc in builtin_rules:
+            cursor.execute("""
+                INSERT INTO email_filter_rules
+                (rule_name, field, match_type, match_value, action, is_enabled, priority, is_builtin, description, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, 'skip', 1, %s, 1, %s, %s, %s)
+            """, (rule_name, field, match_type, match_value, priority, desc, now, now))
+        conn.commit()
+        print(f"[初始化] 已预置 {len(builtin_rules)} 条邮件剔除规则")
 
 
 def _seed_screening_rules(cursor, conn):

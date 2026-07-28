@@ -52,6 +52,15 @@
                            value="{{ parsed.spec_size }}">
                 </div>
             </div>
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">HS编码（海关归类）</label>
+                    <input type="text" class="form-control" name="hs_code"
+                           value="{{ parsed.hs_code }}"
+                           placeholder="自动归类，可手动修改">
+                    <small class="text-muted">用于海关数据搜索时精准匹配产品，如"9403"代表家具</small>
+                </div>
+            </div>
         </div>
     </div>
 

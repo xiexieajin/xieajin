@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+
+{% block title %}邮件管理 - 模型与平台管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="page-title mb-0"><i class="bi bi-envelope-gear"></i> 邮件管理</h1>
+    <a href="{{ url_for('admin_models_index') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 返回模型与平台管理
+    </a>
+</div>
+
+{# 小白讲解：用 Bootstrap 的 Tab 组件切换"邮箱配置"和"剔除规则"两个板块
+   每个 Tab 对应一个 pane，点 Tab 切换显示对应 pane 的内容 #}
+<ul class="nav nav-tabs mb-4" id="emailTab" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="config-tab" data-bs-toggle="tab" data-bs-target="#config-pane"
+                type="button" role="tab">
+            <i class="bi bi-gear"></i> 邮箱配置
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="rules-tab" data-bs-toggle="tab" data-bs-target="#rules-pane"
+                type="button" role="tab">
+            <i class="bi bi-funnel"></i> 邮件剔除规则
+            <span class="badge bg-secondary">{{ rules|length }}</span>
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content" id="emailTabContent">
+    {# ==================== Tab 1：邮箱配置 ==================== #}
+    <div class="tab-pane fade show active" id="config-pane" role="tabpanel">
+        {# 配置说明 #}
+        <div class="alert alert-info">
+            <h6 class="alert-heading"><i class="bi bi-info-circle"></i> 配置说明</h6>
+            <ol class="mb-0 small">
+                <li>需要 Gmail 账号，并开启<a href="https://myaccount.google.com/security" target="_blank">两步验证</a></li>
+                <li>生成<a href="https://myaccount.google.com/apppasswords" target="_blank">应用专用密码</a>（16位，非登录密码）</li>
+                <li>下方填入 Gmail 邮箱地址和 16 位应用专用密码</li>
+                <li>勾选"启用"后保存，系统才能发邮件和自动收邮件</li>
+            </ol>
+        </div>
+
+        <form method="POST" action="{{ url_for('admin_models_email') }}">
+            <div class="card mb-3">
+                <div class="card-header"><i class="bi bi-gear"></i> Gmail 账号配置</div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label required">Gmail 邮箱地址</label>
+                        <input type="email" class="form-control" name="gmail_address"
+                               value="{{ config.gmail_address if config else '' }}"
+                               placeholder="yourname@gmail.com" required>
+                        <small class="text-muted">你的 Gmail 邮箱，作为发件邮箱</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label required">应用专用密码（16位）</label>
+                        <input type="text" class="form-control" name="app_password"
+                               value="{{ config.app_password if config else '' }}"
+                               placeholder="abcd efgh ijkl mnop" maxlength="20">
+                        <small class="text-muted">
+                            从 Google 账号 → 安全 → 应用专用密码生成，格式如 <code>abcd efgh ijkl mnop</code>
+                        </small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">发件人显示名称</label>
+                        <input type="text" class="form-control" name="sender_name"
+                               value="{{ config.sender_name if config else '' }}"
+                               placeholder="如：XX公司采购部">
+                        <small class="text-muted">供应商收到邮件时显示的发件人名称（可留空）</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">IMAP 轮询间隔（秒）</label>
+                        <input type="number" class="form-control" name="poll_interval"
+                               value="{{ config.poll_interval if config else 300 }}"
+                               min="60" max="3600" step="30">
+                        <small class="text-muted">每隔多少秒检查一次新邮件（默认 300 秒 = 5 分钟）</small>
+                    </div>
+
+                    <div class="form-check mb-3">
+                        <input type="checkbox" class="form-check-input" name="is_enabled" value="1"
+                               {% if config and config.is_enabled %}checked{% endif %} id="isEnabled">
+                        <label class="form-check-label" for="isEnabled">启用邮件收发功能</label>
+                        <small class="text-muted d-block">勾选后系统才能发送邮件，后台线程才会自动收件</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-end mb-4">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="bi bi-check-circle"></i> 保存配置
+                </button>
+            </div>
+        </form>
+
+        {# 只有配置已启用时才显示调试工具 #}
+        {% if config and config.is_enabled %}
+        <div class="card">
+            <div class="card-header"><i class="bi bi-wrench"></i> 调试工具</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <h6>测试发送邮件</h6>
+                        <p class="text-muted small">给自己发一封测试邮件，验证 Gmail 配置是否正确</p>
+                        <div class="input-group mb-2">
+                            <input type="email" class="form-control" id="testAddr"
+                                   placeholder="测试收件邮箱（默认发给自己）"
+                                   value="{{ config.gmail_address }}">
+                            <button class="btn btn-outline-primary" onclick="sendTestEmail()">
+                                <i class="bi bi-send"></i> 发送测试
+                            </button>
+                        </div>
+                        <div id="testResult" class="small"></div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <h6>手动收件</h6>
+                        <p class="text-muted small">立即触发一次 IMAP 收件，不用等轮询间隔</p>
+                        <button class="btn btn-outline-success" onclick="pollNow()">
+                            <i class="bi bi-arrow-down-circle"></i> 立即收件
+                        </button>
+                        <div id="pollResult" class="small mt-2"></div>
+                        {% if config.last_poll_time %}
+                        <div class="small text-muted mt-2">上次轮询时间：{{ config.last_poll_time }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    {# ==================== Tab 2：邮件剔除规则 ==================== #}
+    <div class="tab-pane fade" id="rules-pane" role="tabpanel">
+        <div class="alert alert-info">
+            <h6 class="alert-heading"><i class="bi bi-info-circle"></i> 规则说明</h6>
+            <ul class="mb-0 small">
+                <li>命中规则的邮件会被自动跳过，<strong>不进待认领列表</strong>，保持列表干净。</li>
+                <li>匹配顺序按<strong>优先级</strong>（数字小的先匹配），命中任意一条即跳过。</li>
+                <li><span class="badge bg-secondary">内置</span> 标记的规则是系统预置的，只能<strong>禁用</strong>不能删除。</li>
+                <li><span class="badge bg-primary">自定义</span> 标记的规则可以随时删除。</li>
+                <li>匹配方式：<code>contains</code>=包含、<code>equals</code>=完全等于、<code>startswith</code>=以...开头、<code>regex</code>=正则。</li>
+            </ul>
+        </div>
+
+        {# 一键清理按钮：清除规则加入前已入库的旧邮件 #}
+        <div class="d-flex justify-content-end mb-3">
+            <form method="POST" action="{{ url_for('admin_email_filter_rule_cleanup') }}"
+                  onsubmit="return confirm('将扫描待认领邮件列表，删除所有命中剔除规则的旧邮件。继续？');">
+                <button type="submit" class="btn btn-outline-danger btn-sm">
+                    <i class="bi bi-trash"></i> 一键清理已入库的应剔除邮件
+                </button>
+            </form>
+        </div>
+
+        {# 新增规则表单 #}
+        <div class="card mb-4">
+            <div class="card-header"><i class="bi bi-plus-circle"></i> 新增自定义规则</div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('admin_email_filter_rule_add') }}">
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label required">规则名称</label>
+                            <input type="text" class="form-control" name="rule_name" maxlength="100" required
+                                   placeholder="如：剔除广告邮件">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label required">检查字段</label>
+                            <select class="form-select" name="field" required>
+                                <option value="from_addr">发件人邮箱</option>
+                                <option value="from_name">发件人名称</option>
+                                <option value="subject">邮件主题</option>
+                                <option value="body">邮件正文</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label required">匹配方式</label>
+                            <select class="form-select" name="match_type" required>
+                                <option value="contains">包含（推荐）</option>
+                                <option value="equals">完全等于</option>
+                                <option value="startswith">以...开头</option>
+                                <option value="regex">正则表达式</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label required">匹配值</label>
+                            <input type="text" class="form-control" name="match_value" maxlength="500" required
+                                   placeholder="如：广告、noreply、验证码">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">优先级</label>
+                            <input type="number" class="form-control" name="priority" value="100" min="1" max="999">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">说明（可选）</label>
+                            <input type="text" class="form-control" name="description" maxlength="500"
+                                   placeholder="简单描述这条规则的作用，方便以后回忆">
+                        </div>
+                        <div class="col-12 text-end">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-check-lg"></i> 添加规则
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        {# 规则列表 #}
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-list-ul"></i> 规则列表（共 {{ rules|length }} 条）</span>
+            </div>
+            <div class="card-body">
+                {% if rules %}
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th width="60">优先级</th>
+                                <th width="180">规则名称</th>
+                                <th width="120">检查字段</th>
+                                <th width="110">匹配方式</th>
+                                <th>匹配值</th>
+                                <th width="100">状态</th>
+                                <th width="80">类型</th>
+                                <th width="180">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for rule in rules %}
+                            <tr class="{% if not rule.is_enabled %}table-secondary{% endif %}">
+                                <td><span class="badge bg-light text-dark border">{{ rule.priority }}</span></td>
+                                <td>
+                                    <strong>{{ rule.rule_name }}</strong>
+                                    {% if rule.description %}
+                                    <div class="small text-muted">{{ rule.description }}</div>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if rule.field == 'from_addr' %}发件人邮箱
+                                    {% elif rule.field == 'from_name' %}发件人名称
+                                    {% elif rule.field == 'subject' %}邮件主题
+                                    {% elif rule.field == 'body' %}邮件正文
+                                    {% else %}{{ rule.field }}{% endif %}
+                                </td>
+                                <td><code>{{ rule.match_type }}</code></td>
+                                <td><code>{{ rule.match_value }}</code></td>
+                                <td>
+                                    {% if rule.is_enabled %}
+                                        <span class="badge bg-success">启用</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">禁用</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if rule.is_builtin %}
+                                        <span class="badge bg-secondary">内置</span>
+                                    {% else %}
+                                        <span class="badge bg-primary">自定义</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <form method="POST" action="{{ url_for('admin_email_filter_rule_toggle', rule_id=rule.id) }}"
+                                          class="d-inline">
+                                        {% if rule.is_enabled %}
+                                        <button type="submit" class="btn btn-sm btn-outline-warning">
+                                            <i class="bi bi-pause-circle"></i> 禁用
+                                        </button>
+                                        {% else %}
+                                        <button type="submit" class="btn btn-sm btn-outline-success">
+                                            <i class="bi bi-play-circle"></i> 启用
+                                        </button>
+                                        {% endif %}
+                                    </form>
+                                    {% if not rule.is_builtin %}
+                                    <form method="POST" action="{{ url_for('admin_email_filter_rule_delete', rule_id=rule.id) }}"
+                                          class="d-inline"
+                                          onsubmit="return confirm('确定删除规则「{{ rule.rule_name }}」吗？');">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                                            <i class="bi bi-trash"></i> 删除
+                                        </button>
+                                    </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-5">
+                    <i class="bi bi-inbox" style="font-size: 3rem;"></i>
+                    <p class="mt-3">暂无剔除规则</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 发送测试邮件
+function sendTestEmail() {
+    const addr = document.getElementById('testAddr').value.trim();
+    const resultDiv = document.getElementById('testResult');
+    resultDiv.innerHTML = '<span class="text-muted">发送中...</span>';
+
+    const formData = new FormData();
+    formData.append('test_addr', addr);
+
+    fetch('{{ url_for("admin_email_config_test") }}', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            resultDiv.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> ' + data.message + '</span>';
+        } else {
+            resultDiv.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> ' + data.message + '</span>';
+        }
+    })
+    .catch(err => {
+        resultDiv.innerHTML = '<span class="text-danger">请求失败：' + err + '</span>';
+    });
+}
+
+// 手动触发一次收件
+function pollNow() {
+    const resultDiv = document.getElementById('pollResult');
+    resultDiv.innerHTML = '<span class="text-muted">收件中...</span>';
+
+    fetch('{{ url_for("admin_email_config_poll_now") }}', {
+        method: 'POST'
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            resultDiv.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> ' + data.message + '</span>';
+        } else {
+            resultDiv.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> ' + data.message + '</span>';
+        }
+    })
+    .catch(err => {
+        resultDiv.innerHTML = '<span class="text-danger">请求失败：' + err + '</span>';
+    });
+}
+</script>
+{% endblock %}

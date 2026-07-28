@@ -540,7 +540,7 @@ def _check_platform_infringe(run_id, supplier_id, company_name, user_id):
 {search_result[:1000]}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
-            scene_code="auto_screening", temperature=0.1, json_mode=True
+            scene_code="auto_screening", temperature=None, json_mode=True
         )
         result = extract_json_from_text(result_text)
         has_infringe = bool(result.get("has_infringe", False))
@@ -661,7 +661,7 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
 主营产品（AI推断，仅供参考）：{supplier.get('main_product', '')}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
-            scene_code="auto_screening", temperature=0.1, json_mode=True
+            scene_code="auto_screening", temperature=None, json_mode=True
         )
         result = extract_json_from_text(result_text)
         is_manufacturer = bool(result.get("is_manufacturer", True))  # 默认给True避免误杀
@@ -727,7 +727,7 @@ def _check_product_mismatch(run_id, supplier_id, supplier, user_id):
 供应商实际售卖的产品名称：{product_title}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
-            scene_code="auto_screening", temperature=0.1, json_mode=True
+            scene_code="auto_screening", temperature=None, json_mode=True
         )
         result = extract_json_from_text(result_text)
         is_match = bool(result.get("is_match", True))  # 默认匹配避免误杀
@@ -893,7 +893,7 @@ def _score_product_match(rule, eval_data, supplier, max_score, run_id, supplier_
 {supplier_info}"""
         result_text = call_deepseek(
             [{"role": "user", "content": prompt}],
-            scene_code="auto_screening", temperature=0.1, json_mode=True
+            scene_code="auto_screening", temperature=None, json_mode=True
         )
         result = extract_json_from_text(result_text)
         # 小白讲解：AI返回0-100分，按满分值换算（如满分40分，AI给80分→实际得32分）
@@ -944,16 +944,31 @@ def _score_risk(eval_data, max_score=15):
 
 def _score_export(eval_data, supplier, tyc_data, max_score, run_id, supplier_id, user_id):
     """
-    出口经验评分：有实际出口资质/认证满分，有跨境电商经验满分，仅有进出口贸易权给一半，否则0分
+    出口经验评分：有实际出口资质/认证满分，有跨境电商经验满分，有海关出口记录满分，仅有进出口贸易权给一半，否则0分
 
     小白讲解：之前只要经营范围含"进出口"就给满分，但中国大部分贸易公司经营范围
     都有"自营和代理进出口"（这是贸易经营权，不是实际出口经验）。
-    现在区分三类：
+    现在区分四类：
+    - 海关出口记录（customs_export_count > 0）：海关真实出口数据，加分
     - 出口认证（CE/FCC/RoHS等）：有实际国际认证，满分
     - 跨境电商经验：有实际跨境销售记录，满分
     - 仅进出口贸易权：经营范围含"进出口"但无认证无跨境经验，给一半分
     - 无任何出口相关：0分
     """
+    # 检查海关出口记录（海关数据验证：有真实出口数据直接给满分）
+    customs_export_count = supplier.get("customs_export_count", 0)
+    if customs_export_count > 0:
+        customs_qty = supplier.get("customs_total_qty", 0)
+        log_task(run_id, supplier_id, "score_export_exp_check", "出口经验评分",
+                 {"source": "customs_data",
+                  "customs_export_count": customs_export_count,
+                  "customs_total_qty": customs_qty,
+                  "score_level": "customs_full"},
+                 {"has_export_exp": True, "score": max_score, "customs_verified": True},
+                 f"海关出口记录：{customs_export_count}次，总量{customs_qty:.0f}，满分",
+                 "success", user_id)
+        return max_score
+
     # 检查资质证书文本中是否含出口认证（CE/FCC/RoHS等是国际认证，证明有实际出口）
     qual_text = eval_data.get("qualifications_text", "")
     cert_keywords = ["CE", "FCC", "RoHS", "UL", "ETL", "海关", "外贸认证", "出口认证"]
