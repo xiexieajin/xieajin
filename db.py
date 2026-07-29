@@ -763,6 +763,14 @@ def _seed_initial_data(cursor, conn):
     3. 7个AI模型场景配置（从config.py迁移参数）
     4. 2个搜索平台配置（1688/中国制造网）
     """
+    # 小白讲解：在函数开头统一导入config里的常量，确保后面所有分支都能用到。
+    # 之前 import 写在 if 块里，非首次初始化时不会执行 import，
+    # 导致后面补丁插入用到 DEEPSEEK_MODEL 时报 UnboundLocalError。
+    from config import (DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
+                        DEEPSEEK_THINKING_ENABLED, DEEPSEEK_THINKING_EFFORT,
+                        DEEPSEEK_EFFORT_SIMPLE, DEEPSEEK_EFFORT_COMPLEX,
+                        DEEPSEEK_MAX_TOKENS, DEEPSEEK_TIMEOUT, ZHIPU_VISION_MODEL)
+
     # ---------- 1. 初始管理员账号 ----------
     cursor.execute("SELECT COUNT(*) as cnt FROM users")
     if cursor.fetchone()["cnt"] == 0:
@@ -811,10 +819,7 @@ def _seed_initial_data(cursor, conn):
     # ---------- 3. AI模型场景配置预置（7个场景）----------
     cursor.execute("SELECT COUNT(*) as cnt FROM ai_model_configs")
     if cursor.fetchone()["cnt"] == 0:
-        # 从 config.py 读取模型参数
-        from config import (DEEPSEEK_MODEL, DEEPSEEK_THINKING_ENABLED, DEEPSEEK_THINKING_EFFORT,
-                            DEEPSEEK_EFFORT_SIMPLE, DEEPSEEK_EFFORT_COMPLEX,
-                            DEEPSEEK_MAX_TOKENS, DEEPSEEK_TIMEOUT, ZHIPU_VISION_MODEL)
+        # 从 config.py 读取模型参数（已在函数开头统一导入）
         # 查询provider_id
         cursor.execute("SELECT id, provider_code FROM ai_providers")
         provider_map = {row["provider_code"]: row["id"] for row in cursor.fetchall()}
