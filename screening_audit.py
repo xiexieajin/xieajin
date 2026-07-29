@@ -21,8 +21,32 @@ import json
 import uuid
 import pymysql
 import threading
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 from db import now_str
+
+
+# 小白讲解：自定义JSON编码器，处理数据库里Decimal/日期等特殊类型。
+# 海关数据的customs_total_qty等字段是DECIMAL类型，默认json.dumps会报错
+# "Object of type Decimal is not JSON serializable"，加这个编码器就能自动转成数字。
+class _SafeJSONEncoder(json.JSONEncoder):
+    """能序列化Decimal/date等数据库特殊类型的JSON编码器"""
+    def default(self, o):
+        if isinstance(o, Decimal):
+            # Decimal转float，避免精度丢失过多；如果是整数就转int
+            if o == o.to_integral_value():
+                return int(o)
+            return float(o)
+        if isinstance(o, (date, datetime)):
+            return o.isoformat()
+        return super().default(o)
+
+
+def _safe_json_dumps(obj):
+    """安全序列化JSON，支持Decimal等数据库特殊类型"""
+    if obj is None:
+        return "{}"
+    return json.dumps(obj, ensure_ascii=False, cls=_SafeJSONEncoder)
 from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 
 
@@ -103,8 +127,8 @@ def log_task(run_id, supplier_id, task_code, task_name,
             supplier_id,
             task_code,
             task_name,
-            json.dumps(input_data, ensure_ascii=False) if input_data else "{}",
-            json.dumps(result_data, ensure_ascii=False) if result_data else "{}",
+            _safe_json_dumps(input_data) if input_data else "{}",
+            _safe_json_dumps(result_data) if result_data else "{}",
             evidence,
             status,
             now_str(),
