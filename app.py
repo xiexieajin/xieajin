@@ -3848,20 +3848,45 @@ def communications_email_message_delete(msg_id):
 # ==================== 健康检查接口（Railway等云平台需要200 OK响应）====================
 @app.route("/health")
 def health():
-    """返回200 OK让Railway知道应用正常运行，不做任何登录验证"""
-    return "OK", 200
+    """
+    健康检查端点（Railway 每 30 秒访问一次）
 
-# ==================== 数据库初始化 ====================
-# 必须放在模块顶层而不是 if __name__ == "__main__" 里
-# 原因：Railway等云平台用 gunicorn app:app 启动，__name__ 不是 "__main__"，
-# 导致 init_db() 不被执行，数据库全是空表。移到顶层后无论什么方式启动都会建表。
-# try包裹防止数据库还没配好时启动就崩溃（Railway添加MySQL后才生效）。
-try:
-    db.init_db()
-    # 从数据库加载AI配置到内存，让ai_helper和supplier_search能快速读取
-    model_config.load_model_configs_from_db()
-except Exception as e:
-    print(f"[启动] 数据库初始化失败（可能还未配置MySQL）: {e}")
+    小白讲解：Railway 用这个接口判断服务是否正常。
+    - 数据库初始化中：返回 503，Railway 会继续重试不会判定失败
+    - 数据库初始化失败：返回 500，让 Railway 知道服务有问题
+    - 数据库就绪：返回 200 OK
+    """
+    if _db_ready:
+        return "OK", 200
+    elif _db_init_error:
+        return f"DB init failed: {_db_init_error}", 500
+    else:
+        # 数据库还在初始化中，返回 503 让 Railway 继续等待
+        return "Initializing...", 503
+
+# ==================== 数据库初始化（后台线程执行，避免阻塞gunicorn启动）====================
+# 小白讲解：之前 db.init_db() 在模块顶层同步执行，gunicorn 启动时要等它跑完（14个建表语句）。
+# 如果 Railway 的 MySQL 连接慢，init_db 会超过 30 秒，导致 Railway 健康检查失败（no response after 30 attempts）。
+# 改成后台线程执行：gunicorn 立即启动 Web 服务，/health 能快速响应，init_db 在后台慢慢跑。
+# _db_ready 标志位让 /health 端点知道数据库是否就绪（未就绪时返回 503，Railway 会重试）。
+import threading as _init_threading
+_db_ready = False
+_db_init_error = None
+
+def _init_db_background():
+    """后台线程：初始化数据库 + 加载AI配置，完成后设置就绪标志"""
+    global _db_ready, _db_init_error
+    try:
+        db.init_db()
+        # 从数据库加载AI配置到内存，让ai_helper和supplier_search能快速读取
+        model_config.load_model_configs_from_db()
+        _db_ready = True
+        print("[启动] 数据库初始化完成，服务就绪")
+    except Exception as e:
+        _db_init_error = str(e)
+        print(f"[启动] 数据库初始化失败（可能还未配置MySQL）: {e}")
+
+_init_threading.Thread(target=_init_db_background, daemon=True).start()
 
 # ==================== 启动邮件接收后台线程 ====================
 # 小白讲解：启动一个后台线程，每隔几分钟连一次Gmail拉未读邮件。
