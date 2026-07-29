@@ -869,20 +869,24 @@ def _seed_initial_data(cursor, conn):
             conn.commit()
             print("[初始化] 已补丁插入2个沟通管理AI场景配置（comm_reply / comm_send）")
 
-    # ---------- 4. 搜索平台配置预置 ----------
-    cursor.execute("SELECT COUNT(*) as cnt FROM search_platforms")
-    if cursor.fetchone()["cnt"] == 0:
-        cursor.execute("SELECT id, provider_code FROM ai_providers WHERE provider_type='search_platform'")
-        now = now_str()
-        for row in cursor.fetchall():
-            # 优先级：1688=1，中国制造网=2，海关贸易数据=3
-            priority = {"ali1688": 1, "madeinchina": 2, "topease_customs": 3}.get(row["provider_code"], 9)
-            cursor.execute("""
-                INSERT INTO search_platforms (provider_id, is_enabled, priority, max_results, extra_config, created_at, updated_at)
-                VALUES (%s, 1, %s, 50, '{}', %s, %s)
-            """, (row["id"], priority, now, now))
-        conn.commit()
-        print("[初始化] 已预置搜索平台配置")
+    # ---------- 4. 搜索平台配置预置（补丁式插入，已存在则跳过）----------
+    # 小白讲解：之前用"表为空才插入"的逻辑，老用户升级时表里已有1688和中国制造网，
+    # 导致新增的海关贸易数据平台不会被插入。改成逐个检查，不存在的才插入。
+    cursor.execute("SELECT id, provider_code FROM ai_providers WHERE provider_type='search_platform'")
+    now = now_str()
+    for row in cursor.fetchall():
+        # 检查该平台是否已在 search_platforms 表中
+        cursor.execute("SELECT id FROM search_platforms WHERE provider_id = %s", (row["id"],))
+        if cursor.fetchone():
+            continue  # 已存在，跳过
+        # 优先级：1688=1，中国制造网=2，海关贸易数据=3
+        priority = {"ali1688": 1, "madeinchina": 2, "topease_customs": 3}.get(row["provider_code"], 9)
+        cursor.execute("""
+            INSERT INTO search_platforms (provider_id, is_enabled, priority, max_results, extra_config, created_at, updated_at)
+            VALUES (%s, 1, %s, 50, '{}', %s, %s)
+        """, (row["id"], priority, now, now))
+        print(f"[初始化] 新增搜索平台：{row['provider_code']}（优先级{priority}）")
+    conn.commit()
 
     # ---------- 5. 初筛规则模板预置（11条一票否决 + 6条评分规则）----------
     _seed_screening_rules(cursor, conn)
