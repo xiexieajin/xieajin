@@ -282,7 +282,26 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
               "company_id": tyc_data.get("company_id", ""),
               "matched_name": basic_info.get("name", company_name)},
              f"天眼查MCP search_companies + get_company_basic_profile，匹配状态：{match_status}",
-             "success" if match_status != "not_found" else "uncertain", user_id)
+             "success" if match_status not in ("not_found", "error") else "uncertain", user_id)
+
+    # 天眼查请求失败（网络超时/频率限制）：跳过该供应商，不判0分，下次可重新初筛
+    # 小白讲解：以前请求失败和"确实没找到"混在一起，都判0分淘汰。
+    # 现在区分开：请求失败时保留供应商原状态不变（不写初筛结论），下次重新初筛时再查。
+    if match_status == "error":
+        log_task(run_id, supplier_id, "tyc_request_error", "天眼查请求失败",
+                 {"company_name": company_name},
+                 {"match_status": "error", "error": tyc_data.get("error", "")},
+                 "天眼查MCP请求失败（网络超时或频率限制），跳过本次初筛，供应商状态不变",
+                 "uncertain", user_id)
+
+        _push_progress(progress_queue,
+                       type="supplier_done",
+                       current=idx,
+                       supplier_name=company_name,
+                       conclusion="跳过（天眼查请求失败）",
+                       total_score=0,
+                       veto_triggered=False)
+        return
 
     # 天眼查匹配失败：跳过规则评估，直接给0分
     # 小白讲解：之前这里写死"需人工确认"并直接return，导致已关闭人工确认的

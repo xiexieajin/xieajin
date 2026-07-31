@@ -167,6 +167,11 @@
             <ul id="logList" class="list-group list-group-flush"></ul>
         </div>
     </div>
+    <div class="text-center mt-3">
+        <button type="button" id="cancelTaskBtn" class="btn btn-outline-danger">
+            <i class="bi bi-stop-circle"></i> 取消当前初筛
+        </button>
+    </div>
 </div>
 
 {# ==================== 完成提示区（默认隐藏）==================== #}
@@ -209,6 +214,8 @@
 const logList = document.getElementById('logList');
 const supplierTableBody = document.getElementById('supplierTableBody');
 let elapsedTimer = null;
+let currentTaskId = null;
+let currentPollInterval = null;
 
 function startTimer(startTime) {
     const elapsedEl = document.getElementById('elapsedTime');
@@ -298,6 +305,8 @@ function processMessages(messages) {
             return 'done';
         } else if (msg.type === 'error') {
             return 'error';
+        } else if (msg.type === 'cancelled') {
+            return 'cancelled';
         }
     }
     return null;
@@ -336,6 +345,17 @@ function showError(message) {
     document.getElementById('errorMsg').textContent = message || '初筛失败';
 }
 
+function showCancelled(message) {
+    stopTimer();
+    document.getElementById('progressArea').style.display = 'none';
+    document.getElementById('screeningForm').style.display = 'block';
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('cancelTaskBtn').disabled = false;
+    currentTaskId = null;
+    currentPollInterval = null;
+    alert(message || '初筛已取消，可以重新初筛');
+}
+
 /**
  * 启动轮询（带游标，每3秒一次）
  * 小白讲解：cursor 是"上次读到第几条"的位置，每次轮询带上它，
@@ -347,12 +367,13 @@ function startPolling(pollUrl, initialCursor) {
     let cursor = initialCursor || 0;
     let pollFailCount = 0;
 
-    const pollInterval = setInterval(async () => {
+    if (currentPollInterval) clearInterval(currentPollInterval);
+    currentPollInterval = setInterval(async () => {
         try {
             const res = await fetch(pollUrl + '?cursor=' + cursor);
             if (!res.ok) {
                 if (res.status === 404) {
-                    clearInterval(pollInterval);
+                    clearInterval(currentPollInterval);
                     return;
                 }
                 throw new Error('HTTP ' + res.status);
@@ -367,7 +388,7 @@ function startPolling(pollUrl, initialCursor) {
 
             // 初筛完成
             if (pollData.status === 'done' || endStatus === 'done') {
-                clearInterval(pollInterval);
+                clearInterval(currentPollInterval);
                 // 小白讲解：done消息可能在messages里（带report），也可能只在result里
                 // 两种都兼容，优先从messages里找done消息（含message和report字段）
                 let doneMsg = null;
@@ -379,7 +400,7 @@ function startPolling(pollUrl, initialCursor) {
 
             // 初筛出错
             if (pollData.status === 'error' || endStatus === 'error') {
-                clearInterval(pollInterval);
+                clearInterval(currentPollInterval);
                 let errMsg = '初筛失败';
                 if (pollData.result && pollData.result.error) errMsg = pollData.result.error;
                 else if (pollData.result && pollData.result.message) errMsg = pollData.result.message;
@@ -389,10 +410,14 @@ function startPolling(pollUrl, initialCursor) {
                 }
                 showError(errMsg);
             }
+            if (pollData.status === 'cancelled' || endStatus === 'cancelled') {
+                clearInterval(currentPollInterval);
+                showCancelled(pollData.result ? pollData.result.message : '初筛已取消，可以重新初筛');
+            }
         } catch (pollErr) {
             pollFailCount++;
             if (pollFailCount >= 3) {
-                clearInterval(pollInterval);
+                clearInterval(currentPollInterval);
                 showError('请求失败：' + pollErr.message + '（可能是网络问题或服务器超时，请刷新页面重试）');
             }
         }
@@ -416,6 +441,8 @@ function startPolling(pollUrl, initialCursor) {
 
         // 只恢复正在运行的任务，新增供应商后可以再次执行初筛
         document.getElementById('screeningForm').style.display = 'none';
+        currentTaskId = data.task_id;
+        document.getElementById('cancelTaskBtn').disabled = data.status === 'cancelling';
         document.getElementById('progressArea').style.display = 'block';
         const startBtn = document.getElementById('startBtn');
         if (startBtn) startBtn.disabled = true;
@@ -477,6 +504,8 @@ document.getElementById('screeningForm').addEventListener('submit', async functi
 
         const startData = await postResponse.json();
         const taskId = startData.task_id;
+        currentTaskId = taskId;
+        document.getElementById('cancelTaskBtn').disabled = false;
         addLog('初筛任务已提交，正在启动...', 'info');
 
         // 启动计时器和轮询
@@ -485,6 +514,22 @@ document.getElementById('screeningForm').addEventListener('submit', async functi
         startPolling(pollUrl, 0);
     } catch (err) {
         showError('请求失败：' + err.message + '（可能是网络问题或服务器超时）');
+    }
+});
+
+document.getElementById('cancelTaskBtn').addEventListener('click', async function() {
+    if (!currentTaskId || !confirm('确定取消当前初筛吗？当前正在处理的供应商会完成后停止，已完成结果会保留。')) return;
+    this.disabled = true;
+    try {
+        const cancelUrl = '{{ url_for("ai_auto_screening", req_id=requirement.id) }}/cancel/' + currentTaskId;
+        const res = await fetch(cancelUrl, {method: 'POST'});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || '取消失败');
+        this.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 正在取消...';
+        addLog(data.message, 'warning');
+    } catch (err) {
+        this.disabled = false;
+        alert('取消失败：' + err.message);
     }
 });
 </script>

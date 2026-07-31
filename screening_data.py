@@ -270,6 +270,15 @@ def query_supplier_full_data(company_name, client=None):
         # 先精确同名匹配，找不到再用相似度≥0.6校验，防止取到错误公司数据
         companies = client.search_companies(company_name)
 
+        # 区分"请求失败"和"确实没找到"：
+        # - None表示请求失败（网络超时/频率限制），返回error状态让初筛跳过
+        # - 空列表[]表示天眼查确实没找到这家企业，返回not_found
+        if companies is None:
+            result["tyc_match_status"] = "error"
+            result["error"] = "天眼查MCP请求失败（网络超时或频率限制），跳过本次初筛"
+            print(f"[初筛] 天眼查请求失败({company_name})，跳过本次初筛，下次可重新初筛")
+            return result
+
         if not companies:
             result["tyc_match_status"] = "not_found"
             return result

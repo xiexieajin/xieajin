@@ -1730,7 +1730,7 @@ def ai_search_suppliers(req_id):
         for existing_task_id, existing_task in task_store.items():
             if (existing_task.get("task_type") == "search"
                     and existing_task.get("req_id") == req_id
-                    and existing_task.get("status") == "running"):
+                    and existing_task.get("status") in ("running", "cancelling")):
                 return jsonify({"task_id": existing_task_id, "status": "running"})
 
         task_store[task_id] = {
@@ -1739,13 +1739,28 @@ def ai_search_suppliers(req_id):
             "result": None,
             "req_id": req_id,
             "task_type": "search",
+            "cancel_requested": False,
         }
 
     def progress_callback(step, total, desc):
         """进度回调：把进度消息追加到messages列表（加锁保护，避免并发写入冲突）"""
         msg = {"type": "progress", "step": step, "total": total, "desc": desc}
         with _task_store_lock:
-            task_store[task_id]["messages"].append(msg)
+            if not task_store[task_id].get("cancel_requested"):
+                task_store[task_id]["messages"].append(msg)
+
+    def is_search_cancelled():
+        """判断用户是否已取消当前搜索任务。"""
+        with _task_store_lock:
+            return task_store[task_id].get("cancel_requested", False)
+
+    def finish_search_cancelled():
+        """把搜索任务安全结束为已取消状态。"""
+        result = {"type": "cancelled", "message": "搜索已取消，可以重新搜索"}
+        with _task_store_lock:
+            task_store[task_id]["status"] = "cancelled"
+            task_store[task_id]["result"] = result
+            task_store[task_id]["messages"].append(result)
 
     def run_search_thread():
         conn = db.get_db()
@@ -1756,10 +1771,25 @@ def ai_search_suppliers(req_id):
             hs_code = requirement.get("hs_code", "") or ""
             if hs_code:
                 print(f"海关搜索使用HS编码：{hs_code}")
-            suppliers = search_suppliers(keywords, requirement["product_name"], progress_callback, hs_code)
+            suppliers = search_suppliers(
+                keywords,
+                requirement["product_name"],
+                progress_callback,
+                hs_code,
+                cancel_checker=is_search_cancelled,
+            )
+
+            if is_search_cancelled():
+                conn.rollback()
+                finish_search_cancelled()
+                return
 
             saved_count = 0
             for s in suppliers:
+                if is_search_cancelled():
+                    conn.rollback()
+                    finish_search_cancelled()
+                    return
                 supplier_name = (s.get("name") or "").strip()
                 if not supplier_name:
                     continue
@@ -1807,6 +1837,10 @@ def ai_search_suppliers(req_id):
             recalc_requirement_status(cur, req_id)
             conn.commit()
 
+            if is_search_cancelled():
+                finish_search_cancelled()
+                return
+
             result = {
                 "type": "done",
                 "saved_count": saved_count,
@@ -1814,12 +1848,16 @@ def ai_search_suppliers(req_id):
                 "req_id": req_id,
             }
             with _task_store_lock:
+                if task_store[task_id].get("cancel_requested"):
+                    return
                 task_store[task_id]["messages"].append(result)
                 task_store[task_id]["status"] = "done"
                 task_store[task_id]["result"] = result
         except Exception as e:
             error_msg = {"type": "error", "message": f"AI搜索失败：{str(e)}"}
             with _task_store_lock:
+                if task_store[task_id].get("cancel_requested"):
+                    return
                 task_store[task_id]["messages"].append(error_msg)
                 task_store[task_id]["status"] = "error"
                 task_store[task_id]["result"] = error_msg
@@ -1838,6 +1876,20 @@ def ai_search_suppliers(req_id):
 
     # 返回task_id（瞬间完成，前端拿到后开始轮询）
     return jsonify({"task_id": task_id, "status": "started"})
+
+
+@app.route("/ai/search-suppliers/<int:req_id>/cancel/<task_id>", methods=["POST"])
+def cancel_ai_search(req_id, task_id):
+    """取消正在运行的供应商搜索任务。"""
+    with _task_store_lock:
+        task = task_store.get(task_id)
+        if not task or task.get("req_id") != req_id or task.get("task_type") != "search":
+            return jsonify({"status": "not_found", "message": "搜索任务不存在或已结束"}), 404
+        if task.get("status") != "running":
+            return jsonify({"status": task.get("status"), "message": "搜索任务已经结束"})
+        task["cancel_requested"] = True
+        task["status"] = "cancelling"
+    return jsonify({"status": "cancelling", "message": "正在取消搜索，请等待当前请求结束..."})
 
 
 @app.route("/ai/search-suppliers/<int:req_id>/poll/<task_id>", methods=["GET"])
@@ -1886,7 +1938,7 @@ def ai_search_status(req_id):
         for task_id, task in task_store.items():
             if (task.get("task_type") == "search"
                     and task.get("req_id") == req_id
-                    and task.get("status") == "running"):
+                    and task.get("status") in ("running", "cancelling")):
                 return jsonify({
                     "task_id": task_id,
                     "status": task["status"],
@@ -1980,7 +2032,7 @@ def ai_auto_screening(req_id):
         for existing_task_id, existing_task in task_store.items():
             if (existing_task.get("task_type") == "screening"
                     and existing_task.get("req_id") == req_id
-                    and existing_task.get("status") == "running"):
+                    and existing_task.get("status") in ("running", "cancelling")):
                 return jsonify({"task_id": existing_task_id, "status": "running"})
 
         task_store[task_id] = {
@@ -1989,6 +2041,7 @@ def ai_auto_screening(req_id):
             "result": None,
             "req_id": req_id,
             "task_type": "screening",
+            "cancel_requested": False,
         }
 
     # 小白讲解：把user_id存到局部变量，避免后台线程访问g对象（g是请求级的，请求结束后失效）
@@ -2013,7 +2066,13 @@ def ai_auto_screening(req_id):
                 """把queue.Queue的put接口适配到task_store消息列表"""
                 def put(self, msg):
                     with _task_store_lock:
-                        task_store[task_id]["messages"].append(msg)
+                        if not task_store[task_id].get("cancel_requested"):
+                            task_store[task_id]["messages"].append(msg)
+
+                def is_cancelled(self):
+                    """返回当前初筛任务是否已收到取消请求。"""
+                    with _task_store_lock:
+                        return task_store[task_id].get("cancel_requested", False)
 
             progress_queue = _QueueToTaskStore()
 
@@ -2024,12 +2083,20 @@ def ai_auto_screening(req_id):
                 report = run_screening(req_id, current_user_id, progress_queue, template_name=template_name)
             # 初筛完成：标记任务完成，存最终结果
             with _task_store_lock:
+                if task_store[task_id].get("cancel_requested"):
+                    result = {"type": "cancelled", "message": "初筛已取消，已完成的供应商结果会保留，可以重新初筛"}
+                    task_store[task_id]["status"] = "cancelled"
+                    task_store[task_id]["result"] = result
+                    task_store[task_id]["messages"].append(result)
+                    return
                 task_store[task_id]["status"] = "done"
                 task_store[task_id]["result"] = report
         except Exception as e:
             import traceback
             err_msg = f"初筛引擎失败：{str(e)}"
             with _task_store_lock:
+                if task_store[task_id].get("cancel_requested"):
+                    return
                 task_store[task_id]["messages"].append({"type": "error", "message": err_msg})
                 task_store[task_id]["status"] = "error"
                 task_store[task_id]["result"] = {"error": str(e), "traceback": traceback.format_exc()[:500]}
@@ -2046,6 +2113,20 @@ def ai_auto_screening(req_id):
 
     # 瞬间返回task_id，前端拿到后开始每3秒轮询进度
     return jsonify({"task_id": task_id, "status": "started"})
+
+
+@app.route("/ai/auto-screening/<int:req_id>/cancel/<task_id>", methods=["POST"])
+def cancel_ai_screening(req_id, task_id):
+    """取消正在运行的自动初筛任务。"""
+    with _task_store_lock:
+        task = task_store.get(task_id)
+        if not task or task.get("req_id") != req_id or task.get("task_type") != "screening":
+            return jsonify({"status": "not_found", "message": "初筛任务不存在或已结束"}), 404
+        if task.get("status") != "running":
+            return jsonify({"status": task.get("status"), "message": "初筛任务已经结束"})
+        task["cancel_requested"] = True
+        task["status"] = "cancelling"
+    return jsonify({"status": "cancelling", "message": "正在取消初筛，当前供应商处理完成后会停止..."})
 
 
 @app.route("/ai/auto-screening/<int:req_id>/poll/<task_id>", methods=["GET"])
@@ -2096,7 +2177,7 @@ def ai_screening_status(req_id):
             # 只匹配初筛类型且req_id对应的任务（避免和搜索任务混淆）
             if (task.get("task_type") == "screening"
                     and task.get("req_id") == req_id
-                    and task.get("status") == "running"):
+                    and task.get("status") in ("running", "cancelling")):
                 return jsonify({
                     "task_id": task_id,
                     "status": task["status"],

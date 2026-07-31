@@ -1510,7 +1510,14 @@ class TianyanchaClient:
         }
 
     def _call(self, method, params=None, msg_id=None):
-        """调用MCP工具的通用方法，自动处理session和响应格式"""
+        """
+        调用MCP工具的通用方法，自动处理session和响应格式
+
+        小白讲解：这个方法负责和天眼查服务器通信。
+        以前请求失败就直接返回None，导致初筛把"网络超时"误判成"查不到企业"。
+        现在改成：遇到429频率限制或网络超时时自动重试3次，间隔递增（3秒/6秒/9秒）。
+        如果重试3次还是失败，返回None让上层区分处理。
+        """
         if self.session_id:
             self.headers["Mcp-Session-Id"] = self.session_id
 
@@ -1524,34 +1531,73 @@ class TianyanchaClient:
         if not self.mcp_url:
             print("天眼查MCP地址未配置，跳过调用（请在管理中心配置tianyancha服务商的base_url）")
             return None
-        try:
-            resp = requests.post(self.mcp_url, headers=self.headers, json=payload, timeout=30)
 
-            # 检查HTTP状态码：非2xx时记录错误并返回None（之前无此检查，401等情况会抛JSON解析异常）
-            if resp.status_code >= 400:
-                print(f"天眼查MCP返回HTTP {resp.status_code}: {resp.text[:300]}")
+        # 重试配置：最多3次，间隔递增（3/6/9秒）
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = requests.post(self.mcp_url, headers=self.headers, json=payload, timeout=30)
+
+                # 429频率限制：等待后重试
+                if resp.status_code == 429:
+                    if attempt < max_retries:
+                        wait = attempt * 3
+                        print(f"天眼查MCP频率限制(429)，第{attempt}/{max_retries}次重试，等待{wait}秒...")
+                        time.sleep(wait)
+                        continue
+                    else:
+                        print(f"天眼查MCP频率限制(429)，已重试{max_retries}次仍失败")
+                        return None
+
+                # 5xx服务器错误：等待后重试
+                if 500 <= resp.status_code < 600:
+                    if attempt < max_retries:
+                        wait = attempt * 3
+                        print(f"天眼查MCP服务器错误({resp.status_code})，第{attempt}/{max_retries}次重试，等待{wait}秒...")
+                        time.sleep(wait)
+                        continue
+                    else:
+                        print(f"天眼查MCP服务器错误({resp.status_code})，已重试{max_retries}次仍失败")
+                        return None
+
+                # 其他4xx错误（如401授权失败）：不重试，直接返回None
+                if resp.status_code >= 400:
+                    print(f"天眼查MCP返回HTTP {resp.status_code}: {resp.text[:300]}")
+                    return None
+
+                # 通知类消息没有响应体
+                if msg_id is None:
+                    return None
+
+                # 解析响应（可能是JSON或SSE格式）
+                ct = resp.headers.get("content-type", "")
+                if "event-stream" in ct:
+                    for line in resp.text.split("\n"):
+                        if line.startswith("data: ") and line[6:].strip():
+                            return json.loads(line[6:].strip())
+                else:
+                    if resp.text.strip():
+                        return resp.json()
                 return None
 
-            # 通知类消息没有响应体
-            if msg_id is None:
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                # 网络超时或连接失败：等待后重试
+                if attempt < max_retries:
+                    wait = attempt * 3
+                    print(f"天眼查MCP网络超时({method})，第{attempt}/{max_retries}次重试，等待{wait}秒...: {e}")
+                    time.sleep(wait)
+                    continue
+                else:
+                    print(f"天眼查MCP网络超时({method})，已重试{max_retries}次仍失败: {e}")
+                    return None
+            except requests.exceptions.RequestException as e:
+                print(f"天眼查MCP请求失败({method}): {e}")
+                return None
+            except json.JSONDecodeError as e:
+                print(f"天眼查MCP响应解析失败({method}): {e}")
                 return None
 
-            # 解析响应（可能是JSON或SSE格式）
-            ct = resp.headers.get("content-type", "")
-            if "event-stream" in ct:
-                for line in resp.text.split("\n"):
-                    if line.startswith("data: ") and line[6:].strip():
-                        return json.loads(line[6:].strip())
-            else:
-                if resp.text.strip():
-                    return resp.json()
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"天眼查MCP请求失败({method}): {e}")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"天眼查MCP响应解析失败({method}): {e}")
-            return None
+        return None
 
     def initialize(self):
         """初始化MCP连接，获取session ID"""
@@ -1559,28 +1605,34 @@ class TianyanchaClient:
         if not self.mcp_url:
             print("天眼查MCP地址未配置，跳过初始化")
             return False
-        resp = requests.post(self.mcp_url, headers=self.headers, json={
-            "jsonrpc": "2.0", "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "sourcing-system", "version": "1.0"},
-            },
-            "id": 1,
-        }, timeout=15)
-        self.session_id = resp.headers.get("Mcp-Session-Id", "")
-        if self.session_id:
-            self.headers["Mcp-Session-Id"] = self.session_id
-            # 发送初始化完成通知
-            self._call("notifications/initialized")
-        return self.session_id is not None
+        try:
+            resp = requests.post(self.mcp_url, headers=self.headers, json={
+                "jsonrpc": "2.0", "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "sourcing-system", "version": "1.0"},
+                },
+                "id": 1,
+            }, timeout=15)
+            self.session_id = resp.headers.get("Mcp-Session-Id", "")
+            if self.session_id:
+                self.headers["Mcp-Session-Id"] = self.session_id
+                # 发送初始化完成通知
+                self._call("notifications/initialized")
+            return self.session_id is not None
+        except requests.exceptions.RequestException as e:
+            print(f"天眼查MCP初始化失败: {e}")
+            return False
 
     def search_companies(self, query):
         """
         搜索公司 - 用关键词搜索天眼查企业数据库
 
         参数：query - 公司名关键词
-        返回：企业候选列表，包含企业名称、注册资本、状态等
+        返回：
+            - 成功：企业候选列表（可能为空列表[]，表示确实没找到）
+            - 请求失败：返回None（区别于空列表，让上层能区分"网络失败"和"确实没找到"）
         """
         if not self.session_id:
             self.initialize()
@@ -1588,8 +1640,11 @@ class TianyanchaClient:
             "name": "search_companies",
             "arguments": {"query": query},
         }, msg_id=100)
+        # 请求失败（网络超时/频率限制等）返回None，让上层区分处理
+        if result is None:
+            return None
         if not result or "result" not in result:
-            return []
+            return None
         # 解析返回的文本（Markdown表格格式）
         content = result["result"].get("content", [])
         if content:
@@ -2367,7 +2422,7 @@ def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_ca
 
 
 # ==================== 主搜索函数 ====================
-def search_suppliers(keywords_json, product_name, progress_callback=None, hs_code=""):
+def search_suppliers(keywords_json, product_name, progress_callback=None, hs_code="", cancel_checker=None):
     """
     供应商搜索主函数 - 完整的P0-P3关键词矩阵搜索流程
 
@@ -2383,6 +2438,7 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
         product_name: 产品名称
         progress_callback: 进度回调函数，接收(当前步骤, 总步骤, 描述)参数
         hs_code: 产品的HS编码（如9403），用于海关数据搜索精确过滤，传空字符串表示不限制HS编码
+        cancel_checker: 取消检查函数，返回True时停止后续搜索阶段
 
     返回：供应商列表
     """
@@ -2412,6 +2468,10 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
 
     # 小白讲解：记录搜索开始时间，用于在进度描述里显示"已用时XX秒"，让用户知道没卡死
     search_start_time = time.time()
+
+    def _cancelled():
+        """判断用户是否已请求取消本次搜索。"""
+        return bool(cancel_checker and cancel_checker())
 
     def _elapsed():
         """计算已用时秒数，返回中文描述字符串"""
@@ -2450,6 +2510,9 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
         海关数据搜全部英文关键词，中文跳过（产品描述全是英文）。
         如果某平台在管理中心被关闭，则跳过不搜索。
         """
+        if _cancelled():
+            return
+
         # 报告当前关键词开始搜索（细粒度进度，让用户看到在搜哪个词）
         if progress_callback:
             progress_callback(1, total_steps, f"[{term_idx+1}/{total_terms}] 正在搜索关键词：{term}，{_elapsed()}...")
@@ -2556,6 +2619,9 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                 print(f"海关数据搜索'{term}'异常: {e}")
                 results_customs = []
 
+        if _cancelled():
+            return
+
         for r in results_1688:
             r["source_platform"] = "1688"
             local_results.append(r)
@@ -2595,10 +2661,17 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
             for idx, (key, term, hit_kw, variants) in enumerate(search_terms)
         }
         for future in as_completed(futures):
+            if _cancelled():
+                for pending_future in futures:
+                    pending_future.cancel()
+                break
             try:
                 future.result(timeout=180)
             except Exception as e:
                 print(f"关键词搜索异常: {e}")
+
+    if _cancelled():
+        return []
 
     print(f"所有关键词搜索完成：共获取{len(all_results)}家供应商（去重前）")
 
@@ -2615,6 +2688,9 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
     companies = _programmatic_prefilter(companies, product_name)
     print(f"预筛完成：{len(all_results)}家搜索结果 → {len(companies)}家候选公司")
 
+    if _cancelled():
+        return []
+
     # 第三步：用天眼查MCP并发补全工商信息（对预筛后的 companies，在 DeepSeek 过滤之前补全）
     # 小白讲解：先补全工商信息再过滤，DeepSeek 就能看到注册资本/经营状态等做更准判断（问题1流程重构）
     current_step += 1
@@ -2629,20 +2705,28 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
         - 找到 → 补全工商信息。MIC来源额外用天眼查中文名替换英文名
         - 找不到 → 保留该公司，标记"工商数据未匹配"（不丢弃）
         """
+        if _cancelled():
+            return
         name = supplier.get("name", "").strip()
         source_platform = supplier.get("source_platform", "")
         if not name:
             return
 
         try:
-            # 用天眼查搜索公司（带1次重试，防止网络波动导致的数据缺失）
-            # 小白讲解：天眼查MCP偶尔会因为网络波动超时，第一次失败时等2秒重试一次
+            # 用天眼查搜索公司（search_companies内部已带3次重试）
+            # 小白讲解：search_companies现在会自动重试3次（429/超时），
+            # 返回None表示请求彻底失败，返回空列表[]表示确实没找到。
             companies = tyc_client.search_companies(name)
-            if not companies:
-                # 第1次没搜到，等2秒重试1次
-                print(f"天眼查首次搜索无结果({name})，2秒后重试...")
+            if companies is None:
+                # 请求失败（网络超时/频率限制），等2秒再试1次
+                print(f"天眼查请求失败({name})，2秒后重试...")
                 time.sleep(2)
                 companies = tyc_client.search_companies(name)
+            if companies is None:
+                # 两次都请求失败，跳过该企业（标记为未匹配，但不当作"确认不存在"）
+                print(f"天眼查两次请求均失败({name})，跳过该企业")
+                supplier["_tyc_not_found"] = True
+                return
             matched_company = None
             # 1. 优先精确同名匹配
             for company in companies:
@@ -2767,6 +2851,10 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
             futures = {executor.submit(_enrich_task, s): s for s in companies}
             done_count = 0
             for future in as_completed(futures):
+                if _cancelled():
+                    for pending_future in futures:
+                        pending_future.cancel()
+                    break
                 try:
                     future.result(timeout=30)
                     done_count += 1
@@ -2776,6 +2864,9 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                     print(f"天眼查补全任务异常: {e}")
     except Exception as e:
         print(f"天眼查补全初始化失败: {e}")
+
+    if _cancelled():
+        return []
 
     # 天眼查补全后剔除未匹配的供应商（找不到工商数据的不保留）
     removed_count = 0
@@ -2801,6 +2892,9 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
             else:
                 progress_callback(current_step, total_steps, desc)
     suppliers = filter_suppliers_with_ai(companies, product_name, keywords_text, _ai_progress_cb if progress_callback else None)
+
+    if _cancelled():
+        return []
 
     # filter_suppliers_with_ai 内部已做去重，这里再保险去重一次
     seen_names = set()

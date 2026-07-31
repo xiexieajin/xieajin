@@ -112,6 +112,11 @@
                 <ul id="logList" class="list-group list-group-flush mt-2" style="max-height:400px; overflow-y:auto;">
                 </ul>
             </div>
+            <div class="text-center mt-3">
+                <button type="button" id="cancelTaskBtn" class="btn btn-outline-danger">
+                    <i class="bi bi-stop-circle"></i> 取消当前搜索
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -164,6 +169,8 @@ const keywordStatus = {};  // 编号字符串 -> {keyword, status, result, order
 let keywordTotal = 0;
 let elapsedTimer = null;
 let startTime = Date.now();
+let currentTaskId = null;
+let currentPollInterval = null;
 
 /**
  * 启动计时器（每秒更新"已用时"显示）
@@ -301,6 +308,8 @@ function processMessages(messages) {
             return 'done';
         } else if (msg.type === 'error') {
             return 'error';
+        } else if (msg.type === 'cancelled') {
+            return 'cancelled';
         }
     }
     return null;
@@ -330,6 +339,17 @@ function showError(message) {
     document.getElementById('errorMsg').textContent = message || '搜索失败';
 }
 
+function showCancelled(message) {
+    stopTimer();
+    document.getElementById('progressArea').style.display = 'none';
+    document.getElementById('searchForm').style.display = 'block';
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('cancelTaskBtn').disabled = false;
+    currentTaskId = null;
+    currentPollInterval = null;
+    alert(message || '搜索已取消，可以重新搜索');
+}
+
 /**
  * 启动轮询（带游标，每3秒一次）
  * 小白讲解：cursor 是"上次读到第几条"的位置，每次轮询带上它，
@@ -341,12 +361,13 @@ function startPolling(pollUrl, initialCursor) {
     let cursor = initialCursor || 0;
     let pollFailCount = 0;
 
-    const pollInterval = setInterval(async () => {
+    if (currentPollInterval) clearInterval(currentPollInterval);
+    currentPollInterval = setInterval(async () => {
         try {
             const res = await fetch(pollUrl + '?cursor=' + cursor);
             if (!res.ok) {
                 if (res.status === 404) {
-                    clearInterval(pollInterval);
+                    clearInterval(currentPollInterval);
                     return;
                 }
                 throw new Error('HTTP ' + res.status);
@@ -361,19 +382,24 @@ function startPolling(pollUrl, initialCursor) {
 
             // 搜索完成
             if (pollData.status === 'done' || endStatus === 'done') {
-                clearInterval(pollInterval);
+                clearInterval(currentPollInterval);
                 showDone(pollData.result);
             }
 
             // 搜索出错
             if (pollData.status === 'error' || endStatus === 'error') {
-                clearInterval(pollInterval);
+                clearInterval(currentPollInterval);
                 showError(pollData.result ? pollData.result.message : '搜索失败');
+            }
+
+            if (pollData.status === 'cancelled' || endStatus === 'cancelled') {
+                clearInterval(currentPollInterval);
+                showCancelled(pollData.result ? pollData.result.message : '搜索已取消，可以重新搜索');
             }
         } catch (pollErr) {
             pollFailCount++;
             if (pollFailCount >= 3) {
-                clearInterval(pollInterval);
+                clearInterval(currentPollInterval);
                 showError('请求失败：' + pollErr.message + '（可能是网络问题或服务器超时，请刷新页面重试）');
             }
         }
@@ -395,6 +421,8 @@ function startPolling(pollUrl, initialCursor) {
 
         // 只恢复正在运行的任务，历史完成任务不会阻止再次搜索
         document.getElementById('searchForm').style.display = 'none';
+        currentTaskId = data.task_id;
+        document.getElementById('cancelTaskBtn').disabled = data.status === 'cancelling';
         document.getElementById('progressArea').style.display = 'block';
         const startBtn = document.getElementById('startBtn');
         if (startBtn) startBtn.disabled = true;
@@ -444,6 +472,8 @@ document.getElementById('searchForm').addEventListener('submit', async function(
 
         const startData = await postResponse.json();
         const taskId = startData.task_id;
+        currentTaskId = taskId;
+        document.getElementById('cancelTaskBtn').disabled = false;
         addLog('搜索任务已提交，正在启动...', 'info');
 
         // 启动计时器和轮询
@@ -452,6 +482,22 @@ document.getElementById('searchForm').addEventListener('submit', async function(
         startPolling(pollUrl, 0);
     } catch (err) {
         showError('请求失败：' + err.message + '（可能是网络问题或服务器超时）');
+    }
+});
+
+document.getElementById('cancelTaskBtn').addEventListener('click', async function() {
+    if (!currentTaskId || !confirm('确定取消当前搜索吗？已经发出的第三方请求可能需要等待返回，但结果不会继续保存。')) return;
+    this.disabled = true;
+    try {
+        const cancelUrl = '{{ url_for("ai_search_suppliers", req_id=requirement.id) }}/cancel/' + currentTaskId;
+        const res = await fetch(cancelUrl, {method: 'POST'});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || '取消失败');
+        this.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 正在取消...';
+        addLog(data.message, 'info');
+    } catch (err) {
+        this.disabled = false;
+        alert('取消失败：' + err.message);
     }
 });
 </script>
