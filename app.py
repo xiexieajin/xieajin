@@ -16,7 +16,7 @@ import queue
 import threading
 from functools import wraps
 import db
-from db import get_db, now_str, SUPPLIER_STAGES, REQUIREMENT_STATUSES, hash_password, verify_password, recalc_requirement_status
+from db import get_db, now_str, SUPPLIER_STAGES, REQUIREMENT_STATUSES, hash_password, verify_password, recalc_requirement_status, mark_supplier_communicating
 from config import is_api_configured, is_vision_configured
 # 小白讲解：导入model_config模块用于启动时加载配置和修改后热更新
 import model_config
@@ -1289,6 +1289,7 @@ def communication_create(supplier_id):
             (supplier_id, channel, content, conclusion, next_step, comm_time, created_at, updated_at, user_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (supplier_id, channel, content, conclusion, next_step, comm_time, now_str(), now_str(), g.user_id))
+        mark_supplier_communicating(cursor, supplier_id)
         g.db.commit()
 
         return redirect(url_for("supplier_detail", id=supplier_id))
@@ -1724,13 +1725,21 @@ def ai_search_suppliers(req_id):
     import uuid
     task_id = str(uuid.uuid4())
 
-    # 创建任务记录，放入全局task_store（messages列表保留全部进度，req_id用于刷新恢复）
-    task_store[task_id] = {
-        "messages": [],          # 所有进度消息列表（不再消费式读取，全部保留）
-        "status": "running",     # 任务状态：running/done/error
-        "result": None,          # 最终结果（done时存搜索结果，error时存错误信息）
-        "req_id": req_id,        # 关联的需求ID（用户刷新页面后通过它找到正在运行的任务）
-    }
+    # 创建任务前在锁内检查，避免同一需求被重复启动多个搜索线程。
+    with _task_store_lock:
+        for existing_task_id, existing_task in task_store.items():
+            if (existing_task.get("task_type") == "search"
+                    and existing_task.get("req_id") == req_id
+                    and existing_task.get("status") == "running"):
+                return jsonify({"task_id": existing_task_id, "status": "running"})
+
+        task_store[task_id] = {
+            "messages": [],
+            "status": "running",
+            "result": None,
+            "req_id": req_id,
+            "task_type": "search",
+        }
 
     def progress_callback(step, total, desc):
         """进度回调：把进度消息追加到messages列表（加锁保护，避免并发写入冲突）"""
@@ -1751,7 +1760,15 @@ def ai_search_suppliers(req_id):
 
             saved_count = 0
             for s in suppliers:
-                if not s.get("name"):
+                supplier_name = (s.get("name") or "").strip()
+                if not supplier_name:
+                    continue
+                cur.execute("""
+                    SELECT id FROM suppliers
+                    WHERE requirement_id = %s AND TRIM(name) = %s
+                    LIMIT 1
+                """, (req_id, supplier_name))
+                if cur.fetchone():
                     continue
                 cur.execute("""
                     INSERT INTO suppliers
@@ -1769,7 +1786,7 @@ def ai_search_suppliers(req_id):
                             %s, %s, %s, %s,
                             %s, %s, %s,
                         %s, %s)
-                """, (req_id, s.get("name", ""), s.get("intro", ""),
+                """, (req_id, supplier_name, s.get("intro", ""),
                       s.get("factory_address", ""), s.get("email", ""),
                       s.get("phone", ""), s.get("main_product", ""),
                       s.get("source", "AI搜索"),
@@ -1858,17 +1875,18 @@ def poll_ai_search(req_id, task_id):
 @app.route("/ai/search-suppliers/<int:req_id>/status", methods=["GET"])
 def ai_search_status(req_id):
     """
-    查询需求是否有正在运行或已完成的搜索任务（用于页面刷新后恢复进度）
+    查询需求是否有正在运行的搜索任务（用于页面刷新后恢复进度）
 
     小白讲解：用户刷新页面后，前端的task_id丢了，不知道之前搜索到哪了。
     这个接口根据需求ID(req_id)在task_store里查找对应的任务：
     - 找到running状态 → 返回task_id和全部历史消息，前端恢复进度界面继续轮询
-    - 找到done/error状态 → 返回task_id和结果，前端直接显示完成/错误
     - 没找到 → 返回not_found，前端正常显示搜索表单
     """
     with _task_store_lock:
         for task_id, task in task_store.items():
-            if task.get("req_id") == req_id:
+            if (task.get("task_type") == "search"
+                    and task.get("req_id") == req_id
+                    and task.get("status") == "running"):
                 return jsonify({
                     "task_id": task_id,
                     "status": task["status"],
@@ -1907,10 +1925,14 @@ def ai_auto_screening(req_id):
         return "需求不存在", 404
 
     # GET请求：显示确认页面（加uid过滤，只统计自己需求下待初筛的供应商数量）
-    uid_sql, uid_params = _uid_clause()
+    uid_sql, uid_params = _uid_clause("s.")
     cursor.execute(f"""
-        SELECT COUNT(*) as count FROM suppliers
-        WHERE requirement_id = %s AND dev_stage = '已寻源待初筛' {uid_sql}
+        SELECT COUNT(*) as count FROM suppliers s
+        WHERE s.requirement_id = %s
+          AND s.dev_stage = '已寻源待初筛'
+          AND NOT EXISTS (
+              SELECT 1 FROM screenings sc WHERE sc.supplier_id = s.id
+          ) {uid_sql}
     """, (req_id, *uid_params))
     pending_count = cursor.fetchone()["count"]
 
@@ -1948,20 +1970,26 @@ def ai_auto_screening(req_id):
     # 初筛100+家供应商要10+分钟，连接被切断后前端就报network error。
     # 轮询模式每次请求都是瞬间的，不受长连接超时限制。
     if pending_count == 0:
-        flash("没有需要初筛的供应商（所有供应商已完成初筛）", "info")
-        return redirect(url_for("requirement_detail", id=req_id))
+        return jsonify({"status": "not_found", "message": "当前没有新增的待初筛供应商"}), 409
 
     import uuid
     task_id = str(uuid.uuid4())
 
-    # 创建任务记录，放入全局task_store（messages列表保留全部进度，req_id用于刷新恢复）
-    task_store[task_id] = {
-        "messages": [],          # 所有进度消息列表（不再消费式读取，全部保留）
-        "status": "running",     # 任务状态：running/done/error
-        "result": None,          # 最终结果（done时存审计报告，error时存错误信息）
-        "req_id": req_id,        # 关联的需求ID（用户刷新页面后通过它找到正在运行的任务）
-        "task_type": "screening",  # 任务类型标记（区分搜索/初筛，便于后续清理）
-    }
+    # 创建任务前在锁内检查，确保同一需求同一时间只有一个初筛任务。
+    with _task_store_lock:
+        for existing_task_id, existing_task in task_store.items():
+            if (existing_task.get("task_type") == "screening"
+                    and existing_task.get("req_id") == req_id
+                    and existing_task.get("status") == "running"):
+                return jsonify({"task_id": existing_task_id, "status": "running"})
+
+        task_store[task_id] = {
+            "messages": [],
+            "status": "running",
+            "result": None,
+            "req_id": req_id,
+            "task_type": "screening",
+        }
 
     # 小白讲解：把user_id存到局部变量，避免后台线程访问g对象（g是请求级的，请求结束后失效）
     current_user_id = g.user_id
@@ -2056,18 +2084,19 @@ def poll_ai_screening(req_id, task_id):
 @app.route("/ai/auto-screening/<int:req_id>/status", methods=["GET"])
 def ai_screening_status(req_id):
     """
-    查询需求是否有正在运行或已完成的初筛任务（用于页面刷新后恢复进度）
+    查询需求是否有正在运行的初筛任务（用于页面刷新后恢复进度）
 
     小白讲解：用户刷新页面后，前端的task_id丢了，不知道之前初筛到哪了。
     这个接口根据需求ID(req_id)在task_store里查找初筛类型的任务：
     - 找到running状态 → 返回task_id和全部历史消息，前端恢复进度界面继续轮询
-    - 找到done/error状态 → 返回task_id和结果，前端直接显示完成/错误
     - 没找到 → 返回not_found，前端正常显示初筛表单
     """
     with _task_store_lock:
         for task_id, task in task_store.items():
             # 只匹配初筛类型且req_id对应的任务（避免和搜索任务混淆）
-            if task.get("task_type") == "screening" and task.get("req_id") == req_id:
+            if (task.get("task_type") == "screening"
+                    and task.get("req_id") == req_id
+                    and task.get("status") == "running"):
                 return jsonify({
                     "task_id": task_id,
                     "status": task["status"],

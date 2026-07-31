@@ -333,7 +333,7 @@ def _save_communication(supplier_id, channel, direction, subject, content,
 
     返回：插入的 communication_id，去重跳过时返回已存在记录的ID
     """
-    from db import now_str
+    from db import now_str, mark_supplier_communicating
     conn = _get_db_connection()
     try:
         cursor = conn.cursor()
@@ -358,6 +358,8 @@ def _save_communication(supplier_id, channel, direction, subject, content,
             # 小白讲解：发出的邮件默认已读（is_read=1），收到的邮件默认未读（is_read=0）
             1 if direction == "outbound" else 0
         ))
+        if supplier_id:
+            mark_supplier_communicating(cursor, supplier_id)
         conn.commit()
         return cursor.lastrowid
     finally:
@@ -847,7 +849,7 @@ def claim_pending_email(pending_id, supplier_id, user_id):
 
     返回：(success, message)
     """
-    from db import now_str
+    from db import now_str, mark_supplier_communicating
     conn = _get_db_connection()
     try:
         cursor = conn.cursor()
@@ -884,6 +886,7 @@ def claim_pending_email(pending_id, supplier_id, user_id):
             pending["subject"] or "", pending["external_id"] or "", "received",
             0  # 小白讲解：手动认领的邮件默认未读，用户在邮件管理页点击后才会标记已读
         ))
+        mark_supplier_communicating(cursor, supplier_id)
 
         # 4. 标记 pending_emails 为已认领
         cursor.execute(

@@ -134,6 +134,39 @@ def recalc_requirement_status(cursor, requirement_id):
     return new_status
 
 
+def mark_supplier_communicating(cursor, supplier_id):
+    """
+    将已经发生沟通的供应商同步为“沟通中”阶段。
+
+    小白讲解：供应商一旦产生沟通记录，就代表已经进入沟通阶段。
+    但已合作、未通过初筛以及所属需求已完成的供应商不应被改回“沟通中”。
+    """
+    cursor.execute("""
+        SELECT s.requirement_id, s.dev_stage, r.status AS requirement_status
+        FROM suppliers s
+        LEFT JOIN requirements r ON r.id = s.requirement_id
+        WHERE s.id = %s
+    """, (supplier_id,))
+    supplier = cursor.fetchone()
+    if not supplier:
+        return False
+
+    if supplier.get("requirement_status") == "已完成":
+        return False
+    if supplier.get("dev_stage") in ("已合作", "未通过初筛"):
+        return False
+
+    if supplier.get("dev_stage") != "沟通中":
+        cursor.execute(
+            "UPDATE suppliers SET dev_stage=%s, updated_at=%s WHERE id=%s",
+            ("沟通中", now_str(), supplier_id)
+        )
+
+    if supplier.get("requirement_id"):
+        recalc_requirement_status(cursor, supplier["requirement_id"])
+    return True
+
+
 # ==================== 密码哈希工具（用Python标准库，无需安装bcrypt）====================
 def hash_password(password):
     """
@@ -743,6 +776,27 @@ def init_db():
         FOREIGN KEY (communication_id) REFERENCES communications (id) ON DELETE CASCADE
     )
     """)
+
+    # 修复历史数据：以前产生沟通记录后没有同步供应商阶段，导致首页“沟通中”一直为0。
+    # 小白讲解：应用启动时把已有沟通记录、尚未归档且未合作/未淘汰的供应商补成“沟通中”。
+    cursor.execute("""
+        UPDATE suppliers s
+        LEFT JOIN requirements r ON r.id = s.requirement_id
+        SET s.dev_stage = '沟通中', s.updated_at = %s
+        WHERE EXISTS (
+            SELECT 1 FROM communications c WHERE c.supplier_id = s.id
+        )
+          AND (r.status IS NULL OR r.status <> '已完成')
+          AND s.dev_stage NOT IN ('沟通中', '已合作', '未通过初筛')
+    """, (now_str(),))
+
+    cursor.execute("""
+        SELECT DISTINCT s.requirement_id
+        FROM suppliers s
+        WHERE s.dev_stage = '沟通中' AND s.requirement_id IS NOT NULL
+    """)
+    for row in cursor.fetchall():
+        recalc_requirement_status(cursor, row["requirement_id"])
 
     conn.commit()
 

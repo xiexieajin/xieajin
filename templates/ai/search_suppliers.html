@@ -122,9 +122,12 @@
             <i class="bi bi-check-circle-fill text-success" style="font-size: 3rem;"></i>
             <h3 class="mt-3 mb-2" id="doneTitle">搜索完成！</h3>
             <p class="text-muted" id="doneDesc"></p>
-            <p class="text-muted">将在 <span id="countdown">3</span> 秒后自动跳转到需求详情页...</p>
-            <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-primary">
-                <i class="bi bi-arrow-right"></i> 立即跳转
+            <p class="text-muted">历史供应商会保留，再次搜索只新增尚未保存的供应商。</p>
+            <button type="button" class="btn btn-success" onclick="window.location.reload()">
+                <i class="bi bi-arrow-repeat"></i> 再次搜索
+            </button>
+            <a href="{{ url_for('requirement_detail', id=requirement.id) }}" class="btn btn-outline-primary">
+                <i class="bi bi-arrow-right"></i> 返回需求详情
             </a>
         </div>
     </div>
@@ -315,16 +318,6 @@ function showDone(result) {
     document.getElementById('doneArea').style.display = 'block';
     document.getElementById('doneDesc').textContent =
         '共找到 ' + (d.total_found || 0) + ' 家供应商，已保存 ' + (d.saved_count || 0) + ' 家到数据库。';
-    let countdown = 3;
-    const countdownEl = document.getElementById('countdown');
-    const timer = setInterval(() => {
-        countdown--;
-        countdownEl.textContent = countdown;
-        if (countdown <= 0) {
-            clearInterval(timer);
-            window.location.href = '{{ url_for("requirement_detail", id=requirement.id) }}';
-        }
-    }, 1000);
 }
 
 /**
@@ -400,7 +393,7 @@ function startPolling(pollUrl, initialCursor) {
             return;
         }
 
-        // 找到正在运行或已完成的任务，恢复进度界面
+        // 只恢复正在运行的任务，历史完成任务不会阻止再次搜索
         document.getElementById('searchForm').style.display = 'none';
         document.getElementById('progressArea').style.display = 'block';
         const startBtn = document.getElementById('startBtn');

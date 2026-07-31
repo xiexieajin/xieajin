@@ -154,7 +154,11 @@ def run_screening(requirement_id, user_id, progress_queue=None, template_name=No
                r.core_functions, r.material
         FROM suppliers s
         JOIN requirements r ON s.requirement_id = r.id
-        WHERE s.requirement_id = %s AND s.dev_stage = '已寻源待初筛'
+        WHERE s.requirement_id = %s
+          AND s.dev_stage = '已寻源待初筛'
+          AND NOT EXISTS (
+              SELECT 1 FROM screenings sc WHERE sc.supplier_id = s.id
+          )
         ORDER BY s.id ASC
     """, (requirement_id,))
     suppliers = cursor.fetchall()
@@ -595,6 +599,76 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
     第二层看经营范围关键字（带"生产/制造/加工"且有实际生产字样）；
     第三层AI综合判断（公司名+经营范围+主营产品一起分析）。
     """
+    source = supplier.get("source", "") or ""
+    req_product = supplier.get("req_product_name", "") or ""
+    product_title = supplier.get("product_title", "") or ""
+
+    if source == "海关数据":
+        if not business_scope.strip() or not req_product.strip():
+            reason = "海关记录只能证明企业曾作为出口方，工商信息不足，无法确认其具备当前采购产品的制造能力"
+            log_task(run_id, supplier_id, "veto_non_manufacturer_check", "制造商判断",
+                     {"company_name": company_name,
+                      "source": source,
+                      "req_product": req_product,
+                      "business_scope": business_scope[:500],
+                      "customs_product": product_title[:500]},
+                     {"is_manufacturer": False,
+                      "has_manufacturing_capability": False,
+                      "manufacturing_matches_product": False,
+                      "reason": reason},
+                     "海关来源严格判断：出口证据不等于制造证据", "success", user_id)
+            return True
+
+        try:
+            prompt = f"""你正在执行供应商初筛的一票否决判断。
+
+海关数据只能证明企业曾作为出口商或发货人出口过商品，不能证明企业自己生产这些商品。
+
+请严格根据工商经营范围判断：
+1. 企业是否具备实际生产、制造、加工或组装能力；
+2. 上述制造活动的对象是否与当前采购产品相同，或属于能够生产该产品的合理上位品类；
+3. 销售、批发、零售、进出口、技术开发、技术服务、委托加工、外协加工，不视为企业自身制造能力；
+4. 经营范围虽然包含生产或制造，但生产对象与采购产品不相关时，必须判定不符合；
+5. 采购对象如果本身是零部件、原材料、模具或加工服务，应按该采购对象本身判断，不要套用成品规则；
+6. 证据不足、描述模糊或无法确定时，必须判定为reject。
+
+采购产品：{req_product}
+企业名称：{company_name}
+工商经营范围：{business_scope}
+海关商品描述（只证明出口事实，仅供核对产品）：{product_title}
+
+只返回JSON：
+{{"has_manufacturing_capability": true或false, "manufacturing_matches_product": true或false, "decision": "pass"或"reject", "reason": "判断依据"}}"""
+            result_text = call_deepseek(
+                [{"role": "user", "content": prompt}],
+                scene_code="auto_screening", temperature=None, json_mode=True
+            )
+            result = extract_json_from_text(result_text)
+            has_capability = result.get("has_manufacturing_capability") is True
+            matches_product = result.get("manufacturing_matches_product") is True
+            decision = result.get("decision", "")
+            is_manufacturer = decision == "pass" and has_capability and matches_product
+            reason = result.get("reason", "") or "海关来源制造能力判断未提供依据"
+        except Exception as e:
+            has_capability = False
+            matches_product = False
+            is_manufacturer = False
+            reason = f"海关来源制造能力判断失败，按证据不足否决：{str(e)[:200]}"
+
+        log_task(run_id, supplier_id, "veto_non_manufacturer_check", "制造商判断",
+                 {"company_name": company_name,
+                  "source": source,
+                  "req_product": req_product,
+                  "business_scope": business_scope[:500],
+                  "customs_product": product_title[:500]},
+                 {"is_manufacturer": is_manufacturer,
+                  "has_manufacturing_capability": has_capability,
+                  "manufacturing_matches_product": matches_product,
+                  "reason": reason},
+                 "海关来源严格判断：必须同时具备制造能力且制造对象匹配采购产品",
+                 "success", user_id)
+        return not is_manufacturer
+
     # 小白讲解：第一层——从公司名快速判断
     # 公司名含这些字样通常是工厂/制造商：厂、制造、生产、加工
     # 公司名含这些字样通常是贸易商：贸易、商贸、销售、商行、百货、进出口、经贸、经销

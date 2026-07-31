@@ -49,30 +49,34 @@
 
     <!-- 已通过初筛数量 -->
     <div class="col-md-3 col-sm-6">
-        <div class="stat-card">
-            <div class="stat-card__icon">
-                <i class="bi bi-check-circle"></i>
+        <a href="{{ url_for('supplier_list', dev_stage='已通过初筛') }}" class="text-decoration-none">
+            <div class="stat-card">
+                <div class="stat-card__icon">
+                    <i class="bi bi-check-circle"></i>
+                </div>
+                <div>
+                    {% set passed = stage_stats | selectattr('dev_stage', 'equalto', '已通过初筛') | list %}
+                    <div class="stat-card__number">{% if passed %}{{ passed[0].count }}{% else %}0{% endif %}</div>
+                    <div class="stat-card__label">已通过初筛</div>
+                </div>
             </div>
-            <div>
-                {% set passed = stage_stats | selectattr('dev_stage', 'equalto', '已通过初筛') | list %}
-                <div class="stat-card__number">{% if passed %}{{ passed[0].count }}{% else %}0{% endif %}</div>
-                <div class="stat-card__label">已通过初筛</div>
-            </div>
-        </div>
+        </a>
     </div>
 
     <!-- 沟通中数量 -->
     <div class="col-md-3 col-sm-6">
-        <div class="stat-card">
-            <div class="stat-card__icon">
-                <i class="bi bi-chat-dots"></i>
+        <a href="{{ url_for('communications_email') }}" class="text-decoration-none">
+            <div class="stat-card">
+                <div class="stat-card__icon">
+                    <i class="bi bi-chat-dots"></i>
+                </div>
+                <div>
+                    {% set communicating = stage_stats | selectattr('dev_stage', 'equalto', '沟通中') | list %}
+                    <div class="stat-card__number">{% if communicating %}{{ communicating[0].count }}{% else %}0{% endif %}</div>
+                    <div class="stat-card__label">沟通中</div>
+                </div>
             </div>
-            <div>
-                {% set communicating = stage_stats | selectattr('dev_stage', 'equalto', '沟通中') | list %}
-                <div class="stat-card__number">{% if communicating %}{{ communicating[0].count }}{% else %}0{% endif %}</div>
-                <div class="stat-card__label">沟通中</div>
-            </div>
-        </div>
+        </a>
     </div>
 </div>
 
