@@ -1338,7 +1338,7 @@ def _extract_1688_factories(result):
     return []
 
 
-def _crawl_1688_once(keyword, hit_keyword=""):
+def _crawl_1688_once(keyword, hit_keyword="", search_round=1, total_rounds=4):
     """
     单次调用1688"搜产品"API，从产品中提取供应商信息（一次返回约30家）
 
@@ -1349,6 +1349,8 @@ def _crawl_1688_once(keyword, hit_keyword=""):
     参数：
         keyword: 搜索关键词（如"玻璃电视柜"）
         hit_keyword: 命中的P0-P3关键词标签
+        search_round: 当前完整搜索轮次，首次为1，重新搜索依次为2到4
+        total_rounds: 最大完整搜索轮数，默认首次1次加重新搜索3次
 
     返回：供应商列表，每条包含：
         - name: 公司名称
@@ -1359,14 +1361,19 @@ def _crawl_1688_once(keyword, hit_keyword=""):
         - price: 价格
         - moq: 起订量
     """
+    log_prefix = f"[1688搜索诊断][关键词={keyword}][轮次={search_round}/{total_rounds}]"
+    round_start_time = time.time()
+    print(f"{log_prefix}[开始] 完整执行关键词搜产品逻辑")
+
     if not _is_1688_ak_configured():
-        print(f"1688 AK未配置，跳过'{keyword}'的搜索（请在管理中心配置1688服务商的api_key）")
+        print(f"{log_prefix}[失败][原因=AK未配置] 请在管理中心配置1688服务商的api_key")
         return []
 
     # 调用 skills-gateway "搜产品"API
     # 小白讲解：scoreLevel=high保证相关性高
     # pageSize从管理中心配置读取（管理员可在"搜索平台管理"页面调整最大结果数）
     max_results = _get_platform_max_results("ali1688", default=100)
+    print(f"{log_prefix}[请求参数] pageSize={max_results}, purchaseAmount=1, scoreLevel=high")
 
     # 小白讲解：调用1688搜索接口前先限速，保证两次调用间隔至少5秒，避免触发限流(429)
     # 即使3个关键词并发搜索，这里也会自动排队错开，不会同时发请求
@@ -1379,7 +1386,10 @@ def _crawl_1688_once(keyword, hit_keyword=""):
         "scoreLevel": "high",
     }, timeout=60)
     if not data or not data.get("success"):
-        print(f"1688搜产品'{keyword}'失败: {data.get('msgInfo') if data else '无响应'}")
+        msg_code = data.get("msgCode", "") if data else ""
+        msg_info = data.get("msgInfo", "无响应") if data else "无响应"
+        elapsed = time.time() - round_start_time
+        print(f"{log_prefix}[失败][原因=接口失败] msgCode={msg_code}, msgInfo={msg_info}, 耗时={elapsed:.1f}秒")
         return []
 
     # 小白讲解：find_product的产品列表在 data.data 里（嵌套一层）
@@ -1393,10 +1403,50 @@ def _crawl_1688_once(keyword, hit_keyword=""):
         products = []
 
     if not products:
-        print(f"1688搜产品'{keyword}'未获取到产品")
+        data_keys = list(data.keys()) if isinstance(data, dict) else []
+        outer_type = type(outer_data).__name__
+        outer_keys = list(outer_data.keys()) if isinstance(outer_data, dict) else []
+        elapsed = time.time() - round_start_time
+        print(f"{log_prefix}[失败][原因=产品列表为空] 响应顶层字段={data_keys}, data类型={outer_type}, data字段={outer_keys}, 耗时={elapsed:.1f}秒")
         return []
 
-    print(f"1688搜产品'{keyword}'：获取到 {len(products)} 个产品")
+    print(f"{log_prefix}[响应成功] 获取产品数={len(products)}")
+
+    # 诊断日志：当出现"有产品但提取出0家供应商"时，打印第一个产品的实际结构，
+    # 用来判断是字段名不匹配还是元素类型不是dict。
+    # 小白讲解：如果搜索结果出现"X个产品 → 0家供应商"，这段日志会显示第一个产品长什么样，
+    # 方便排查是哪个字段没拿到。只打印前2个，避免日志过长。
+    try:
+        if products:
+            first = products[0]
+            print(f"{log_prefix}[产品结构] 第1个产品类型={type(first).__name__}")
+            if isinstance(first, dict):
+                print(f"{log_prefix}[产品结构] 第1个产品字段={list(first.keys())}")
+                # 打印与公司名相关的字段值（用于确认字段是否为空）
+                for k in ("company", "supplier", "companyName", "memberId", "userId", "shopName", "loginId", "sellerName"):
+                    if k in first:
+                        val = first.get(k)
+                        print(f"{log_prefix}[公司字段] {k}={repr(val)[:100]}")
+                # 统计有多少个产品的company/supplier字段非空
+                has_company_count = 0
+                not_dict_count = 0
+                for p in products:
+                    if not isinstance(p, dict):
+                        not_dict_count += 1
+                        continue
+                    cn = (p.get("company") or p.get("supplier") or "")
+                    if cn and str(cn).strip():
+                        has_company_count += 1
+                print(
+                    f"{log_prefix}[字段统计] 产品总数={len(products)}, "
+                    f"字典产品数={len(products)-not_dict_count}, 非字典产品数={not_dict_count}, "
+                    f"有公司名产品数={has_company_count}, 缺公司名产品数={len(products)-not_dict_count-has_company_count}"
+                )
+            else:
+                # 元素不是dict，打印原始内容片段帮助判断结构
+                print(f"{log_prefix}[产品结构异常] 第1个产品原始内容={repr(first)[:200]}")
+    except Exception as diag_e:
+        print(f"{log_prefix}[诊断日志异常] {diag_e}")
 
     # 组装供应商数据（从产品中提取供应商公司名和产品信息）
     results = []
@@ -1444,7 +1494,18 @@ def _crawl_1688_once(keyword, hit_keyword=""):
             "moq": moq,
         })
 
-    print(f"1688搜产品'{keyword}'：{len(products)}个产品 → {len(results)}家供应商")
+    unique_company_count = len({r.get("name", "") for r in results if r.get("name")})
+    elapsed = time.time() - round_start_time
+    if results:
+        print(
+            f"{log_prefix}[成功] 产品数={len(products)}, 供应商记录数={len(results)}, "
+            f"去重前唯一公司数={unique_company_count}, 耗时={elapsed:.1f}秒"
+        )
+    else:
+        print(
+            f"{log_prefix}[失败][原因=产品有数据但供应商为0] 产品数={len(products)}, "
+            f"请重点检查company/supplier字段, 耗时={elapsed:.1f}秒"
+        )
     return results
 
 
@@ -1464,18 +1525,53 @@ def crawl_1688(keyword, hit_keyword="", variants=None, target_count=50):
 
     返回：去重后的供应商列表（约28家，一次搜索的实际结果）
     """
-    # 直接用原始关键词搜一次，按公司名去重后返回
+    # 小白讲解：首次搜索算第1轮；如果供应商为0，再把该关键词的完整搜索逻辑重新运行3次。
+    # 每轮都会重新执行：AK检查、读取平台数量配置、全局限速、接口请求、响应解析、字段诊断和供应商提取。
+    max_retry_count = 3
+    total_rounds = 1 + max_retry_count
     all_results = []
     seen_names = set()
 
-    batch = _crawl_1688_once(keyword, hit_keyword)
+    batch = []
+    for search_round in range(1, total_rounds + 1):
+        batch = _crawl_1688_once(
+            keyword,
+            hit_keyword,
+            search_round=search_round,
+            total_rounds=total_rounds,
+        )
+        if batch:
+            if search_round == 1:
+                print(f"[1688搜索诊断][关键词={keyword}][最终状态=首次成功] 供应商记录数={len(batch)}")
+            else:
+                print(
+                    f"[1688搜索诊断][关键词={keyword}][最终状态=重搜成功] "
+                    f"成功轮次={search_round}/{total_rounds}, 已重搜次数={search_round-1}, 供应商记录数={len(batch)}"
+                )
+            break
+
+        if search_round < total_rounds:
+            print(
+                f"[1688搜索诊断][关键词={keyword}][准备重搜] "
+                f"第{search_round}/{total_rounds}轮供应商为0，即将完整重新运行该关键词搜索逻辑，"
+                f"剩余重搜次数={total_rounds-search_round}"
+            )
+        else:
+            print(
+                f"[1688搜索诊断][关键词={keyword}][最终状态=连续失败] "
+                f"首次搜索和{max_retry_count}次重搜均为0家供应商"
+            )
+
     for r in batch:
         name = r.get("name", "")
         if name and name not in seen_names:
             seen_names.add(name)
             all_results.append(r)
 
-    print(f"1688'{keyword}'最终：{len(all_results)}家（单次搜产品，不再用变体）")
+    print(
+        f"[1688搜索诊断][关键词={keyword}][最终汇总] "
+        f"原始供应商记录数={len(batch)}, 公司名去重后={len(all_results)}, 最大允许重搜次数={max_retry_count}"
+    )
     return all_results
 
 
@@ -1972,7 +2068,9 @@ def extract_company_names(search_results):
         # （API/MCP返回的公司名最准确，不需要正则重新提取）
         if r.get("name"):
             name = r["name"].strip()
-            if name and name not in seen_names and 4 <= len(name) <= 40:
+            # 小白讲解：英文工商名称经常超过40个字符，例如“XXX Manufacturing Co., Ltd.”。
+            # API/MCP 已经明确给出的公司名可信度较高，因此放宽到200字符，避免有效供应商被静默删除。
+            if name and name not in seen_names and 4 <= len(name) <= 200:
                 seen_names.add(name)
                 company = {
                     "name": name,
