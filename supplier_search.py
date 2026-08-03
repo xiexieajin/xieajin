@@ -27,7 +27,7 @@ import threading
 import difflib
 import subprocess
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from datetime import datetime
 # 小白讲解：AI配置统一从数据库读取（通过model_config模块），不再从config.py硬编码
 # get_search_platforms用于读取启用的搜索平台列表（管理员可在管理中心启停平台）
@@ -2311,7 +2311,7 @@ def _filter_one_batch(batch, product_name):
             return fallback
 
 
-def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_callback=None):
+def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_callback=None, cancel_checker=None):
     """
     用DeepSeek对已预筛+已补全工商信息的公司列表做精细过滤
 
@@ -2352,24 +2352,34 @@ def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_ca
     # 并发处理所有批次（最多8个线程同时跑）
     # v4-pro官方并发上限500，8线程完全够用，比4线程快一倍
     # 注：max强度思考较慢，多并发能有效缩短总等待时间
-    with ThreadPoolExecutor(max_workers=min(8, total_batches)) as executor:
-        # 提交所有批次任务
-        future_to_batch = {
-            executor.submit(_filter_one_batch, batch, product_name): idx
-            for idx, batch in enumerate(batches)
-        }
-        # 按完成顺序收集结果
-        completed = 0
-        for future in as_completed(future_to_batch):
-            completed += 1
-            batch_idx = future_to_batch[future]
-            if progress_callback and total_batches > 1:
-                progress_callback(15, 16, f"AI过滤中... 已完成{completed}/{total_batches}批")
-            try:
-                result = future.result()
-                all_filtered.extend(result)
-            except Exception as e:
-                print(f"批次{batch_idx+1}异常: {e}")
+    executor = ThreadPoolExecutor(max_workers=min(8, total_batches))
+    future_to_batch = {
+        executor.submit(_filter_one_batch, batch, product_name): idx
+        for idx, batch in enumerate(batches)
+    }
+    pending = set(future_to_batch)
+    completed = 0
+    cancelled = False
+    try:
+        while pending:
+            done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            if cancel_checker and cancel_checker():
+                cancelled = True
+                for future in pending:
+                    future.cancel()
+                return []
+            for future in done:
+                completed += 1
+                batch_idx = future_to_batch[future]
+                if progress_callback and total_batches > 1:
+                    progress_callback(15, 16, f"AI过滤中... 已完成{completed}/{total_batches}批")
+                try:
+                    result = future.result()
+                    all_filtered.extend(result)
+                except Exception as e:
+                    print(f"批次{batch_idx+1}异常: {e}")
+    finally:
+        executor.shutdown(wait=not cancelled, cancel_futures=True)
 
     # 第三步：按供应商名称去重，校验公司名是否在原始提取列表中
     original_names = {c["name"] for c in companies}
@@ -2530,94 +2540,44 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
         # 海关数据：所有英文关键词都搜（中文跳过），有数据就取，没数据跳过翻页
         should_search_customs = use_customs and re.search(r'[a-zA-Z]', term)
 
-        # 根据启用的平台组合选择并行策略
-        if use_1688 and use_mic and should_search_customs:
-            # 三平台并行
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                future_1688 = pool.submit(crawl_1688, term, hit_kw, variants)
-                future_mic = pool.submit(crawl_made_in_china, term, hit_kw, variants)
-                future_customs = pool.submit(crawl_topease_customs, term, hit_kw, variants, hs_code)
-                try:
-                    results_1688 = future_1688.result(timeout=300)
-                except Exception as e:
-                    print(f"1688搜索'{term}'异常: {e}")
-                    results_1688 = []
-                try:
-                    results_mic = future_mic.result(timeout=180)
-                except Exception as e:
-                    print(f"Made-in-China搜索'{term}'异常: {e}")
-                    results_mic = []
-                try:
-                    results_customs = future_customs.result(timeout=300)
-                except Exception as e:
-                    print(f"海关数据搜索'{term}'异常: {e}")
-                    results_customs = []
-        elif use_1688 and use_mic:
-            # 1688 + MIC 并行
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                future_1688 = pool.submit(crawl_1688, term, hit_kw, variants)
-                future_mic = pool.submit(crawl_made_in_china, term, hit_kw, variants)
-                try:
-                    results_1688 = future_1688.result(timeout=300)
-                except Exception as e:
-                    print(f"1688搜索'{term}'异常: {e}")
-                    results_1688 = []
-                try:
-                    results_mic = future_mic.result(timeout=180)
-                except Exception as e:
-                    print(f"Made-in-China搜索'{term}'异常: {e}")
-                    results_mic = []
-        elif use_1688 and should_search_customs:
-            # 1688 + 海关并行
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                future_1688 = pool.submit(crawl_1688, term, hit_kw, variants)
-                future_customs = pool.submit(crawl_topease_customs, term, hit_kw, variants, hs_code)
-                try:
-                    results_1688 = future_1688.result(timeout=300)
-                except Exception as e:
-                    print(f"1688搜索'{term}'异常: {e}")
-                    results_1688 = []
-                try:
-                    results_customs = future_customs.result(timeout=300)
-                except Exception as e:
-                    print(f"海关数据搜索'{term}'异常: {e}")
-                    results_customs = []
-        elif use_mic and should_search_customs:
-            # MIC + 海关并行
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                future_mic = pool.submit(crawl_made_in_china, term, hit_kw, variants)
-                future_customs = pool.submit(crawl_topease_customs, term, hit_kw, variants, hs_code)
-                try:
-                    results_mic = future_mic.result(timeout=180)
-                except Exception as e:
-                    print(f"Made-in-China搜索'{term}'异常: {e}")
-                    results_mic = []
-                try:
-                    results_customs = future_customs.result(timeout=300)
-                except Exception as e:
-                    print(f"海关数据搜索'{term}'异常: {e}")
-                    results_customs = []
-        elif use_1688:
-            # 只启用1688：单独搜索1688
+        platform_tasks = []
+        if use_1688:
+            platform_tasks.append(("1688", crawl_1688, (term, hit_kw, variants)))
+        if use_mic:
+            platform_tasks.append(("Made-in-China", crawl_made_in_china, (term, hit_kw, variants)))
+        if should_search_customs:
+            platform_tasks.append(("海关数据", crawl_topease_customs, (term, hit_kw, variants, hs_code)))
+
+        if platform_tasks:
+            pool = ThreadPoolExecutor(max_workers=len(platform_tasks))
+            future_to_platform = {
+                pool.submit(func, *args): platform_name
+                for platform_name, func, args in platform_tasks
+            }
+            pending = set(future_to_platform)
+            platform_results = {}
+            cancelled = False
             try:
-                results_1688 = crawl_1688(term, hit_kw, variants)
-            except Exception as e:
-                print(f"1688搜索'{term}'异常: {e}")
-                results_1688 = []
-        elif use_mic:
-            # 只启用MIC：单独搜索中国制造网
-            try:
-                results_mic = crawl_made_in_china(term, hit_kw, variants)
-            except Exception as e:
-                print(f"Made-in-China搜索'{term}'异常: {e}")
-                results_mic = []
-        elif should_search_customs:
-            # 只启用海关数据
-            try:
-                results_customs = crawl_topease_customs(term, hit_kw, variants, hs_code)
-            except Exception as e:
-                print(f"海关数据搜索'{term}'异常: {e}")
-                results_customs = []
+                while pending:
+                    done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                    if _cancelled():
+                        cancelled = True
+                        for future in pending:
+                            future.cancel()
+                        return
+                    for future in done:
+                        platform_name = future_to_platform[future]
+                        try:
+                            platform_results[platform_name] = future.result()
+                        except Exception as e:
+                            print(f"{platform_name}搜索'{term}'异常: {e}")
+                            platform_results[platform_name] = []
+            finally:
+                pool.shutdown(wait=not cancelled, cancel_futures=True)
+
+            results_1688 = platform_results.get("1688", [])
+            results_mic = platform_results.get("Made-in-China", [])
+            results_customs = platform_results.get("海关数据", [])
 
         if _cancelled():
             return
@@ -2655,20 +2615,28 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
         print(f"关键词'{term}'搜索完成：本次新增{new_added}家，累计{len(all_results)}家")
 
     # 并发搜索所有关键词（最多3个关键词同时搜索，避免触发平台限流）
-    with ThreadPoolExecutor(max_workers=min(3, len(search_terms))) as executor:
-        futures = {
-            executor.submit(_search_one_keyword, key, term, hit_kw, variants, idx, enabled_codes): idx
-            for idx, (key, term, hit_kw, variants) in enumerate(search_terms)
-        }
-        for future in as_completed(futures):
+    executor = ThreadPoolExecutor(max_workers=min(3, len(search_terms)))
+    futures = {
+        executor.submit(_search_one_keyword, key, term, hit_kw, variants, idx, enabled_codes): idx
+        for idx, (key, term, hit_kw, variants) in enumerate(search_terms)
+    }
+    pending = set(futures)
+    cancelled = False
+    try:
+        while pending:
+            done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             if _cancelled():
-                for pending_future in futures:
-                    pending_future.cancel()
+                cancelled = True
+                for future in pending:
+                    future.cancel()
                 break
-            try:
-                future.result(timeout=180)
-            except Exception as e:
-                print(f"关键词搜索异常: {e}")
+            for future in done:
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"关键词搜索异常: {e}")
+    finally:
+        executor.shutdown(wait=not cancelled, cancel_futures=True)
 
     if _cancelled():
         return []
@@ -2860,21 +2828,29 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
             _enrich_one_supplier(supplier, tyc_client)
 
         # 并发补全（最多5个线程，避免天眼查限流）
-        with ThreadPoolExecutor(max_workers=min(5, len(companies))) as executor:
-            futures = {executor.submit(_enrich_task, s): s for s in companies}
-            done_count = 0
-            for future in as_completed(futures):
+        executor = ThreadPoolExecutor(max_workers=min(5, len(companies)))
+        futures = {executor.submit(_enrich_task, s): s for s in companies}
+        pending = set(futures)
+        done_count = 0
+        cancelled = False
+        try:
+            while pending:
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
                 if _cancelled():
-                    for pending_future in futures:
-                        pending_future.cancel()
+                    cancelled = True
+                    for future in pending:
+                        future.cancel()
                     break
-                try:
-                    future.result(timeout=30)
-                    done_count += 1
-                    if progress_callback and done_count % 3 == 0:
-                        progress_callback(current_step, total_steps, f"天眼查补全中... {done_count}/{len(companies)}，{_elapsed()}")
-                except Exception as e:
-                    print(f"天眼查补全任务异常: {e}")
+                for future in done:
+                    try:
+                        future.result()
+                        done_count += 1
+                        if progress_callback and done_count % 3 == 0:
+                            progress_callback(current_step, total_steps, f"天眼查补全中... {done_count}/{len(companies)}，{_elapsed()}")
+                    except Exception as e:
+                        print(f"天眼查补全任务异常: {e}")
+        finally:
+            executor.shutdown(wait=not cancelled, cancel_futures=True)
     except Exception as e:
         print(f"天眼查补全初始化失败: {e}")
 
@@ -2904,7 +2880,13 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                 progress_callback(current_step, total_steps, f"{desc}，{_elapsed()}")
             else:
                 progress_callback(current_step, total_steps, desc)
-    suppliers = filter_suppliers_with_ai(companies, product_name, keywords_text, _ai_progress_cb if progress_callback else None)
+    suppliers = filter_suppliers_with_ai(
+        companies,
+        product_name,
+        keywords_text,
+        _ai_progress_cb if progress_callback else None,
+        cancel_checker=_cancelled,
+    )
 
     if _cancelled():
         return []
