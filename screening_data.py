@@ -21,7 +21,9 @@ import re
 import time
 import difflib
 import requests
+import pymysql
 from supplier_search import TianyanchaClient, _extract_core_name
+from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 
 
 class ScreeningDataClient(TianyanchaClient):
@@ -227,22 +229,121 @@ def _verify_brand_name(orig_name, cand_name):
     return orig_core in cand_core or cand_core in orig_core
 
 
-def query_supplier_full_data(company_name, client=None):
+def _load_cached_tyc_data(supplier_id):
     """
-    查询供应商的完整初筛数据（基础信息+风险+资质+商标+专利）
+    从数据库读取搜索阶段缓存的天眼查数据
 
-    小白讲解：这是初筛引擎调用的主入口。传入企业名，返回一个包含所有初筛
-    所需数据的字典。函数内部自动完成MCP三步走流程。
+    小白讲解：搜索阶段调天眼查时，已经把匹配状态/经营范围/注册资本等存到了suppliers表。
+    这个函数把这些字段读出来，初筛时直接复用，不用再调天眼查。
+
+    参数：supplier_id 供应商ID
+    返回：包含缓存数据的字典，没有数据返回None
+    """
+    try:
+        conn = pymysql.connect(
+            host=MYSQL_HOST, port=MYSQL_PORT,
+            user=MYSQL_USER, password=MYSQL_PASSWORD,
+            database=MYSQL_DATABASE, charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT tyc_match_status, business_scope, tyc_company_id,
+                   registered_capital, operating_status, establish_date,
+                   phone, email, legal_person, name
+            FROM suppliers WHERE id = %s
+        """, (supplier_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        print(f"[初筛] 读取缓存天眼查数据失败(supplier_id={supplier_id}): {e}")
+        return None
+
+
+def _rebuild_basic_info_from_db(cached, company_name):
+    """
+    从数据库字段重建basic_info字典（和天眼查返回格式对齐）
+
+    小白讲解：初筛规则引擎期望basic_info里有注册资本/经营状态/经营范围等字段。
+    搜索阶段把这些存到了suppliers表的各字段里，这个函数把它们拼回字典格式，
+    让规则引擎不用改代码就能用。
+
+    参数：
+        cached: 数据库读出的供应商行
+        company_name: 企业名（备用）
+    返回：basic_info字典
+    """
+    return {
+        "name": cached.get("name", "") or company_name,
+        "registered_capital": cached.get("registered_capital", "") or "",
+        "status": cached.get("operating_status", "") or "",
+        "establish_date": cached.get("establish_date", "") or "",
+        "business_scope": cached.get("business_scope", "") or "",
+        "phone": cached.get("phone", "") or "",
+        "email": cached.get("email", "") or "",
+        "legal_person": cached.get("legal_person", "") or "",
+    }
+
+
+def _query_risk_qual_case(client, company_full_name, result):
+    """
+    查询初筛所需的3个增量维度：风险总览+资质证书+司法案件
+
+    小白讲解：这是初筛真正需要从天眼查查的数据（搜索阶段没查的）。
+    分别调用3次call_tool，每次之间加0.5秒延迟避免频率限制。
+    之前还查了capabilities/trademarks/patents，但发现：
+    - capabilities：代码注释说不依赖它，直接试调常用工具，所以删掉
+    - trademarks/patents：评分规则根本没用到这两个字段，纯属浪费额度，删掉
+
+    参数：
+        client: 天眼查客户端
+        company_full_name: 企业全称
+        result: 结果字典（会往里面写 risk_overview/qualifications/judicial_case）
+    """
+    # 调用风险总览（核心维度，大部分公司可用）
+    risk_text = client.call_tool(company_full_name, "get_risk_overview")
+    if risk_text and "请求失败" not in risk_text and "unknown tool" not in risk_text:
+        result["risk_overview"] = risk_text
+    time.sleep(0.5)
+
+    # 调用资质证书
+    qual_text = client.call_tool(
+        company_full_name, "get_qualifications",
+        {"page": 1, "page_size": 20}
+    )
+    if qual_text and "请求失败" not in qual_text and "unknown tool" not in qual_text:
+        result["qualifications"] = qual_text
+    time.sleep(0.5)
+
+    # 调用司法案件（用于检查知识产权侵权败诉，部分公司可用）
+    case_text = client.call_tool(
+        company_full_name, "get_judicial_case",
+        {"page": 1, "page_size": 10}
+    )
+    if case_text and "请求失败" not in case_text and "unknown tool" not in case_text:
+        result["judicial_case"] = case_text
+
+
+def query_supplier_full_data(company_name, client=None, supplier_id=None):
+    """
+    查询供应商的完整初筛数据（基础信息+风险+资质+司法案件）
+
+    小白讲解：这是初筛引擎调用的主入口。做了优化——
+    如果搜索阶段已经查过天眼查并存到数据库，初筛时直接读库复用basic_info，
+    只查风险/资质/司法3个增量维度，省掉search_companies+get_company_basic_profile
+    +capabilities+trademarks+patents共5次MCP请求。
+    只有手动添加的供应商（数据库没有天眼查数据）才走完整查询流程。
 
     参数：
         company_name: 企业全称
         client: 可选的ScreeningDataClient实例（传入则复用连接，不传则新建）
+        supplier_id: 可选的供应商ID，传了会先读数据库缓存
     返回：供应商数据字典，包含：
-        - basic_info: 基础工商信息（注册资本/经营状态/成立日期/经营范围/联系方式等）
+        - basic_info: 基础工商信息
         - risk_overview: 风险总览文本
         - qualifications: 资质证书文本
-        - trademarks: 商标文本
-        - patents: 专利文本
+        - judicial_case: 司法案件文本
         - tyc_match_status: 天眼查匹配状态
         - company_id: 企业ID
     """
@@ -257,22 +358,42 @@ def query_supplier_full_data(company_name, client=None):
         "basic_info": {},
         "risk_overview": "",
         "qualifications": "",
-        "trademarks": "",
-        "patents": "",
+        "judicial_case": "",
         "tyc_match_status": "not_found",
         "company_id": "",
         "capabilities_text": "",
     }
 
+    # ==================== 优化：优先读库复用搜索阶段的天眼查数据 ====================
+    # 小白讲解：搜索阶段已经调过 search_companies + get_company_basic_profile，
+    # 结果存在 suppliers 表的 tyc_match_status / business_scope 等字段里。
+    # 初筛时直接读库，省掉2次MCP请求（search + profile）。
+    # 只有手动添加的供应商（tyc_match_status为空）才触发天眼查补查。
+    if supplier_id:
+        cached = _load_cached_tyc_data(supplier_id)
+        if cached:
+            match_status = cached.get("tyc_match_status", "") or ""
+            if match_status == "not_found":
+                # 搜索阶段已确认天眼查查不到（理论上搜索阶段已剔除，这里兜底）
+                result["tyc_match_status"] = "not_found"
+                return result
+            if match_status and match_status != "error":
+                # 匹配成功：从数据库重建basic_info，只查增量维度
+                result["tyc_match_status"] = match_status
+                result["company_id"] = cached.get("tyc_company_id", "") or ""
+                result["basic_info"] = _rebuild_basic_info_from_db(cached, company_name)
+                company_full_name = result["basic_info"].get("name", company_name)
+                # 只查3个增量维度（风险+资质+司法），省掉search+profile+caps+trademarks+patents
+                _query_risk_qual_case(client, company_full_name, result)
+                return result
+            # match_status为空（手动添加）或error → 走完整流程补查
+
+    # ==================== 完整流程（手动添加的供应商，数据库没有天眼查数据）====================
     try:
         # 第1步：搜索公司，拿company_id
-        # 小白讲解：与AI搜索流程保持一致的严格匹配逻辑——
-        # 先精确同名匹配，找不到再用相似度≥0.6校验，防止取到错误公司数据
         companies = client.search_companies(company_name)
 
-        # 区分"请求失败"和"确实没找到"：
-        # - None表示请求失败（网络超时/频率限制），返回error状态让初筛跳过
-        # - 空列表[]表示天眼查确实没找到这家企业，返回not_found
+        # 区分"请求失败"和"确实没找到"
         if companies is None:
             result["tyc_match_status"] = "error"
             result["error"] = "天眼查MCP请求失败（网络超时或频率限制），跳过本次初筛"
@@ -283,7 +404,7 @@ def query_supplier_full_data(company_name, client=None):
             result["tyc_match_status"] = "not_found"
             return result
 
-        # 严格匹配：1.优先精确同名 2.相似度≥0.6才采用
+        # 严格匹配：1.优先精确同名 2.英文名匹配 3.相似度≥0.6+字号校验
         matched = None
         for company in companies:
             if company.get("name", "").strip() == company_name:
@@ -292,11 +413,6 @@ def query_supplier_full_data(company_name, client=None):
                 break
 
         if not matched:
-            # 精确同名失败：如果是英文公司名，且天眼查返回了"英文名匹配"标识，
-            # 说明天眼查已经用英文名匹配到了对应的中文名公司，直接采用，不再做相似度比较。
-            # 小白讲解：初筛阶段如果供应商名是英文（例如MIC来源已被替换或保留英文），
-            # 天眼查会用英文名匹配到中文公司，并在"匹配类型"字段标注"英文名匹配"。
-            # 此时中文名和英文名字符串完全不同，相似度比较必然失败，必须直接采用天眼查的匹配结果。
             for company in companies:
                 if company.get("match_type", "") == "英文名匹配":
                     matched = company
@@ -305,9 +421,6 @@ def query_supplier_full_data(company_name, client=None):
                     break
 
         if not matched:
-            # 精确匹配失败，做相似度校验
-            # 小白讲解：SequenceMatcher只看字符重叠，必须加字号校验防止张冠李戴。
-            # 剥离地域前缀和组织形式后缀后，比较核心字号是否实质性相同。
             best_ratio = 0
             best_company = None
             for company in companies:
@@ -323,12 +436,10 @@ def query_supplier_full_data(company_name, client=None):
                     matched = best_company
                     result["tyc_match_status"] = "partial_match"
                 else:
-                    # 相似度够但字号不匹配，判定为不同公司
                     print(f"[天眼查] 字号不匹配({company_name})，候选'{best_company.get('name','')}'，拒绝采用")
                     result["tyc_match_status"] = "not_found"
                     return result
             else:
-                # 相似度太低，判定为未匹配（不采用错误数据）
                 print(f"[天眼查] 未匹配({company_name})，最高相似度{best_ratio:.0%}")
                 result["tyc_match_status"] = "not_found"
                 return result
@@ -336,49 +447,13 @@ def query_supplier_full_data(company_name, client=None):
         result["company_id"] = matched.get("credit_code", "")
         company_full_name = matched.get("name", company_name)
 
-        # 第2步：获取基础工商信息（复用已有方法）
+        # 第2步：获取基础工商信息
         basic = client.get_company_basic_profile(company_full_name)
         result["basic_info"] = basic
-
-        # 天眼查调用之间加0.5秒延迟，避免频率限制
         time.sleep(0.5)
 
-        # 第3步：查询可用工具清单（记录但不依赖，直接尝试调用常用工具）
-        caps_text = client.get_company_capabilities(result["company_id"], company_full_name)
-        result["capabilities_text"] = caps_text
-        time.sleep(0.3)
-
-        # 第4步：直接尝试调用初筛所需的核心维度工具
-        # 小白讲解：不依赖capabilities文本解析工具名（格式可能变化），
-        # 而是直接尝试调用常用工具。如果工具不可用，天眼查会返回空或错误，我们忽略即可。
-
-        # 调用风险总览（核心维度，大部分公司可用）
-        risk_text = client.call_tool(company_full_name, "get_risk_overview")
-        if risk_text and "请求失败" not in risk_text and "unknown tool" not in risk_text:
-            result["risk_overview"] = risk_text
-        time.sleep(0.5)
-
-        # 调用资质证书
-        qual_text = client.call_tool(
-            company_full_name, "get_qualifications",
-            {"page": 1, "page_size": 20}
-        )
-        if qual_text and "请求失败" not in qual_text and "unknown tool" not in qual_text:
-            result["qualifications"] = qual_text
-        time.sleep(0.5)
-
-        # 调用司法案件（用于检查知识产权侵权败诉，部分公司可用）
-        case_text = client.call_tool(
-            company_full_name, "get_judicial_case",
-            {"page": 1, "page_size": 10}
-        )
-        if case_text and "请求失败" not in case_text and "unknown tool" not in case_text:
-            result["judicial_case"] = case_text
-
-        # 第5步：搜索商标和专利（顶层工具，不需要capabilities）
-        result["trademarks"] = client.search_trademarks(company_name)
-        time.sleep(0.3)
-        result["patents"] = client.search_patents(company_name)
+        # 第3步：查3个增量维度（风险+资质+司法）
+        _query_risk_qual_case(client, company_full_name, result)
 
     except Exception as e:
         result["error"] = str(e)

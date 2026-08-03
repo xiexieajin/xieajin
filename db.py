@@ -332,6 +332,12 @@ def init_db():
     _add_column_if_not_exists(cursor, "suppliers", "customs_export_count", "INT DEFAULT 0")
     _add_column_if_not_exists(cursor, "suppliers", "customs_total_qty", "DECIMAL(18,2) DEFAULT 0")
     _add_column_if_not_exists(cursor, "suppliers", "customs_total_amount", "DECIMAL(18,2) DEFAULT 0")
+    # 天眼查工商信息缓存字段（搜索阶段保存，初筛阶段复用，减少MCP调用次数）
+    # 小白讲解：以前初筛时要重新调天眼查查一遍工商信息，现在搜索阶段查完后直接存库，
+    # 初筛时读库就行，不用再调天眼查，省掉重复的MCP请求。
+    _add_column_if_not_exists(cursor, "suppliers", "tyc_match_status", "VARCHAR(50) DEFAULT ''")
+    _add_column_if_not_exists(cursor, "suppliers", "business_scope", "TEXT")
+    _add_column_if_not_exists(cursor, "suppliers", "tyc_company_id", "VARCHAR(100) DEFAULT ''")
 
     # 清理已废弃的旧字段（price_moq已拆分成price和moq两个独立字段，需删除旧的合并字段）
     _drop_column_if_exists(cursor, "suppliers", "price_moq")

@@ -1809,11 +1809,13 @@ def ai_search_suppliers(req_id):
                      operating_status, establish_years, establish_date, has_cross_border_exp,
                      product_title, product_link, price, moq,
                      customs_export_count, customs_total_qty, customs_total_amount,
+                     tyc_match_status, business_scope, tyc_company_id,
                      created_at, updated_at, user_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '已寻源待初筛',
                             %s,
                             %s, %s, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s, %s,
+                            %s, %s, %s,
                             %s, %s, %s,
                         %s, %s)
                 """, (req_id, supplier_name, s.get("intro", ""),
@@ -1831,6 +1833,9 @@ def ai_search_suppliers(req_id):
                       s.get("customs_export_count", 0),
                       s.get("customs_total_qty", 0),
                       s.get("customs_total_amount", 0),
+                      s.get("tyc_match_status", ""),
+                      s.get("business_scope", ""),
+                      s.get("tyc_company_id", ""),
                       now_str(), now_str(), user_id))
                 saved_count += 1
             # 新增了供应商（都是"已寻源待初筛"），需求状态应从"需求确认中"推进到"寻源中"

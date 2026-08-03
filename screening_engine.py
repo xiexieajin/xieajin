@@ -272,7 +272,7 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
     log_task(run_id, supplier_id, "tyc_registration_check", "天眼查主体复核",
              {"company_name": company_name}, {}, "开始查询", "success", user_id)
 
-    tyc_data = query_supplier_full_data(company_name)
+    tyc_data = query_supplier_full_data(company_name, supplier_id=supplier_id)
     basic_info = tyc_data.get("basic_info", {})
     match_status = tyc_data.get("tyc_match_status", "not_found")
 
@@ -403,8 +403,6 @@ def _screen_one_supplier(supplier, veto_rules, score_rules, run_id, user_id, pro
         "contact_completeness": contact_audit["completeness"],
         "tyc_match_status": match_status,
         "qualifications_text": tyc_data.get("qualifications", ""),
-        "trademarks_text": tyc_data.get("trademarks", ""),
-        "patents_text": tyc_data.get("patents", ""),
     }
 
     # 记录数据采集结果到审计日志

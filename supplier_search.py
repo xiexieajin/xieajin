@@ -2728,10 +2728,12 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                 supplier["_tyc_not_found"] = True
                 return
             matched_company = None
+            match_type = ""  # 记录天眼查匹配类型，供初筛阶段读库复用，避免重复调MCP
             # 1. 优先精确同名匹配
             for company in companies:
                 if company.get("name", "").strip() == name:
                     matched_company = company
+                    match_type = "exact_match"
                     break
             # 2. 精确同名失败：如果是英文公司名，且天眼查返回了"英文名匹配"标识，
             #    说明天眼查已经用英文名匹配到了对应的中文名公司，直接采用，不再做相似度比较。
@@ -2742,6 +2744,7 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                 for company in companies:
                     if company.get("match_type", "") == "英文名匹配":
                         matched_company = company
+                        match_type = "english_name_match"
                         print(f"天眼查英文名匹配采用：'{name}' → '{company.get('name', '')}'")
                         break
             # 3. 上面都没匹配上：做公司名相似度校验，相似度>=0.6 才采用
@@ -2766,6 +2769,7 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                     orig_core = _extract_core_name(name)
                     if cand_core and orig_core and (cand_core in orig_core or orig_core in cand_core):
                         matched_company = best_company
+                        match_type = "partial_match"
                     else:
                         print(f"天眼查字号不匹配({name})，候选字号'{cand_core}'≠'{orig_core}'，相似度{best_ratio:.0%}，拒绝采用")
                 if not matched_company:
@@ -2782,6 +2786,10 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                 supplier["registered_capital"] = matched_company.get("registered_capital", "") or supplier.get("registered_capital", "")
                 supplier["operating_status"] = matched_company.get("status", "")
                 supplier["legal_person"] = matched_company.get("legal_person", "")
+                # 小白讲解：保存天眼查匹配状态和企业ID，初筛阶段直接读库判断是否匹配成功，
+                # 不用再调天眼查search_companies，省掉1次MCP请求
+                supplier["tyc_match_status"] = match_type
+                supplier["tyc_company_id"] = matched_company.get("credit_code", "")
 
                 try:
                     detail = tyc_client.get_company_basic_profile(matched_company["name"])
@@ -2800,6 +2808,11 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                         tyc_address = detail.get("address", "")
                         if tyc_address and not supplier.get("factory_address"):
                             supplier["factory_address"] = tyc_address
+                        # 小白讲解：保存经营范围到供应商表，初筛规则判断制造商/出口经验时要用，
+                        # 这样初筛阶段不用再调天眼查get_company_basic_profile取经营范围
+                        tyc_scope = detail.get("business_scope", "")
+                        if tyc_scope:
+                            supplier["business_scope"] = tyc_scope
                         tyc_capital = detail.get("registered_capital", "")
                         if tyc_capital:
                             # 校验注册资本不是日期格式（防止脏数据）
