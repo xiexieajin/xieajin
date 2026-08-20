@@ -10,8 +10,7 @@ import os
 import pymysql
 
 # ==================== MySQL 数据库配置 ====================
-# 小白讲解：从SQLite迁移到MySQL，DB_PATH保留供迁移脚本使用，新代码用MySQL连接。
-# 注意：DB_PATH 仅用于数据迁移（migrate_data.py），正常运行时不再需要。
+# 小白讲解：系统已从SQLite切换到MySQL，所有数据都存MySQL，新代码统一用MySQL连接。
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instance", "sourcing.db")
 
 # MySQL连接参数（从config.py读取，避免重复配置）
