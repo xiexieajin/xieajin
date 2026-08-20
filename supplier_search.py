@@ -8,7 +8,7 @@
   （带session保持+4秒慢速间隔，减少验证码触发）
 3. 海关贸易数据（topease）：用HS编码+产品关键词搜索海关出口记录
   （streamable-http MCP，stream=True解决JSON截断，按exporterName聚合统计出口量）
-4. 用DeepSeek做过滤判断（不推荐、不编造，只从已有公司名中筛选）
+4. 用MiniMax做过滤判断（不推荐、不编造，只从已有公司名中筛选）
 5. 用天眼查MCP补全供应商的工商信息（注册资本、地址、电话等）
 
 参考文档：供应商寻源SKILL（飞书文档）
@@ -32,8 +32,8 @@ from datetime import datetime
 # 小白讲解：AI配置统一从数据库读取（通过model_config模块），不再从config.py硬编码
 # get_search_platforms用于读取启用的搜索平台列表（管理员可在管理中心启停平台）
 from model_config import get_provider, get_model_config, get_search_platforms
-# DeepSeek 调用统一用 ai_helper 里的 call_deepseek，避免两个文件各写一份导致改漏
-from ai_helper import call_deepseek
+# MiniMax 调用统一用 ai_helper 里的 call_llm，避免两个文件各写一份导致改漏
+from ai_helper import call_llm
 
 
 def _is_1688_ak_configured():
@@ -382,19 +382,19 @@ class _MicMcpClient:
 
 def _translate_keyword_to_english(keyword):
     """
-    用DeepSeek把中文关键词翻译成英文（MCP服务基于国际站，英文搜索效果最好）
+    用MiniMax把中文关键词翻译成英文（MCP服务基于国际站，英文搜索效果最好）
 
     参数：keyword 中文关键词（如"玻璃电视柜"）
     返回：英文关键词（如"glass TV stand"），翻译失败返回原关键词
 
-    注意：deepseek-v4-pro是推理模型，输出分reasoning_content（推理）和content（回复）两部分，
+    注意：MiniMax-M3是推理模型，思考过程也消耗输出token，输出分reasoning_content（推理）和content（回复）两部分，
     max_tokens太小会导致推理过程用完token，实际回复content为空。翻译任务需用较大max_tokens。
     """
     # 简单英文判断（已含英文字母的直接返回）
     if re.search(r'[a-zA-Z]', keyword):
         return keyword
     try:
-        result = call_deepseek(
+        result = call_llm(
             [{"role": "user", "content": f"把以下中文产品关键词翻译成英文搜索词，只返回翻译结果不要其他内容，不要解释。例如：玻璃电视柜→glass TV stand，蓝牙音箱→bluetooth speaker。关键词：{keyword}"}],
             scene_code="supplier_translate",
             temperature=0.1,
@@ -412,12 +412,12 @@ def _translate_keyword_to_english(keyword):
 
 def _translate_company_names_batch(suppliers_list, batch_size=20):
     """
-    用DeepSeek把MCP返回的英文公司名批量翻译成中文（括号保留英文原名）
+    用MiniMax把MCP返回的英文公司名批量翻译成中文（括号保留英文原名）
 
     小白讲解：中国制造网(MCP)返回的供应商名是英文的（如"Shenzhen XYZ Technology Co., Ltd."），
     业务部门看英文不方便，需要翻译成中文，格式："深圳市XYZ科技有限公司（Shenzhen XYZ Technology Co., Ltd.）"。
 
-    为了避免逐个调用太慢，采用批量翻译：每批20家公司一次性发给DeepSeek，返回JSON映射。
+    为了避免逐个调用太慢，采用批量翻译：每批20家公司一次性发给MiniMax，返回JSON映射。
     翻译失败的公司保留原英文名。
 
     参数：
@@ -443,7 +443,7 @@ def _translate_company_names_batch(suppliers_list, batch_size=20):
     # 中文翻译结果映射：英文名 -> 中文名
     name_map = {}
 
-    # 分批调用DeepSeek翻译
+    # 分批调用MiniMax翻译
     for i in range(0, len(unique_names), batch_size):
         batch = unique_names[i:i + batch_size]
         # 构造公司名列表文本
@@ -473,7 +473,7 @@ def _translate_company_names_batch(suppliers_list, batch_size=20):
 
         try:
             # 翻译是简单任务，场景配置中已用high强度
-            result_text = call_deepseek(messages, scene_code="supplier_translate", temperature=0.1, json_mode=True)
+            result_text = call_llm(messages, scene_code="supplier_translate", temperature=0.1, json_mode=True)
             result = json.loads(result_text)
             translations = result.get("translations", [])
             if isinstance(translations, dict):
@@ -504,12 +504,12 @@ def _translate_company_names_batch(suppliers_list, batch_size=20):
 
 def _translate_product_names_batch(suppliers_list, batch_size=30):
     """
-    用DeepSeek把MCP返回的英文产品名批量翻译成中文
+    用MiniMax把MCP返回的英文产品名批量翻译成中文
 
     小白讲解：中国制造网(MCP)的产品名是英文的（如"Small Size White Wood TV Stand with Glass Doors"），
     业务部门看英文不方便，需要翻译成中文，格式："小型白色木质玻璃门电视柜"。
 
-    为了避免逐个调用太慢，采用批量翻译：每批30个产品名一次性发给DeepSeek，返回JSON映射。
+    为了避免逐个调用太慢，采用批量翻译：每批30个产品名一次性发给MiniMax，返回JSON映射。
     翻译失败的产品保留原英文名。
 
     参数：
@@ -535,7 +535,7 @@ def _translate_product_names_batch(suppliers_list, batch_size=30):
     # 中文翻译结果映射：英文产品名 -> 中文产品名
     title_map = {}
 
-    # 分批调用DeepSeek翻译
+    # 分批调用MiniMax翻译
     for i in range(0, len(unique_titles), batch_size):
         batch = unique_titles[i:i + batch_size]
         # 构造产品名列表文本
@@ -565,8 +565,8 @@ def _translate_product_names_batch(suppliers_list, batch_size=30):
 
         try:
             # 翻译是简单任务，用high强度即可
-            # 小白讲解：这里显式传max_tokens=2048覆盖场景配置，避免JSON输出被截断导致解析失败
-            result_text = call_deepseek(messages, scene_code="supplier_translate", temperature=0.1, json_mode=True, max_tokens=2048)
+            # 小白讲解：这里显式传max_tokens=8192覆盖场景配置，避免思考过程耗尽token导致正文为空或JSON被截断
+            result_text = call_llm(messages, scene_code="supplier_translate", temperature=0.1, json_mode=True, max_tokens=8192)
             result = json.loads(result_text)
             translations = result.get("translations", [])
             if isinstance(translations, dict):
@@ -604,7 +604,7 @@ def crawl_topease_customs(keyword, hit_keyword="", variants=None, hs_code=""):
     中文关键词直接跳过。然后用串行锁排队，一次只搜一个关键词，避免topease限流。
 
     搜索策略：
-    - hs_code 从需求配置读取（DeepSeek在需求确认时归类），没有则不传
+    - hs_code 从需求配置读取（MiniMax在需求确认时归类），没有则不传
     - product_keyword 用英文关键词
     - trade_type=import（用进口数据反推中国出口商）
     - country 不填（搜全球海关数据）
@@ -819,7 +819,7 @@ def _crawl_topease_customs_impl(keyword, hit_keyword, hs_code=""):
         e["customs_total_qty"] = e["total_qty"]
         e["customs_total_amount"] = e["total_amount"]
         e["product_title"] = e["products"][0] if e["products"] else ""
-        # content字段拼接（与MIC格式一致，供DeepSeek判断用）
+        # content字段拼接（与MIC格式一致，供MiniMax判断用）
         desc_parts = [f"搜索品类：{keyword}"]
         desc_parts.append(f"出口次数：{e['count']}次")
         desc_parts.append(f"总出口量：{e['total_qty']:.0f}")
@@ -984,7 +984,7 @@ def _crawl_made_in_china_mcp_impl(keyword, hit_keyword, variants, search_keyword
                 price = (item.get("price") or "").strip()
                 moq = (item.get("moq") or "").strip()
 
-                # 产品规格属性（字典转成字符串供DeepSeek参考）
+                # 产品规格属性（字典转成字符串供MiniMax参考）
                 properties = item.get("properties", {})
                 if isinstance(properties, dict) and properties:
                     props_text = "；".join(f"{k}:{v}" for k, v in properties.items())
@@ -996,9 +996,9 @@ def _crawl_made_in_china_mcp_impl(keyword, hit_keyword, variants, search_keyword
                 location = ""
                 badges = ""
 
-                # 组合描述供DeepSeek过滤参考
+                # 组合描述供MiniMax过滤参考
                 # 小白讲解：把产品名+规格+价格+搜索关键词组合成描述，
-                # DeepSeek能结合"搜的是什么+产品规格+公司名"综合判断供应商是否合适
+                # MiniMax能结合"搜的是什么+产品规格+公司名"综合判断供应商是否合适
                 desc_parts = []
                 desc_parts.append(f"搜索品类：{keyword}")
                 if product_title:
@@ -1354,7 +1354,7 @@ def _crawl_1688_once(keyword, hit_keyword="", search_round=1, total_rounds=4):
 
     返回：供应商列表，每条包含：
         - name: 公司名称
-        - content: 供应商详细描述（供DeepSeek过滤参考）
+        - content: 供应商详细描述（供MiniMax过滤参考）
         - hit_keyword: 命中关键词
         - product_title: 产品名称（中文，无需翻译）
         - product_link: 产品链接
@@ -1469,9 +1469,9 @@ def _crawl_1688_once(keyword, hit_keyword="", search_round=1, total_rounds=4):
             moq = f"{moq}件"
         sku_title = (product.get("skuTitle") or "").strip()
 
-        # 组装供应商描述（供DeepSeek过滤参考）
+        # 组装供应商描述（供MiniMax过滤参考）
         # 小白讲解：把搜索品类+产品名+规格组合成描述，
-        # DeepSeek能结合"搜的是什么+具体产品+公司名"综合判断供应商是否合适
+        # MiniMax能结合"搜的是什么+具体产品+公司名"综合判断供应商是否合适
         desc_parts = []
         desc_parts.append(f"搜索品类：{keyword}")
         if product_title:
@@ -1988,8 +1988,8 @@ class TianyanchaClient:
         return ""
 
 
-# ==================== DeepSeek 提取+过滤供应商 ====================
-# 小白讲解：DeepSeek 的调用统一走 ai_helper.call_deepseek，这里不再重复定义
+# ==================== MiniMax 提取+过滤供应商 ====================
+# 小白讲解：MiniMax 的调用统一走 ai_helper.call_llm，这里不再重复定义
 # 好处是只维护一份代码，状态码检查、思考模式、缓存日志等都集中在一处
 
 
@@ -1998,7 +1998,7 @@ def _smart_truncate(text, max_len=400):
     智能截断文本：按分号切句，保留完整句子直到接近上限
 
     小白讲解：原来直接 [:200] 硬截断，会把一句话从中间切断，
-    DeepSeek 看到半截信息容易误判供应商类型。
+    MiniMax 看到半截信息容易误判供应商类型。
     现在按中英文分号（；;）一句一句加，加到接近 400 字符就停，
     保证每句话都是完整的。如果单句本身就超过上限，才对那句硬截断。
 
@@ -2112,7 +2112,7 @@ def extract_company_names(search_results):
                         "name": name,
                         "hit_keyword": hit_kw,
                         "source_platform": source_platform,  # 来源平台（1688/Made-in-China）
-                        "source_text": _smart_truncate(text, 400),    # 保留来源文本供DeepSeek判断（智能截断）
+                        "source_text": _smart_truncate(text, 400),    # 保留来源文本供MiniMax判断（智能截断）
                     })
 
     return companies
@@ -2156,7 +2156,7 @@ def _dedup_cross_platform(companies):
 
     小白讲解：两个平台搜到的结果合并后，可能有重复的公司（同一家工厂在两个平台都注册了）。
     用核心字号做 key，遇到重复的保留 source_text 更长（信息更丰富）的那条，
-    这样 DeepSeek 过滤时能拿到更完整的信息，也避免天眼查重复查询。
+    这样 MiniMax 过滤时能拿到更完整的信息，也避免天眼查重复查询。
 
     参数：companies 公司列表（extract_company_names 的返回值）
     返回：去重后的公司列表
@@ -2186,8 +2186,8 @@ def _programmatic_prefilter(companies, product_name):
     """
     程序化预筛：用正则和平台字段快速剔除明显不合格的供应商，不调 AI（零 token 成本）
 
-    小白讲解：在交给天眼查和 DeepSeek 之前，先用简单规则把明显是贸易商、配件厂的去掉，
-    这样能减少天眼查查询次数和 DeepSeek API 调用，省钱省时间。
+    小白讲解：在交给天眼查和 MiniMax 之前，先用简单规则把明显是贸易商、配件厂的去掉，
+    这样能减少天眼查查询次数和 MiniMax API 调用，省钱省时间。
     重要原则：宁可保留不确定的，只剔除非常明显的（有制造能力证据的一律保留）。
 
     参数：
@@ -2227,7 +2227,7 @@ def _programmatic_prefilter(companies, product_name):
             removed += 1
             continue
 
-        # 其他情况一律保留（不确定的交给 DeepSeek 判断，宁可多留不能漏放）
+        # 其他情况一律保留（不确定的交给 MiniMax 判断，宁可多留不能漏放）
         kept.append(c)
 
     if removed > 0:
@@ -2239,7 +2239,7 @@ def _filter_one_batch(batch, product_name):
     """
     处理一个批次的AI过滤（供并发调用）
 
-    小白讲解：把一批公司名发给DeepSeek，让它一次性判断：
+    小白讲解：把一批公司名发给MiniMax，让它一次性判断：
     - 是不是制造商（剔除贸易/零售）
     - 是不是卖完整产品（剔除配件/材料/加工）
     - 不确定的保留（宁可保留不漏放）
@@ -2250,12 +2250,12 @@ def _filter_one_batch(batch, product_name):
         batch: 一批公司数据列表（最多50家）
         product_name: 采购产品名称
 
-    返回：DeepSeek判断合格的公司列表
+    返回：MiniMax判断合格的公司列表
     """
     companies_text = ""
     for i, c in enumerate(batch, 1):
         business_type = c.get("business_type", "")
-        # 小白讲解：天眼查补全的工商信息也一起给 DeepSeek，让它能看到注册资本/经营状态等做更准判断
+        # 小白讲解：天眼查补全的工商信息也一起给 MiniMax，让它能看到注册资本/经营状态等做更准判断
         capital = c.get("registered_capital", "")
         status = c.get("operating_status", "")
         establish_years = c.get("establish_years", "")
@@ -2271,8 +2271,8 @@ def _filter_one_batch(batch, product_name):
             biz_info += f"注册地址：{address}；"
         companies_text += f"{i}. 公司名称：{c['name']}\n   命中关键词：{c['hit_keyword']}\n   业务类型：{business_type or '未知'}\n   来源信息：{c['source_text']}\n   工商信息：{biz_info or '未获取'}\n\n"
 
-    # 小白讲解：prompt 结构按"固定内容在前、变化内容在后"组织，可提高 DeepSeek 上下文缓存命中率。
-    # DeepSeek 缓存规则：后续请求只有完整匹配之前请求的前缀才计入"缓存命中"（命中0.025元 vs 未命中3元/百万tokens）。
+    # 小白讲解：prompt 结构按"固定内容在前、变化内容在后"组织，可提高 MiniMax 上下文缓存命中率。
+    # MiniMax 缓存规则：后续请求只有完整匹配之前请求的前缀才计入"缓存命中"（命中0.025元 vs 未命中3元/百万tokens）。
     # 所以把固定的判断规则放前面，每批都变化的公司列表放最后，规则部分就能跨批次命中缓存。
     prompt = f"""你是采购供应商寻源专家。请判断候选公司是否合格，只返回合格的公司，不要推荐任何新公司。
 
@@ -2325,13 +2325,13 @@ def _filter_one_batch(batch, product_name):
         {"role": "user", "content": prompt},
     ]
 
-    # 小白讲解：网络抖动或DeepSeek服务异常时，原来直接返回空数组导致50家公司丢失
+    # 小白讲解：网络抖动或MiniMax服务异常时，原来直接返回空数组导致50家公司丢失
     # 现在改为：失败后重试1次，仍失败则返回原始公司数据并标记"过滤失败-保留"，宁可多留不能漏放
     for attempt in range(2):  # 最多尝试2次（1次正常+1次重试）
         try:
             # 启用JSON Output模式，确保返回合法JSON
             # 小白讲解：supplier_filter_v2场景配置在数据库中，管理员可在管理中心调整思考强度等参数
-            result_text = call_deepseek(messages, scene_code="supplier_filter_v2", temperature=0.2, json_mode=True)
+            result_text = call_llm(messages, scene_code="supplier_filter_v2", temperature=0.2, json_mode=True)
             result = json.loads(result_text)
             batch_filtered = result.get("suppliers", [])
             if isinstance(batch_filtered, dict):
@@ -2354,7 +2354,7 @@ def _filter_one_batch(batch, product_name):
                     s["phone"] = orig.get("phone", "") or s.get("phone", "")
                     s["email"] = orig.get("email", "") or s.get("email", "")
                     s["contact_status"] = orig.get("contact_status", "未获取")
-                    # 天眼查工商简介存到临时字段，后续追加到 DeepSeek 生成的 intro 后面（问题3的追加方案）
+                    # 天眼查工商简介存到临时字段，后续追加到 MiniMax 生成的 intro 后面（问题3的追加方案）
                     if orig.get("_tyc_business_intro"):
                         s["_tyc_business_intro"] = orig["_tyc_business_intro"]
                     # 产品字段透传（MCP搜产品方式才有，1688无此字段为空）
@@ -2411,16 +2411,16 @@ def _filter_one_batch(batch, product_name):
 
 def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_callback=None, cancel_checker=None):
     """
-    用DeepSeek对已预筛+已补全工商信息的公司列表做精细过滤
+    用MiniMax对已预筛+已补全工商信息的公司列表做精细过滤
 
-    小白讲解：这个函数现在只负责"DeepSeek过滤"这一步（问题1流程重构后的第4步）。
+    小白讲解：这个函数现在只负责"MiniMax过滤"这一步（问题1流程重构后的第4步）。
     公司名的提取、跨平台去重、程序化预筛、天眼查工商补全都已经在前面做完了。
-    这里把带完整工商信息（注册资本/经营状态/成立年限/注册地址）的公司分批发给 DeepSeek，
+    这里把带完整工商信息（注册资本/经营状态/成立年限/注册地址）的公司分批发给 MiniMax，
     让它基于完整数据做更准确的判断，生成 intro/main_product/supplier_type 等字段。
 
     性能优化：
     1. 批次50家，减少API调用次数
-    2. 并发处理多个批次（用线程池），DeepSeek v4-pro并发限制500，完全够用
+    2. 并发处理多个批次（用线程池），MiniMax v4-pro并发限制500，完全够用
     3. 启用JSON Output模式，避免JSON解析失败
     4. "不确定是否做完整产品"的保留（标记疑似制造商），不剔除
 
@@ -2438,7 +2438,7 @@ def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_ca
     if progress_callback:
         progress_callback(15, 16, f"正在AI过滤{len(companies)}家公司...")
 
-    # 分批并发调用DeepSeek过滤（每批50家，并发处理）
+    # 分批并发调用MiniMax过滤（每批50家，并发处理）
     BATCH_SIZE = 50
     batches = []
     for i in range(0, len(companies), BATCH_SIZE):
@@ -2501,8 +2501,8 @@ def filter_suppliers_with_ai(companies, product_name, keywords_text, progress_ca
             seen_names.add(s["name"])
             unique_suppliers.append(s)
 
-    # 把天眼查工商简介追加到 DeepSeek 生成的 intro 后面（问题3的追加方案）
-    # 小白讲解：DeepSeek 生成的是采购视角的 intro，天眼查的工商简介作为补充信息追加在后面，两份都保留
+    # 把天眼查工商简介追加到 MiniMax 生成的 intro 后面（问题3的追加方案）
+    # 小白讲解：MiniMax 生成的是采购视角的 intro，天眼查的工商简介作为补充信息追加在后面，两份都保留
     for s in unique_suppliers:
         tyc_intro = s.pop("_tyc_business_intro", "")
         if tyc_intro:
@@ -2537,7 +2537,7 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
     流程：
     1. 解析P0-P3关键词（7组，每组中英文）
     2. 对每个关键词用智谱web_search搜索（中文优先）
-    3. 合并所有搜索结果，用DeepSeek提取+过滤供应商
+    3. 合并所有搜索结果，用MiniMax提取+过滤供应商
     4. 对每个供应商用天眼查MCP补全工商信息
     5. 返回供应商列表
 
@@ -2571,7 +2571,7 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
             if en:
                 search_terms.append((key + "_en", en, en, []))
 
-    total_steps = 4  # 搜索 + 预筛 + 天眼查补全 + DeepSeek过滤
+    total_steps = 4  # 搜索 + 预筛 + 天眼查补全 + MiniMax过滤
     current_step = 0
 
     # 小白讲解：记录搜索开始时间，用于在进度描述里显示"已用时XX秒"，让用户知道没卡死
@@ -2757,8 +2757,8 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
     if _cancelled():
         return []
 
-    # 第三步：用天眼查MCP并发补全工商信息（对预筛后的 companies，在 DeepSeek 过滤之前补全）
-    # 小白讲解：先补全工商信息再过滤，DeepSeek 就能看到注册资本/经营状态等做更准判断（问题1流程重构）
+    # 第三步：用天眼查MCP并发补全工商信息（对预筛后的 companies，在 MiniMax 过滤之前补全）
+    # 小白讲解：先补全工商信息再过滤，MiniMax 就能看到注册资本/经营状态等做更准判断（问题1流程重构）
     current_step += 1
     if progress_callback:
         progress_callback(current_step, total_steps, f"正在用天眼查补全工商信息（共{len(companies)}家），{_elapsed()}...")
@@ -2862,8 +2862,8 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                     if detail:
                         tyc_intro = detail.get("intro", "")
                         if tyc_intro:
-                            # 小白讲解：工商简介先存到临时字段，等 DeepSeek 生成 intro 后再追加（问题3追加方案）
-                            # 因为天眼查补全在前、DeepSeek过滤在后，此时 intro 还没生成
+                            # 小白讲解：工商简介先存到临时字段，等 MiniMax 生成 intro 后再追加（问题3追加方案）
+                            # 因为天眼查补全在前、MiniMax过滤在后，此时 intro 还没生成
                             supplier["_tyc_business_intro"] = tyc_intro
                         tyc_phone = detail.get("phone", "")
                         if tyc_phone:
@@ -2962,9 +2962,9 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
         progress_callback(current_step, total_steps,
                           f"天眼查未匹配{removed_count}家已剔除，剩余{len(companies)}家")
 
-    # 第四步：用DeepSeek基于完整工商数据做精细过滤
+    # 第四步：用MiniMax基于完整工商数据做精细过滤
     # 小白讲解：此时 companies 已带工商信息（注册资本/经营状态/成立年限等），
-    # DeepSeek 能基于完整数据做更准确的过滤判断（问题1流程重构的核心）
+    # MiniMax 能基于完整数据做更准确的过滤判断（问题1流程重构的核心）
     current_step += 1
     if progress_callback:
         progress_callback(current_step, total_steps, f"AI正在基于工商信息过滤供应商（共{len(companies)}家），{_elapsed()}...")

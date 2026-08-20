@@ -819,17 +819,13 @@ def _seed_initial_data(cursor, conn):
 
     小白讲解：系统第一次启动时自动创建：
     1. 初始管理员账号（xieajin/bsq123）
-    2. 5个AI服务提供商（DeepSeek/智谱/1688/中国制造网/天眼查）
+    2. AI服务提供商（MiniMax/智谱/1688/中国制造网/天眼查）
     3. 7个AI模型场景配置（从config.py迁移参数）
     4. 2个搜索平台配置（1688/中国制造网）
     """
     # 小白讲解：在函数开头统一导入config里的常量，确保后面所有分支都能用到。
-    # 之前 import 写在 if 块里，非首次初始化时不会执行 import，
-    # 导致后面补丁插入用到 DEEPSEEK_MODEL 时报 UnboundLocalError。
-    from config import (DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
-                        DEEPSEEK_THINKING_ENABLED, DEEPSEEK_THINKING_EFFORT,
-                        DEEPSEEK_EFFORT_SIMPLE, DEEPSEEK_EFFORT_COMPLEX,
-                        DEEPSEEK_MAX_TOKENS, DEEPSEEK_TIMEOUT, ZHIPU_VISION_MODEL)
+    from config import (MINIMAX_API_KEY, MINIMAX_BASE_URL, MINIMAX_MODEL,
+                        MINIMAX_MAX_TOKENS, MINIMAX_TIMEOUT, ZHIPU_VISION_MODEL)
 
     # ---------- 1. 初始管理员账号 ----------
     cursor.execute("SELECT COUNT(*) as cnt FROM users")
@@ -847,13 +843,13 @@ def _seed_initial_data(cursor, conn):
 
     # ---------- 2. AI服务提供商预置（支持增量补录） ----------
     # 从 config.py 读取现有配置值迁移到数据库
-    from config import (DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
+    from config import (MINIMAX_API_KEY, MINIMAX_BASE_URL,
                         ZHIPU_API_KEY, ZHIPU_BASE_URL,
                         TYC_MCP_URL, TYC_MCP_AUTH,
                         ALI_1688_AK)
     now = now_str()
     providers = [
-        ("DeepSeek", "deepseek", "ai_model", DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY),
+        ("MiniMax", "minimax", "ai_model", MINIMAX_BASE_URL, MINIMAX_API_KEY),
         ("智谱AI", "zhipu", "ai_model", ZHIPU_BASE_URL, ZHIPU_API_KEY),
         ("1688", "ali1688", "search_platform", "https://api.1688.com", ALI_1688_AK),
         ("中国制造网", "madeinchina", "search_platform", "https://mcp.chexb.com/sse", ""),
@@ -876,25 +872,29 @@ def _seed_initial_data(cursor, conn):
     conn.commit()
     print("[初始化] AI服务提供商检查完成")
 
+    # ---------- 2.5 DeepSeek → MiniMax 迁移（老库自动切换，幂等可重复执行） ----------
+    _migrate_deepseek_to_minimax(cursor, conn)
+
     # ---------- 3. AI模型场景配置预置（7个场景）----------
     cursor.execute("SELECT COUNT(*) as cnt FROM ai_model_configs")
     if cursor.fetchone()["cnt"] == 0:
-        # 从 config.py 读取模型参数（已在函数开头统一导入）
+        # 从 config.py 读取模型参数（函数开头已统一导入）
         # 查询provider_id
         cursor.execute("SELECT id, provider_code FROM ai_providers")
         provider_map = {row["provider_code"]: row["id"] for row in cursor.fetchall()}
-        deepseek_id = provider_map.get("deepseek")
+        minimax_id = provider_map.get("minimax")
         zhipu_id = provider_map.get("zhipu")
         now = now_str()
         # 7个场景配置（scene_code / scene_name / provider / model / thinking / effort / tokens / temp / timeout）
-        # 小白讲解：每个场景的参数从config.py迁移，管理员后续可在Web界面修改
+        # 小白讲解：MiniMax-M3 思考模式无分级（只有开/关），effort统一留空；
+        # 温度按官方推荐用1.0；过滤/翻译场景max_tokens给到8192（思考过程也消耗输出token，太小正文会为空）
         scenes = [
-            ("req_parse", "需求解析", deepseek_id, DEEPSEEK_MODEL, 1, DEEPSEEK_EFFORT_SIMPLE, DEEPSEEK_MAX_TOKENS, 0.2, DEEPSEEK_TIMEOUT, 1),
-            ("keyword_gen", "关键词生成", deepseek_id, DEEPSEEK_MODEL, 1, DEEPSEEK_EFFORT_SIMPLE, DEEPSEEK_MAX_TOKENS, 0.4, DEEPSEEK_TIMEOUT, 2),
-            ("auto_screening", "自动初筛", deepseek_id, DEEPSEEK_MODEL, 1, DEEPSEEK_EFFORT_COMPLEX, DEEPSEEK_MAX_TOKENS, 0.2, DEEPSEEK_TIMEOUT, 3),
-            ("supplier_translate", "供应商过滤-翻译", deepseek_id, DEEPSEEK_MODEL, 1, DEEPSEEK_EFFORT_SIMPLE, 512, 0.3, DEEPSEEK_TIMEOUT, 4),
-            ("supplier_filter", "供应商过滤-第一批", deepseek_id, DEEPSEEK_MODEL, 1, DEEPSEEK_EFFORT_SIMPLE, 512, 0.1, DEEPSEEK_TIMEOUT, 5),
-            ("supplier_filter_v2", "供应商过滤-第二批", deepseek_id, DEEPSEEK_MODEL, 1, DEEPSEEK_EFFORT_COMPLEX, 512, 0.2, DEEPSEEK_TIMEOUT, 6),
+            ("req_parse", "需求解析", minimax_id, MINIMAX_MODEL, 1, "", MINIMAX_MAX_TOKENS, 1.0, MINIMAX_TIMEOUT, 1),
+            ("keyword_gen", "关键词生成", minimax_id, MINIMAX_MODEL, 1, "", MINIMAX_MAX_TOKENS, 1.0, MINIMAX_TIMEOUT, 2),
+            ("auto_screening", "自动初筛", minimax_id, MINIMAX_MODEL, 1, "", MINIMAX_MAX_TOKENS, 1.0, MINIMAX_TIMEOUT, 3),
+            ("supplier_translate", "供应商过滤-翻译", minimax_id, MINIMAX_MODEL, 1, "", 8192, 1.0, MINIMAX_TIMEOUT, 4),
+            ("supplier_filter", "供应商过滤-第一批", minimax_id, MINIMAX_MODEL, 1, "", 8192, 1.0, MINIMAX_TIMEOUT, 5),
+            ("supplier_filter_v2", "供应商过滤-第二批", minimax_id, MINIMAX_MODEL, 1, "", 8192, 1.0, MINIMAX_TIMEOUT, 6),
             ("vision_ocr", "图片识别", zhipu_id, ZHIPU_VISION_MODEL, 0, "", 1024, 0.2, 60, 7),
         ]
         for code, name, pid, model, think, effort, tokens, temp, timeout, order in scenes:
@@ -912,20 +912,20 @@ def _seed_initial_data(cursor, conn):
     # 用 INSERT IGNORE 确保只在首次运行时插入，不会重复。
     cursor.execute("SELECT id FROM ai_model_configs WHERE scene_code='comm_reply' LIMIT 1")
     if not cursor.fetchone():
-        cursor.execute("SELECT id FROM ai_providers WHERE provider_code='deepseek' LIMIT 1")
-        ds_row = cursor.fetchone()
-        if ds_row:
-            ds_id = ds_row["id"]
+        cursor.execute("SELECT id FROM ai_providers WHERE provider_code='minimax' LIMIT 1")
+        mm_row = cursor.fetchone()
+        if mm_row:
+            mm_id = mm_row["id"]
             now = now_str()
             cursor.execute("""
                 INSERT INTO ai_model_configs
                 (provider_id, scene_code, scene_name, model_name, thinking_enabled, thinking_effort,
                  max_tokens, temperature, timeout_seconds, extra_params, sort_order, is_enabled, created_at, updated_at)
                 VALUES
-                (%s, 'comm_reply', '沟通-会话回复', %s, 0, '', 1024, 0.7, %s, '{}', 8, 1, %s, %s),
-                (%s, 'comm_send', '沟通-邮件生成', %s, 0, '', 1024, 0.7, %s, '{}', 9, 1, %s, %s)
-            """, (ds_id, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT, now, now,
-                  ds_id, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT, now, now))
+                (%s, 'comm_reply', '沟通-会话回复', %s, 0, '', 4096, 1.0, %s, '{}', 8, 1, %s, %s),
+                (%s, 'comm_send', '沟通-邮件生成', %s, 0, '', 4096, 1.0, %s, '{}', 9, 1, %s, %s)
+            """, (mm_id, MINIMAX_MODEL, MINIMAX_TIMEOUT, now, now,
+                  mm_id, MINIMAX_MODEL, MINIMAX_TIMEOUT, now, now))
             conn.commit()
             print("[初始化] 已补丁插入2个沟通管理AI场景配置（comm_reply / comm_send）")
 
@@ -989,6 +989,84 @@ def _seed_initial_data(cursor, conn):
             """, (rule_name, field, match_type, match_value, priority, desc, now, now))
         conn.commit()
         print(f"[初始化] 已预置 {len(builtin_rules)} 条邮件剔除规则")
+
+
+def _migrate_deepseek_to_minimax(cursor, conn):
+    """
+    把数据库里指向 DeepSeek 的场景配置自动迁移到 MiniMax（幂等，可重复执行）
+
+    小白讲解：DeepSeek 服务已无法使用，系统切换到 MiniMax-M3。
+    老数据库里的场景配置（需求解析/关键词生成/初筛等8个文本场景）还指向 deepseek 服务商，
+    这个函数在每次启动时检查：发现指向 deepseek 的场景就自动改成 minimax，并调整参数适配新模型：
+    - 模型名换成 MiniMax-M3
+    - 思考强度清空（MiniMax-M3 的思考模式只有开/关，没有 low/medium/high/max 分级）
+    - 温度统一调到 1.0（MiniMax 官方推荐值，思考模式下输出更稳定）
+    - max_tokens 太小的场景调大（MiniMax 思考过程也消耗输出token，512会导致思考用完、正文为空）
+    迁移完成后 deepseek 服务商记录保留但禁用（万一以后恢复服务可重新启用）。
+
+    参数：cursor 数据库游标 / conn 数据库连接
+    """
+    from config import MINIMAX_API_KEY, MINIMAX_BASE_URL, MINIMAX_MODEL
+
+    # 1. 查 DeepSeek 服务商，不存在说明是全新数据库（种子数据直接用MiniMax），无需迁移
+    cursor.execute("SELECT id FROM ai_providers WHERE provider_code='deepseek'")
+    ds_row = cursor.fetchone()
+    if not ds_row:
+        return
+    deepseek_id = ds_row["id"]
+
+    # 2. 查 MiniMax 服务商，不存在则补插一条（正常情况下前面的种子步骤已插入，这里兜底）
+    cursor.execute("SELECT id FROM ai_providers WHERE provider_code='minimax'")
+    mm_row = cursor.fetchone()
+    if not mm_row:
+        now = now_str()
+        cursor.execute("""
+            INSERT INTO ai_providers (provider_name, provider_code, provider_type, base_url, api_key, is_enabled, created_at, updated_at)
+            VALUES ('MiniMax', 'minimax', 'ai_model', %s, %s, 1, %s, %s)
+        """, (MINIMAX_BASE_URL, MINIMAX_API_KEY, now, now))
+        conn.commit()
+        cursor.execute("SELECT id FROM ai_providers WHERE provider_code='minimax'")
+        mm_row = cursor.fetchone()
+        print("[迁移] 已补插 MiniMax 服务商记录")
+    minimax_id = mm_row["id"]
+
+    # 3. 找出所有还指向 DeepSeek 的场景配置（已迁移过的不会再命中，保证幂等）
+    cursor.execute("SELECT id, scene_code, max_tokens FROM ai_model_configs WHERE provider_id = %s", (deepseek_id,))
+    ds_configs = cursor.fetchall()
+    if not ds_configs:
+        # 没有场景指向 deepseek 了，只需确保 deepseek 处于禁用状态
+        cursor.execute("UPDATE ai_providers SET is_enabled = 0, updated_at = %s WHERE id = %s AND is_enabled = 1",
+                       (now_str(), deepseek_id))
+        conn.commit()
+        return
+
+    now = now_str()
+    migrated = 0
+    for cfg in ds_configs:
+        scene_code = cfg["scene_code"]
+        old_tokens = cfg["max_tokens"]
+        # max_tokens 调整：MiniMax 思考消耗输出token，小场景必须放大
+        # - supplier_* 系列（翻译/过滤，原512）→ 8192
+        # - comm_* 系列（沟通回复/邮件，原1024）→ 4096
+        # - 其他大值场景（32768）保持不变
+        if scene_code.startswith("supplier_"):
+            new_tokens = max(old_tokens, 8192)
+        elif scene_code.startswith("comm_"):
+            new_tokens = max(old_tokens, 4096)
+        else:
+            new_tokens = old_tokens
+        cursor.execute("""
+            UPDATE ai_model_configs
+            SET provider_id = %s, model_name = %s, thinking_effort = '', temperature = 1.0,
+                max_tokens = %s, updated_at = %s
+            WHERE id = %s
+        """, (minimax_id, MINIMAX_MODEL, new_tokens, now, cfg["id"]))
+        migrated += 1
+
+    # 4. 禁用 DeepSeek 服务商（保留记录不删除，便于以后恢复）
+    cursor.execute("UPDATE ai_providers SET is_enabled = 0, updated_at = %s WHERE id = %s", (now, deepseek_id))
+    conn.commit()
+    print(f"[迁移] DeepSeek→MiniMax 完成：{migrated} 个场景已切换到 MiniMax-M3，DeepSeek 服务商已禁用")
 
 
 def _seed_screening_rules(cursor, conn):

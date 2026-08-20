@@ -13,7 +13,7 @@ AI 配置文件 - 首次启动时作为种子数据迁移到数据库
 
 API Key 获取地址：
 - 智谱：https://open.bigmodel.cn/  注册后在控制台"API Keys"页面创建（有免费额度）
-- DeepSeek：https://platform.deepseek.com/  注册后在"API Keys"页面创建
+- MiniMax：https://platform.minimaxi.com/  注册后在控制台创建 API Key（格式如 sk-cp-xxx）
 """
 
 import os
@@ -48,24 +48,18 @@ ZHIPU_BASE_URL = os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/
 ZHIPU_VISION_MODEL = os.environ.get("ZHIPU_VISION_MODEL", "glm-4v-flash")
 
 
-# ==================== DeepSeek 配置（用于文本理解/搜索/初筛）====================
-# 首次启动时迁移到数据库 ai_providers 表（provider_code=deepseek）
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-pro")
+# ==================== MiniMax 配置（用于文本理解/搜索/初筛，替代已停用的DeepSeek）====================
+# 首次启动时迁移到数据库 ai_providers 表（provider_code=minimax）
+# 小白讲解：Key 优先读环境变量 MINIMAX_API_KEY，其次读小写的 minimax（兼容用户已设置的名字）
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY") or os.environ.get("minimax") or ""
+MINIMAX_BASE_URL = os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+MINIMAX_MODEL = os.environ.get("MINIMAX_MODEL", "MiniMax-M3")
 
-
-# ==================== DeepSeek 能力拉满配置（追求最高质量）====================
-# 首次启动时迁移到数据库 ai_model_configs 表（每个场景独立配置）
-DEEPSEEK_THINKING_ENABLED = True
-DEEPSEEK_THINKING_EFFORT = "max"
-
-# 思考强度分级：high=默认，max=最强（已废弃简单/复杂两档，改为每场景独立配置）
-DEEPSEEK_EFFORT_SIMPLE = "high"
-DEEPSEEK_EFFORT_COMPLEX = "max"
-
-DEEPSEEK_MAX_TOKENS = 32768
-DEEPSEEK_TIMEOUT = 300
+# ==================== MiniMax 能力配置（各场景种子参数）====================
+# 小白讲解：MiniMax-M3 的思考模式没有 low/medium/high/max 分级，只有开(adaptive)/关(disabled)，
+# 所以这里不再需要思考强度配置。温度官方推荐 1.0。
+MINIMAX_MAX_TOKENS = 32768
+MINIMAX_TIMEOUT = 300
 
 
 # ==================== 天眼查 MCP 配置（用于供应商工商信息补全）====================
@@ -117,14 +111,14 @@ def is_1688_ak_configured():
 
 def is_api_configured():
     """
-    检查 DeepSeek API Key 是否已配置
+    检查 MiniMax API Key 是否已配置（文本大模型）
 
     小白讲解：优先从数据库读取（管理中心修改后立即反映），数据库不存在时回退到环境变量。
     """
-    db_key = _query_provider_api_key("deepseek")
+    db_key = _query_provider_api_key("minimax")
     if db_key is not None:
         return bool(db_key and not db_key.startswith("sk-xxxx"))
-    return bool(DEEPSEEK_API_KEY and not DEEPSEEK_API_KEY.startswith("sk-xxxx"))
+    return bool(MINIMAX_API_KEY and not MINIMAX_API_KEY.startswith("sk-xxxx"))
 
 
 def is_vision_configured():

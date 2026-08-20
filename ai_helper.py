@@ -3,7 +3,7 @@ AI 核心模块 - 封装大模型的所有 AI 功能
 
 这个文件是系统的"AI大脑"，使用两个模型各取所长：
 - 智谱 GLM-4V-Flash：图片识别（免费），把用户上传的图片转成文字描述
-- DeepSeek：文本理解、联网搜索、供应商初筛
+- MiniMax-M3：文本理解、联网搜索、供应商初筛（OpenAI兼容接口）
 
 包含三个核心AI功能：
 1. parse_requirement - 解析需求：从文本/文档/图片中提取结构化需求信息
@@ -712,25 +712,32 @@ def fetch_urls_from_text(text, progress_callback=None):
     return "\n\n".join(chunks)
 
 
-def call_deepseek(messages, scene_code, temperature=None, json_mode=False, max_tokens=None, effort=None):
+def call_llm(messages, scene_code, temperature=None, json_mode=False, max_tokens=None, effort=None):
     """
-    调用 DeepSeek API 的基础方法（配置从数据库读取，支持场景化参数）
+    调用 MiniMax API 的基础方法（配置从数据库读取，支持场景化参数）
 
-    小白讲解：这是调用 DeepSeek 大模型的统一入口。管理员可在管理中心修改模型参数。
-    传入 scene_code（场景代码），函数会自动从数据库读取该场景的模型名、思考强度、温度等配置。
-    temperature/max_tokens/effort 参数可覆盖场景配置（传None时用场景配置的值）。
+    小白讲解：这是调用 MiniMax 大模型的统一入口。管理员可在管理中心修改模型参数。
+    传入 scene_code（场景代码），函数会自动从数据库读取该场景的模型名、思考开关、温度等配置。
+    temperature/max_tokens 参数可覆盖场景配置（传None时用场景配置的值）。
+    effort 参数为兼容旧代码保留，MiniMax-M3 不支持思考强度分级，自动忽略。
+
+    MiniMax 关键适配（对照官方文档）：
+    1. 思考控制用 thinking 参数：{"type": "adaptive"} 开启 / {"type": "disabled"} 关闭
+    2. 必须传 reasoning_split=True：把思考内容分离到 reasoning_content 字段，
+       否则思考过程会混在正文 content 的 <think> 标签里，污染 JSON 解析
+    3. 温度官方推荐 1.0（数据库场景配置已迁移为 1.0）
 
     参数：
         messages: 对话消息列表，格式如 [{"role": "user", "content": "你好"}]
         scene_code: 场景代码，如 "req_parse"/"keyword_gen"/"auto_screening" 等
-        temperature: 温度值（传None用场景配置，思考模式下不生效）
-        json_mode: 是否启用 JSON 输出模式（确保返回合法 JSON）
+        temperature: 温度值（传None用场景配置）
+        json_mode: 是否要求 JSON 输出（MiniMax 用 prompt 约束保证，不传 response_format）
         max_tokens: 最大输出 token 数（传None用场景配置）
-        effort: 思考强度（传None用场景配置）
+        effort: 思考强度（兼容旧参数，MiniMax 不支持，自动忽略）
 
-    返回：AI回复的文本内容
+    返回：AI回复的文本内容（思考过程已分离，只返回正文）
     """
-    # 从数据库读取场景配置（模型名、思考强度、温度、超时等）
+    # 从数据库读取场景配置（模型名、思考开关、温度、超时等）
     config = get_model_config(scene_code)
     if not config:
         raise Exception(f"场景配置不存在：{scene_code}，请在管理中心检查AI模型配置")
@@ -738,36 +745,34 @@ def call_deepseek(messages, scene_code, temperature=None, json_mode=False, max_t
         raise Exception(f"场景{config['scene_name']}已被禁用，请在管理中心启用")
 
     # 从数据库读取服务商信息（API地址、密钥）
-    provider = get_provider("deepseek")
+    provider = get_provider("minimax")
     if not provider or not provider["api_key"]:
-        raise Exception("DeepSeek API密钥未配置，请在管理中心配置")
+        raise Exception("MiniMax API密钥未配置，请在管理中心配置")
     if not provider["is_enabled"]:
-        raise Exception("DeepSeek服务已被禁用，请在管理中心启用")
+        raise Exception("MiniMax服务已被禁用，请在管理中心启用")
 
-    # 参数优先级：调用点传入 > 场景配置 > 默认值
+    # 参数优先级：调用点传入 > 场景配置
     actual_temperature = temperature if temperature is not None else config["temperature"]
     actual_max_tokens = max_tokens if max_tokens is not None else config["max_tokens"]
-    actual_effort = effort if effort is not None else config["thinking_effort"]
 
-    # 构造请求体
+    # 构造请求体（MiniMax OpenAI 兼容格式）
     body = {
         "model": config["model_name"],
         "messages": messages,
         "temperature": actual_temperature,
         "stream": False,
         "max_tokens": actual_max_tokens,
+        # 关键参数：把思考内容分离到 reasoning_content，避免 <think> 标签污染正文
+        "reasoning_split": True,
+        # 思考模式：场景配置开启思考用 adaptive，关闭用 disabled
+        "thinking": {"type": "adaptive"} if config["thinking_enabled"] else {"type": "disabled"},
     }
 
-    # 启用思考模式 + 指定思考强度（仅DeepSeek类模型有效）
-    if config["thinking_enabled"] and actual_effort:
-        body["thinking"] = {"type": "enabled"}
-        body["reasoning_effort"] = actual_effort
+    # JSON 输出模式说明：MiniMax 兼容接口未承诺支持 response_format 参数，
+    # 这里靠 prompt 中的 JSON 指令约束输出，配合 extract_json_from_text 兜底解析。
+    # json_mode 参数保留只为兼容旧调用方，此处不做特殊处理。
 
-    # 启用 JSON Output 模式（prompt 中需包含 "json" 字样）
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
-
-    # 调用 DeepSeek API（接口格式兼容 OpenAI）
+    # 调用 MiniMax API（接口格式兼容 OpenAI）
     response = requests.post(
         f"{provider['base_url']}/chat/completions",
         headers={
@@ -780,20 +785,18 @@ def call_deepseek(messages, scene_code, temperature=None, json_mode=False, max_t
 
     # 检查请求是否成功
     if response.status_code != 200:
-        raise Exception(f"DeepSeek API 调用失败：{response.status_code} - {response.text}")
+        raise Exception(f"MiniMax API 调用失败：{response.status_code} - {response.text}")
 
     # 返回AI回复的文本
     result = response.json()
 
-    # 小白讲解：打印 DeepSeek 返回的 token 用量与缓存命中情况，方便观察费用和缓存优化效果
+    # 小白讲解：打印 MiniMax 返回的 token 用量，方便观察费用
+    # MiniMax 用的是标准 usage 字段（prompt_tokens/completion_tokens），没有 DeepSeek 的缓存命中字段
     usage = result.get("usage", {})
     if usage:
-        hit = usage.get("prompt_cache_hit_tokens", 0)
-        miss = usage.get("prompt_cache_miss_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens", 0)
         completion = usage.get("completion_tokens", 0)
-        total_in = hit + miss
-        hit_rate = f"{hit * 100 // total_in}%" if total_in > 0 else "0%"
-        print(f"[DeepSeek用量] 输入命中缓存:{hit} 未命中:{miss}（命中率{hit_rate}） 输出:{completion}")
+        print(f"[MiniMax用量] 输入:{prompt_tokens} 输出:{completion}")
 
     return result["choices"][0]["message"]["content"]
 
@@ -802,7 +805,7 @@ def call_zhipu_vision(image_base64, prompt):
     """
     调用智谱 GLM-4V 图片识别 API - 把图片转成文字描述
 
-    DeepSeek 不支持图片，所以图片识别用智谱的 GLM-4V-Flash（免费模型）。
+    MiniMax 不支持图片，所以图片识别用智谱的 GLM-4V-Flash（免费模型）。
     配置从数据库读取（场景代码 vision_ocr）。
 
     参数：
@@ -872,7 +875,7 @@ def extract_json_from_text(text):
 
 def classify_hs_code(product_name):
     """
-    用DeepSeek根据产品名称自动归类HS编码
+    用MiniMax根据产品名称自动归类HS编码
 
     小白讲解：海关数据搜索需要HS编码才能精准过滤产品。
     不同产品的HS编码不一样（比如电视机柜是9403，LED灯是9405），不能写死。
@@ -884,7 +887,7 @@ def classify_hs_code(product_name):
     返回：hs_code 字符串，如 "9403"，失败时返回空字符串
     """
     try:
-        result = call_deepseek(
+        result = call_llm(
             messages=[{
                 "role": "user",
                 "content": (
@@ -973,7 +976,7 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 
     # 第五步：AI提取信息并判断确认状态
     if progress_callback:
-        progress_callback("ai_analyze", "🤖 AI 正在分析需求（DeepSeek深度思考中，请耐心等待）...", "running")
+        progress_callback("ai_analyze", "🤖 AI 正在分析需求（MiniMax深度思考中，请耐心等待）...", "running")
     extract_prompt = f"""分析以下内容，提取产品采购需求。
 
 【说明】
@@ -1037,7 +1040,7 @@ JSON格式（只返回JSON）：
     ]
 
     # 小白讲解：temperature=None 表示用数据库场景配置里的温度值（管理员可在管理中心调整）
-    result_text = call_deepseek(messages, scene_code="req_parse", temperature=None)  # 需求解析是结构化提取
+    result_text = call_llm(messages, scene_code="req_parse", temperature=None)  # 需求解析是结构化提取
     parsed = extract_json_from_text(result_text)
 
     # 确保字段完整
@@ -1218,7 +1221,7 @@ def _generate_summary_and_keywords(parsed):
     ]
 
     # 小白讲解：temperature=None 表示用数据库场景配置里的温度值（管理员可在管理中心调整）
-    result_text = call_deepseek(messages, scene_code="keyword_gen", temperature=None)  # 关键词生成是规则明确任务
+    result_text = call_llm(messages, scene_code="keyword_gen", temperature=None)  # 关键词生成是规则明确任务
     return extract_json_from_text(result_text)
 
 
@@ -1290,5 +1293,5 @@ def auto_screening(supplier, requirement):
     ]
 
     # 小白讲解：temperature=None 表示用数据库场景配置里的温度值（管理员可在管理中心调整）
-    result_text = call_deepseek(messages, scene_code="auto_screening", temperature=None)  # 风险评估需综合判断
+    result_text = call_llm(messages, scene_code="auto_screening", temperature=None)  # 风险评估需综合判断
     return extract_json_from_text(result_text)

@@ -1332,7 +1332,7 @@ def ai_parse_requirement():
     - 信息缺失(confirmed=False) → 显示追问页让用户补充，不保存
     """
     if not is_api_configured():
-        flash("请先在 config.py 中配置 DeepSeek API Key", "danger")
+        flash("请先在 config.py 中配置 MiniMax API Key", "danger")
         return redirect(url_for("ai_index"))
 
     if request.method == "POST":
@@ -1402,7 +1402,7 @@ def ai_parse_requirement_stream():
     """
     if not is_api_configured():
         def _err():
-            yield f"data: {json.dumps({'step': 'error', 'message': 'DeepSeek API Key 未配置', 'status': 'error'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'step': 'error', 'message': 'MiniMax API Key 未配置', 'status': 'error'}, ensure_ascii=False)}\n\n"
         return Response(stream_with_context(_err()), mimetype="text/event-stream")
 
     input_text = request.form.get("input_text", "").strip()
@@ -1538,7 +1538,7 @@ def ai_supplement_requirement():
     previous_data 作为上下文让AI知道之前已经识别和确认了什么
     """
     if not is_api_configured():
-        flash("请先在 config.py 中配置 DeepSeek API Key", "danger")
+        flash("请先在 config.py 中配置 MiniMax API Key", "danger")
         return redirect(url_for("ai_index"))
 
     # 收集用户补充的信息 + 之前已识别的信息（作为previous_data传给AI）
@@ -1610,7 +1610,7 @@ def ai_save_requirement():
         "hs_code": request.form.get("hs_code", "").strip(),
     }
 
-    # 如果前端没传HS编码，用DeepSeek自动归类
+    # 如果前端没传HS编码，用MiniMax自动归类
     if not data["hs_code"]:
         try:
             from ai_helper import classify_hs_code
@@ -1691,7 +1691,7 @@ def ai_search_suppliers(req_id):
 
     流程（参考供应商寻源SKILL文档）：
     1. 用智谱web_search按P0-P3关键词搜索（7组中英文关键词，共14次搜索）
-    2. 用DeepSeek从搜索结果中提取+过滤供应商（剔除配件/材料/贸易商）
+    2. 用MiniMax从搜索结果中提取+过滤供应商（剔除配件/材料/贸易商）
     3. 用天眼查MCP补全工商信息（注册资本、地址、电话等）
     4. 批量写入数据库
 
@@ -1715,7 +1715,7 @@ def ai_search_suppliers(req_id):
     # GET请求：显示搜索配置页面
     if request.method == "GET":
         if not is_api_configured():
-            flash("请先在 config.py 中配置 DeepSeek API Key", "danger")
+            flash("请先在 config.py 中配置 MiniMax API Key", "danger")
             return redirect(url_for("ai_index"))
         return render_template("ai/search_suppliers.html", requirement=requirement)
 
@@ -1970,7 +1970,7 @@ def ai_auto_screening(req_id):
     3. 通过SSE实时推送进度给前端
     """
     if not is_api_configured():
-        flash("请先在管理中心配置 DeepSeek API Key", "danger")
+        flash("请先在管理中心配置 MiniMax API Key", "danger")
         return redirect(url_for("ai_index"))
 
     cursor = g.db.cursor()
@@ -2797,7 +2797,7 @@ def admin_config_edit(id):
     if request.method == "POST":
         model_name = request.form.get("model_name", "").strip()
         thinking_enabled = 1 if request.form.get("thinking_enabled") else 0
-        thinking_effort = request.form.get("thinking_effort", "high").strip()
+        thinking_effort = request.form.get("thinking_effort", "").strip()
         max_tokens = int(request.form.get("max_tokens", 4096))
         temperature = float(request.form.get("temperature", 0.3))
         timeout_seconds = int(request.form.get("timeout_seconds", 120))

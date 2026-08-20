@@ -26,7 +26,7 @@ from screening_data import (
 # 小白讲解：从 screening_audit 导入全局写锁，迁移到MySQL后并发写不再互斥，
 # 但保留这把锁作为额外保险。
 from screening_audit import create_run_id, log_task, generate_audit_report, _db_write_lock
-from ai_helper import call_deepseek, extract_json_from_text
+from ai_helper import call_llm, extract_json_from_text
 
 
 def _get_db_connection():
@@ -559,7 +559,7 @@ def _check_platform_infringe(run_id, supplier_id, company_name, user_id):
 企业：{company_name}
 搜索结果：
 {search_result[:1000]}"""
-        result_text = call_deepseek(
+        result_text = call_llm(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=None, json_mode=True
         )
@@ -656,7 +656,7 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
 
 只返回JSON：
 {{"has_manufacturing_capability": true或false, "manufacturing_matches_product": true或false, "decision": "pass"或"reject", "reason": "判断依据"}}"""
-            result_text = call_deepseek(
+            result_text = call_llm(
                 [{"role": "user", "content": prompt}],
                 scene_code="auto_screening", temperature=None, json_mode=True
             )
@@ -750,7 +750,7 @@ def _check_non_manufacturer(run_id, supplier_id, company_name, business_scope, s
 工商登记经营范围：{business_scope}
 供应商类型（AI推断，仅供参考）：{supplier.get('supplier_type', '未知')}
 主营产品（AI推断，仅供参考）：{supplier.get('main_product', '')}"""
-        result_text = call_deepseek(
+        result_text = call_llm(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=None, json_mode=True
         )
@@ -816,7 +816,7 @@ def _check_product_mismatch(run_id, supplier_id, supplier, user_id):
 采购需求产品：{req_product}
 
 供应商实际售卖的产品名称：{product_title}"""
-        result_text = call_deepseek(
+        result_text = call_llm(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=None, json_mode=True
         )
@@ -982,7 +982,7 @@ def _score_product_match(rule, eval_data, supplier, max_score, run_id, supplier_
 
 供应商产品信息：
 {supplier_info}"""
-        result_text = call_deepseek(
+        result_text = call_llm(
             [{"role": "user", "content": prompt}],
             scene_code="auto_screening", temperature=None, json_mode=True
         )

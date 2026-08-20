@@ -8,7 +8,7 @@ AI 配置文件模板 — 复制为 config.py 并填入你自己的密钥
 
 API Key 获取地址：
 - 智谱：https://open.bigmodel.cn/  注册后在控制台"API Keys"页面创建（有免费额度）
-- DeepSeek：https://platform.deepseek.com/  注册后在"API Keys"页面创建
+- MiniMax：https://platform.minimaxi.com/  注册后在控制台创建 API Key（格式如 sk-cp-xxx）
 - 天眼查MCP：联系天眼查获取
 - 1688 API：在1688开放平台申请
 """
@@ -30,21 +30,18 @@ ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_VISION_MODEL = "glm-4v-flash"
 
 
-# ==================== DeepSeek 配置（用于文本理解/搜索/初筛）====================
-DEEPSEEK_API_KEY = "改成你的DeepSeek API密钥"
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-v4-pro"
+# ==================== MiniMax 配置（用于文本理解/搜索/初筛）====================
+# 首次启动时迁移到数据库 ai_providers 表（provider_code=minimax）
+# 小白讲解：Key 优先读环境变量 MINIMAX_API_KEY，其次读小写的 minimax（兼容用户已设置的名字）
+MINIMAX_API_KEY = "改成你的MiniMax API密钥（sk-cp-开头）"
+MINIMAX_BASE_URL = "https://api.minimaxi.com/v1"
+MINIMAX_MODEL = "MiniMax-M3"
 
-
-# ==================== DeepSeek 能力配置 ====================
-DEEPSEEK_THINKING_ENABLED = True
-DEEPSEEK_THINKING_EFFORT = "max"
-
-DEEPSEEK_EFFORT_SIMPLE = "high"
-DEEPSEEK_EFFORT_COMPLEX = "max"
-
-DEEPSEEK_MAX_TOKENS = 32768
-DEEPSEEK_TIMEOUT = 300
+# ==================== MiniMax 能力配置（各场景种子参数）====================
+# 小白讲解：MiniMax-M3 的思考模式没有 low/medium/high/max 分级，只有开(adaptive)/关(disabled)，
+# 温度官方推荐 1.0（已按场景写入数据库种子配置）。
+MINIMAX_MAX_TOKENS = 32768
+MINIMAX_TIMEOUT = 300
 
 
 # ==================== 天眼查 MCP 配置（用于供应商工商信息补全）====================
@@ -87,11 +84,11 @@ def is_1688_ak_configured():
 
 
 def is_api_configured():
-    """检查 DeepSeek API Key 是否已配置"""
-    db_key = _query_provider_api_key("deepseek")
+    """检查 MiniMax API Key 是否已配置"""
+    db_key = _query_provider_api_key("minimax")
     if db_key is not None:
         return bool(db_key and not db_key.startswith("sk-xxxx"))
-    return bool(DEEPSEEK_API_KEY and not DEEPSEEK_API_KEY.startswith("sk-xxxx"))
+    return bool(MINIMAX_API_KEY and not MINIMAX_API_KEY.startswith("sk-xxxx"))
 
 
 def is_vision_configured():

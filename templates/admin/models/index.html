@@ -9,7 +9,7 @@
 </div>
 
 <!-- 配置状态提醒：核心服务商是否已配置密钥 -->
-{% set core_codes = ['deepseek', 'zhipu', 'ali1688', 'tianyancha'] %}
+{% set core_codes = ['minimax', 'zhipu', 'ali1688', 'tianyancha'] %}
 {% set missing = [] %}
 {% for code in core_codes %}
     {% if not providers_status.get(code, {}).get('has_key') %}

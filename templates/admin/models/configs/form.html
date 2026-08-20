@@ -25,7 +25,7 @@
                         <label class="form-label">模型名称 <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" name="model_name"
                                value="{{ config.model_name }}" required>
-                        <small class="text-muted">如 deepseek-v4-pro、deepseek-v4-flash、glm-4v-flash</small>
+                        <small class="text-muted">如 MiniMax-M3、MiniMax-M2.5、glm-4v-flash</small>
                     </div>
 
                     <!-- 思考模式 -->
@@ -33,19 +33,7 @@
                         <input type="checkbox" class="form-check-input" name="thinking_enabled" id="thinking_enabled"
                                {% if config.thinking_enabled %}checked{% endif %}>
                         <label class="form-check-label" for="thinking_enabled">启用思考模式</label>
-                        <small class="text-muted d-block">仅DeepSeek类模型有效，启用后AI会先推理再回复（更准但更慢）</small>
-                    </div>
-
-                    <!-- 思考强度 -->
-                    <div class="mb-3">
-                        <label class="form-label">思考强度</label>
-                        <select class="form-select" name="thinking_effort">
-                            <option value="high" {{ 'selected' if config.thinking_effort == 'high' or not config.thinking_effort }}>high（默认，平衡速度与准确度）</option>
-                            <option value="max" {{ 'selected' if config.thinking_effort == 'max' }}>max（最强推理，最慢最准）</option>
-                            <option value="medium" {{ 'selected' if config.thinking_effort == 'medium' }}>medium（中等）</option>
-                            <option value="low" {{ 'selected' if config.thinking_effort == 'low' }}>low（最快，准确度降低）</option>
-                        </select>
-                        <small class="text-muted">思考模式关闭时此项不生效</small>
+                        <small class="text-muted d-block">启用后AI会先推理再回复（更准但更慢）。MiniMax-M3 支持，智谱图片识别不支持</small>
                     </div>
 
                     <!-- 温度 -->
@@ -53,7 +41,7 @@
                         <label class="form-label">温度（temperature）</label>
                         <input type="number" class="form-control" name="temperature"
                                value="{{ config.temperature }}" step="0.1" min="0" max="2">
-                        <small class="text-muted">0=确定性输出，2=最随机。思考模式下忽略此参数</small>
+                        <small class="text-muted">MiniMax 官方推荐 1.0；0=更确定，2=更随机</small>
                     </div>
 
                     <!-- 最大Token -->
@@ -69,7 +57,7 @@
                         <label class="form-label">超时时间（秒）</label>
                         <input type="number" class="form-control" name="timeout_seconds"
                                value="{{ config.timeout_seconds }}" min="10" max="600" step="10">
-                        <small class="text-muted">AI调用超时时间，思考模式max建议300秒</small>
+                        <small class="text-muted">AI调用超时时间，开启思考模式建议300秒以上</small>
                     </div>
 
                     <!-- 启用状态 -->

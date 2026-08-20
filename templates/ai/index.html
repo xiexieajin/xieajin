@@ -9,21 +9,21 @@
 
 {% if not api_configured %}
 <div class="alert alert-warning">
-    <h5><i class="bi bi-exclamation-triangle"></i> DeepSeek API Key 未配置</h5>
-    <p>AI自动化功能需要配置 DeepSeek API Key 才能使用。</p>
+    <h5><i class="bi bi-exclamation-triangle"></i> MiniMax API Key 未配置</h5>
+    <p>AI自动化功能需要配置 MiniMax API Key 才能使用。</p>
     <hr>
     <p class="mb-2"><strong>配置步骤：</strong></p>
     <ol>
-        <li>访问 <a href="https://platform.deepseek.com/" target="_blank">DeepSeek 开放平台</a> 注册账号</li>
-        <li>在"API Keys"页面创建一个新的 API Key</li>
-        <li>打开项目目录下的 <code>config.py</code> 文件</li>
-        <li>把 <code>DEEPSEEK_API_KEY = "sk-xxxx..."</code> 改成你的真实 API Key</li>
+        <li>访问 <a href="https://platform.minimaxi.com/" target="_blank">MiniMax 开放平台</a> 注册账号</li>
+        <li>在控制台创建一个新的 API Key（格式如 sk-cp-xxx）</li>
+        <li>在系统环境变量中配置 <code>MINIMAX_API_KEY</code>（或项目 .env 文件）</li>
+        <li>也可以在「管理中心 → 模型与平台管理 → 服务商」页面直接填写密钥</li>
         <li>刷新此页面即可使用</li>
     </ol>
 </div>
 {% else %}
 <div class="alert alert-success">
-    <i class="bi bi-check-circle"></i> DeepSeek API 已配置，可以使用AI自动化功能
+    <i class="bi bi-check-circle"></i> MiniMax API 已配置，可以使用AI自动化功能
 </div>
 {% endif %}
 

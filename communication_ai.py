@@ -232,14 +232,13 @@ def generate_session_reply(supplier_id, user_prompt="", prev_log_id=None, langua
         # 7. 组装完整消息
         messages = _build_messages(system_prompt, actual_prompt, context, prev_example)
 
-        # 8. 调用 DeepSeek
+        # 8. 调用 MiniMax
         # 小白讲解：显式指定 max_tokens=32768，覆盖场景配置。
-        # 原因：Railway 生产环境 comm_reply 场景配置的 max_tokens 值过小，
-        # 而 DeepSeek V4-Pro 即使 thinking_enabled=0 也会消耗 reasoning_tokens，
-        # 配置值不足导致 content 被截断，JSON 解析失败报"AI 返回格式异常"。
+        # 原因：MiniMax-M3 思考过程也消耗输出 token，配置值过小会导致
+        # content 被截断或为空，JSON 解析失败报"AI 返回格式异常"。
         # 32768 足以容纳思考过程 + 完整邮件正文，彻底避免截断。
-        from ai_helper import call_deepseek
-        result_text = call_deepseek(
+        from ai_helper import call_llm
+        result_text = call_llm(
             messages=messages,
             scene_code="comm_reply",
             json_mode=True,
@@ -354,14 +353,13 @@ def generate_bulk_or_single(supplier_ids, user_prompt="", scene="bulk_send",
         # 7. 组装完整消息
         messages = _build_messages(system_prompt, actual_prompt, context, prev_example)
 
-        # 8. 调用 DeepSeek
+        # 8. 调用 MiniMax
         # 小白讲解：显式指定 max_tokens=32768，覆盖场景配置。
-        # 原因：Railway 生产环境 comm_send 场景配置的 max_tokens 值过小，
-        # 而 DeepSeek V4-Pro 即使 thinking_enabled=0 也会消耗 reasoning_tokens，
-        # 配置值不足导致 content 被截断，JSON 解析失败报"AI 返回格式异常"。
+        # 原因：MiniMax-M3 思考过程也消耗输出 token，配置值过小会导致
+        # content 被截断或为空，JSON 解析失败报"AI 返回格式异常"。
         # 32768 足以容纳思考过程 + 完整邮件正文，彻底避免截断。
-        from ai_helper import call_deepseek
-        result_text = call_deepseek(
+        from ai_helper import call_llm
+        result_text = call_llm(
             messages=messages,
             scene_code="comm_send",
             json_mode=True,

@@ -9,7 +9,14 @@
       "canvasData": {
         "x": 0,
         "y": 0,
-        "group": 0
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1210,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-71edd0e6",
+          "measuredAt": 1786004873084
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/index.html",
@@ -66,7 +73,14 @@
       "canvasData": {
         "x": 620,
         "y": 0,
-        "group": 0
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 903,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-4a9a1a09",
+          "measuredAt": 1786004873084
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/supplier-list.html",
@@ -108,7 +122,14 @@
       "canvasData": {
         "x": 620,
         "y": 1146,
-        "group": 0
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1062,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-5f7c9c16",
+          "measuredAt": 1786004873084
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/supplier-detail.html",
@@ -150,7 +171,14 @@
       "canvasData": {
         "x": 620,
         "y": 377,
-        "group": 0
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 903,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-9436a909",
+          "measuredAt": 1786004873084
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/requirement-list.html",
@@ -187,7 +215,14 @@
       "canvasData": {
         "x": 620,
         "y": 754,
-        "group": 0
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 954,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-49bdaa44",
+          "measuredAt": 1786004873084
+        }
       },
       "devMetadata": {
         "htmlSrc": "pages/ai-automation.html",
