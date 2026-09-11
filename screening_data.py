@@ -288,70 +288,204 @@ def _rebuild_basic_info_from_db(cached, company_name):
 
 def _query_risk_qual_case(client, company_full_name, result):
     """
-    查询初筛所需的3个增量维度：风险总览+资质证书+司法案件
+    查询初筛所需的增量维度：风险+资质（可切换数据源，默认水滴）
 
-    小白讲解：这是初筛真正需要从天眼查查的数据（搜索阶段没查的）。
-    分别调用3次call_tool，每次之间加0.5秒延迟避免频率限制。
-    之前还查了capabilities/trademarks/patents，但发现：
-    - capabilities：代码注释说不依赖它，直接试调常用工具，所以删掉
-    - trademarks/patents：评分规则根本没用到这两个字段，纯属浪费额度，删掉
+    小白讲解：初筛的风险数据源由 config.SCREENING_RISK_SOURCE 控制：
+    - "water"（默认）：用水滴 search_company_risk + get_company_cert。
+      水滴能返回司法类风险（裁判文书/开庭/立案），但"经营异常/严重违法/失信被执行人"
+      这几个维度水滴无数据，会标注"水滴未提供，需人工复核"。
+    - "tianyancha"：用天眼查，能精确返回经营异常/严重违法/失信/司法，但消耗每日额度。
+
+    若水滴配额耗尽（is_shuidi_quota_exhausted），自动回退天眼查补风险。
 
     参数：
-        client: 天眼查客户端
+        client: 水滴ShuidiClient实例
         company_full_name: 企业全称
         result: 结果字典（会往里面写 risk_overview/qualifications/judicial_case）
     """
-    # 调用风险总览（核心维度，大部分公司可用）
-    risk_text = client.call_tool(company_full_name, "get_risk_overview")
-    if risk_text and "请求失败" not in risk_text and "unknown tool" not in risk_text:
-        result["risk_overview"] = risk_text
-    time.sleep(0.5)
+    from config import SCREENING_RISK_SOURCE
 
-    # 调用资质证书
-    qual_text = client.call_tool(
-        company_full_name, "get_qualifications",
-        {"page": 1, "page_size": 20}
-    )
-    if qual_text and "请求失败" not in qual_text and "unknown tool" not in qual_text:
-        result["qualifications"] = qual_text
-    time.sleep(0.5)
+    if SCREENING_RISK_SOURCE == "tianyancha":
+        _query_risk_qual_tyc(company_full_name, result)
+    else:
+        _query_risk_qual_shuidi(client, company_full_name, result)
 
-    # 调用司法案件（用于检查知识产权侵权败诉，部分公司可用）
-    case_text = client.call_tool(
-        company_full_name, "get_judicial_case",
-        {"page": 1, "page_size": 10}
-    )
-    if case_text and "请求失败" not in case_text and "unknown tool" not in case_text:
-        result["judicial_case"] = case_text
+
+def _query_risk_qual_shuidi(client, company_full_name, result):
+    """初筛增量维度走水滴（默认）：风险司法类 + 资质证书，缺失维度标注（不误当无风险）"""
+    import json as _json
+    from shuidi_client import is_shuidi_quota_exhausted
+
+    # ==================== 风险总览（水滴）====================
+    risk = client.search_company_risk(company_full_name)
+    if risk and isinstance(risk, dict):
+        raw_text = risk.get("raw", "") or _json.dumps(risk, ensure_ascii=False)
+        result["risk_overview"] = raw_text[:4000]
+        result["risk_detail"] = risk
+    else:
+        # 水滴未返回风险数据：若配额耗尽则回退天眼查，避免初筛完全无风险数据
+        if is_shuidi_quota_exhausted():
+            print(f"[初筛] 水滴配额耗尽({company_full_name})，风险回退天眼查")
+            _query_risk_qual_tyc(company_full_name, result)
+            return
+    time.sleep(0.3)
+
+    # ==================== 资质证书（水滴）====================
+    cert = client.get_company_cert(company_full_name)
+    if cert and isinstance(cert, dict):
+        result["qualifications"] = _json.dumps(cert.get("data", cert), ensure_ascii=False)[:4000]
+    time.sleep(0.3)
+
+    # ==================== 司法案件 ====================
+    # 小白讲解：水滴没有独立司法案件工具，用风险文本作为司法线索
+    result["judicial_case"] = result.get("risk_overview", "")
+
+    # ==================== 缺失维度标注（关键）====================
+    # 小白讲解：水滴 search_company_risk 能返回司法类风险，但实测不返回
+    # "经营异常/严重违法/失信被执行人"这几个工商处罚维度。如果在风险文本里没看到
+    # 这些关键词，就把"水滴未提供"标注进 risk_overview，避免初筛规则把它误当成
+    # "确定无风险"而放过，而是提示需人工复核。
+    _risk_text = result.get("risk_overview", "") or ""
+    _missed_dims = []
+    if "经营异常" not in _risk_text and "businessException" not in _risk_text:
+        _missed_dims.append("经营异常")
+    if "严重违法" not in _risk_text and "严重失信" not in _risk_text and "seriousViolation" not in _risk_text:
+        _missed_dims.append("严重违法失信")
+    if "失信被执行人" not in _risk_text and "被执行" not in _risk_text and "faithless" not in _risk_text:
+        _missed_dims.append("失信被执行人")
+    if _missed_dims:
+        _hint = "；".join(_missed_dims) + "：水滴未返回该维度数据，需人工复核"
+        result["risk_overview"] = (_risk_text + "\n[注意] " + _hint)[:4000]
+
+
+def _query_risk_qual_tyc(company_full_name, result):
+    """初筛增量维度走天眼查（可切换）：风险总览 + 资质 + 司法"""
+    import json as _json
+    from supplier_search import TianyanchaClient
+    try:
+        tyc = TianyanchaClient()
+        tyc.initialize()
+
+        # 风险总览（天眼查精确分维度）
+        risk_text = tyc._call("tools/call", {
+            "name": "get_risk_overview",
+            "arguments": {"company_name": company_full_name},
+        }, msg_id=200)
+        risk_content = ""
+        if risk_text and "result" in risk_text:
+            content = risk_text["result"].get("content", [])
+            if content:
+                risk_content = content[0].get("text", "")
+        if risk_content and "请求失败" not in risk_content and "unknown tool" not in risk_content:
+            result["risk_overview"] = risk_content[:4000]
+        time.sleep(0.3)
+
+        # 资质证书（天眼查）
+        qual_text = tyc._call("tools/call", {
+            "name": "get_qualifications",
+            "arguments": {"company_name": company_full_name, "page": 1, "page_size": 20},
+        }, msg_id=210)
+        if qual_text and "result" in qual_text:
+            content = qual_text["result"].get("content", [])
+            if content:
+                qtext = content[0].get("text", "")
+                if qtext and "请求失败" not in qtext and "unknown tool" not in qtext:
+                    result["qualifications"] = qtext[:4000]
+        time.sleep(0.3)
+
+        # 司法案件（天眼查）
+        case_text = tyc._call("tools/call", {
+            "name": "get_judicial_case",
+            "arguments": {"company_name": company_full_name, "page": 1, "page_size": 10},
+        }, msg_id=220)
+        if case_text and "result" in case_text:
+            content = case_text["result"].get("content", [])
+            if content:
+                ctext = content[0].get("text", "")
+                if ctext and "请求失败" not in ctext and "unknown tool" not in ctext:
+                    result["judicial_case"] = ctext[:4000]
+        # 司法案件留底
+        if not result.get("judicial_case"):
+            result["judicial_case"] = result.get("risk_overview", "")
+    except Exception as e:
+        print(f"[初筛] 天眼查风险查询异常({company_full_name}): {e}")
+        result["judicial_case"] = result.get("risk_overview", "")
+
+
+def _query_basic_info_tyc(company_name):
+    """
+    备用：用天眼查查询工商基础信息（水滴查不到时的兜底候选）
+
+    小白讲解：初筛默认全用水滴。当水滴 get_company_info 查不到这家公司时，
+    用天眼查再试一次（天眼查数据更全，可能兜得住）。
+    返回字段与水滴 _parse_company_info 对齐；查不到返回 None。
+
+    参数：company_name 企业全称
+    返回：工商信息字典（含 name/credit_code/legal_person/registered_capital 等），失败返回 None
+    """
+    from supplier_search import TianyanchaClient
+    try:
+        tyc = TianyanchaClient()
+        tyc.initialize()
+        companies = tyc.search_companies(company_name)
+        if not companies:
+            return None
+
+        # 优先精确同名，其次英文名匹配，最后取第一个
+        matched = None
+        for c in companies:
+            if c.get("name", "").strip() == company_name:
+                matched = c
+                break
+        if not matched:
+            for c in companies:
+                if c.get("match_type", "") == "英文名匹配":
+                    matched = c
+                    break
+        if not matched:
+            matched = companies[0]
+
+        detail = tyc.get_company_basic_profile(matched.get("name", ""))
+        if not detail:
+            return None
+
+        # 字段对齐（补齐 name / credit_code / 匹配标记）
+        detail["name"] = detail.get("name") or matched.get("name") or company_name
+        detail["credit_code"] = detail.get("credit_code") or matched.get("credit_code", "") or ""
+        detail["_match"] = "tianyancha_fallback"
+        return detail
+    except Exception as e:
+        print(f"[初筛] 天眼查兜底工商查询异常({company_name}): {e}")
+        return None
 
 
 def query_supplier_full_data(company_name, client=None, supplier_id=None):
     """
-    查询供应商的完整初筛数据（基础信息+风险+资质+司法案件）
+    查询供应商的完整初筛数据（基础信息+风险+资质）使用水滴MCP
 
     小白讲解：这是初筛引擎调用的主入口。做了优化——
-    如果搜索阶段已经查过天眼查并存到数据库，初筛时直接读库复用basic_info，
-    只查风险/资质/司法3个增量维度，省掉search_companies+get_company_basic_profile
-    +capabilities+trademarks+patents共5次MCP请求。
-    只有手动添加的供应商（数据库没有天眼查数据）才走完整查询流程。
+    如果搜索阶段已经查过水滴并存到数据库，初筛时直接读库复用basic_info，
+    只查风险/资质2个增量维度，省掉重复的MCP请求。
+    只有手动添加的供应商（数据库没有水滴数据）才走完整查询流程。
 
     参数：
         company_name: 企业全称
-        client: 可选的ScreeningDataClient实例（传入则复用连接，不传则新建）
+        client: 可选的水滴ShuidiClient实例（传入则复用，不传则新建）
         supplier_id: 可选的供应商ID，传了会先读数据库缓存
     返回：供应商数据字典，包含：
         - basic_info: 基础工商信息
-        - risk_overview: 风险总览文本
+        - risk_overview: 风险文本
         - qualifications: 资质证书文本
         - judicial_case: 司法案件文本
-        - tyc_match_status: 天眼查匹配状态
+        - tyc_match_status: 匹配状态（shuidi_match / not_found）
         - company_id: 企业ID
     """
-    # 如果没传client，新建一个
+    # 小白讲解：创建/复用属性用 ShuidiClient（完全替代天眼查）
+    from shuidi_client import ShuidiClient
+
     own_client = False
-    if client is None:
-        client = ScreeningDataClient()
-        client.initialize()
+    if client is None or not client:
+        client = ShuidiClient()
         own_client = True
 
     result = {
@@ -364,17 +498,17 @@ def query_supplier_full_data(company_name, client=None, supplier_id=None):
         "capabilities_text": "",
     }
 
-    # ==================== 优化：优先读库复用搜索阶段的天眼查数据 ====================
-    # 小白讲解：搜索阶段已经调过 search_companies + get_company_basic_profile，
+    # ==================== 优化：优先读库复用搜索阶段的数据 ====================
+    # 小白讲解：搜索阶段已经调用过水滴 get_company_info，
     # 结果存在 suppliers 表的 tyc_match_status / business_scope 等字段里。
-    # 初筛时直接读库，省掉2次MCP请求（search + profile）。
-    # 只有手动添加的供应商（tyc_match_status为空）才触发天眼查补查。
+    # 初筛时直接读库，省掉1次MCP请求（get_company_info）。
+    # 只有手动添加的供应商（tyc_match_status为空）才触发完整查询。
     if supplier_id:
         cached = _load_cached_tyc_data(supplier_id)
         if cached:
             match_status = cached.get("tyc_match_status", "") or ""
             if match_status == "not_found":
-                # 搜索阶段已确认天眼查查不到（理论上搜索阶段已剔除，这里兜底）
+                # 搜索阶段已确认查不到（理论上搜索阶段已剔除，这里兜底）
                 result["tyc_match_status"] = "not_found"
                 return result
             if match_status and match_status != "error":
@@ -383,81 +517,49 @@ def query_supplier_full_data(company_name, client=None, supplier_id=None):
                 result["company_id"] = cached.get("tyc_company_id", "") or ""
                 result["basic_info"] = _rebuild_basic_info_from_db(cached, company_name)
                 company_full_name = result["basic_info"].get("name", company_name)
-                # 只查3个增量维度（风险+资质+司法），省掉search+profile+caps+trademarks+patents
+                # 只查增量维度（风险+资质），省掉 get_company_info 调用
                 _query_risk_qual_case(client, company_full_name, result)
                 return result
             # match_status为空（手动添加）或error → 走完整流程补查
 
-    # ==================== 完整流程（手动添加的供应商，数据库没有天眼查数据）====================
+    # ==================== 完整流程（手动添加的供应商，数据库没有数据）====================
     try:
-        # 第1步：搜索公司，拿company_id
-        companies = client.search_companies(company_name)
-
-        # 区分"请求失败"和"确实没找到"
-        if companies is None:
-            result["tyc_match_status"] = "error"
-            result["error"] = "天眼查MCP请求失败（网络超时或频率限制），跳过本次初筛"
-            print(f"[初筛] 天眼查请求失败({company_name})，跳过本次初筛，下次可重新初筛")
-            return result
-
-        if not companies:
-            result["tyc_match_status"] = "not_found"
-            return result
-
-        # 严格匹配：1.优先精确同名 2.英文名匹配 3.相似度≥0.6+字号校验
-        matched = None
-        for company in companies:
-            if company.get("name", "").strip() == company_name:
-                matched = company
-                result["tyc_match_status"] = "exact_match"
-                break
-
-        if not matched:
-            for company in companies:
-                if company.get("match_type", "") == "英文名匹配":
-                    matched = company
-                    result["tyc_match_status"] = "english_name_match"
-                    print(f"[天眼查] 英文名匹配采用：'{company_name}' → '{company.get('name', '')}'")
-                    break
-
-        if not matched:
-            best_ratio = 0
-            best_company = None
-            for company in companies:
-                cand_name = company.get("name", "").strip()
-                if not cand_name:
-                    continue
-                ratio = difflib.SequenceMatcher(None, company_name, cand_name).ratio()
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    best_company = company
-            if best_company and best_ratio >= 0.6:
-                if _verify_brand_name(company_name, best_company.get("name", "")):
-                    matched = best_company
-                    result["tyc_match_status"] = "partial_match"
-                else:
-                    print(f"[天眼查] 字号不匹配({company_name})，候选'{best_company.get('name','')}'，拒绝采用")
-                    result["tyc_match_status"] = "not_found"
-                    return result
-            else:
-                print(f"[天眼查] 未匹配({company_name})，最高相似度{best_ratio:.0%}")
-                result["tyc_match_status"] = "not_found"
+        # 第1步：优先用水滴 get_company_info 查询工商信息（内部带严格校验）
+        # 小白讲解：get_company_info 内部已做 SSE解析/UTF-8/三重校验，
+        # 返回空字典 = 未命中或校验拒绝。
+        info = client.get_company_info(company_name)
+        if not info or not info.get("name"):
+            # 水滴查不到/配额耗尽 → 天眼查兜底工商信息（天眼查仅作备用候选）
+            # 小白讲解：用户要求"初筛全部用水滴，天眼查只做备用"。当水滴查不到时，
+            # 用天眼查再试一次，避免手动添加的供应商因水滴缺数据而完全无法初筛。
+            from shuidi_client import is_shuidi_quota_exhausted
+            _fallback = _query_basic_info_tyc(company_name)
+            if _fallback:
+                print(f"[初筛] 水滴未查询到({company_name})，已用天眼查兜底工商信息")
+                result["tyc_match_status"] = _fallback.get("_match", "tianyancha_fallback")
+                result["company_id"] = _fallback.get("credit_code", "")
+                result["basic_info"] = _fallback
+                company_full_name = _fallback.get("name", company_name)
+                _query_risk_qual_case(client, company_full_name, result)
                 return result
+            result["tyc_match_status"] = "not_found"
+            reason = "水滴配额耗尽" if is_shuidi_quota_exhausted() else "水滴未查询到且天眼查兜底也失败"
+            print(f"[初筛] {company_name} 未匹配（{reason}），标记未匹配")
+            return result
 
-        result["company_id"] = matched.get("credit_code", "")
-        company_full_name = matched.get("name", company_name)
+        result["tyc_match_status"] = "shuidi_match"
+        result["company_id"] = info.get("credit_code", "")
+        result["basic_info"] = info
 
-        # 第2步：获取基础工商信息
-        basic = client.get_company_basic_profile(company_full_name)
-        result["basic_info"] = basic
-        time.sleep(0.5)
+        # 用匹配到的正式中文名（水滴返回的 name）
+        company_full_name = info.get("name", company_name)
 
-        # 第3步：查3个增量维度（风险+资质+司法）
+        # 第2步：查增量维度（风险+资质）
         _query_risk_qual_case(client, company_full_name, result)
 
     except Exception as e:
         result["error"] = str(e)
-        print(f"[初筛] 天眼查查询异常({company_name}): {e}")
+        print(f"[初筛] 水滴查询异常({company_name}): {e}")
     finally:
         if own_client:
             pass  # 连接由GC回收，无需显式关闭

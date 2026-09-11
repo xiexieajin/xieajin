@@ -1,9 +1,11 @@
 """
 AI 核心模块 - 封装大模型的所有 AI 功能
 
-这个文件是系统的"AI大脑"，使用两个模型各取所长：
-- 智谱 GLM-4V-Flash：图片识别（免费），把用户上传的图片转成文字描述
-- MiniMax-M3：文本理解、联网搜索、供应商初筛（OpenAI兼容接口）
+这个文件是系统的"AI大脑"，统一使用 MiniMax-M3：
+- MiniMax-M3：文本理解、需求解析、关键词生成、供应商初筛、图片识别
+  （OpenAI 兼容接口，支持图片/视频/文本多模态输入）
+
+图片识别采用主路径 MiniMax-M3，失败时自动回退到智谱 GLM-4V-Flash 兜底。
 
 包含三个核心AI功能：
 1. parse_requirement - 解析需求：从文本/文档/图片中提取结构化需求信息
@@ -798,7 +800,20 @@ def call_llm(messages, scene_code, temperature=None, json_mode=False, max_tokens
         completion = usage.get("completion_tokens", 0)
         print(f"[MiniMax用量] 输入:{prompt_tokens} 输出:{completion}")
 
-    return result["choices"][0]["message"]["content"]
+    # 小白讲解：返回前做兜底。MiniMax-M3 在思考模式下，有时候会把全部内容写到
+    # reasoning_content 字段，content 是空字符串；如果直接返回空串，
+    # 下游 json.loads("") 会抛 "Expecting value: line 1 column 1 (char 0)"。
+    # 这里如果 content 为空但 reasoning_content 有内容，就把 reasoning_content 顶上来。
+    message = result["choices"][0].get("message", {}) if result.get("choices") else {}
+    content = message.get("content") or ""
+    if not content:
+        reasoning = message.get("reasoning_content", "")
+        if reasoning:
+            # 思考模式下 reasoning_content 一般是分析过程，不是最终 JSON，
+            # 但如果 content 真的为空，至少让上游看到一个非空字符串便于诊断
+            print(f"[MiniMax兜底] content 为空，使用 reasoning_content 顶替（前200字）: {reasoning[:200]}")
+            content = reasoning
+    return content
 
 
 def call_zhipu_vision(image_base64, prompt):
@@ -853,6 +868,139 @@ def call_zhipu_vision(image_base64, prompt):
 
     result = response.json()
     return result["choices"][0]["message"]["content"]
+
+
+def call_minimax_vision(image_base64, prompt, image_mime="image/jpeg"):
+    """
+    调用 MiniMax-M3 图片识别 API（主路径） - 把图片转成文字描述
+
+    小白讲解：根据官方文档 https://platform.minimaxi.com/docs/api-reference/text-openai-api ，
+    MiniMax-M3 通过 OpenAI 兼容接口支持图片输入（image_url 内容块）。
+    我们在文本场景用的是 MiniMax，这里图片识别也统一到 MiniMax，方便管理
+    （同时能享受 1M 上下文与思考能力，识别质量更好）。
+
+    关键参数（按官方推荐）：
+    - model: MiniMax-M3
+    - thinking.type=adaptive：开启思考（图片识别场景需要细致分析）
+    - reasoning_split=True：把思考内容分离到 reasoning_content 字段
+    - top_p=0.95（M3 默认值）
+    - temperature=1.0（官方推荐）
+    - max_completion_tokens：图片输入大，最大/最小输出都给宽，按场景配置允许自由设置
+
+    参数：
+        image_base64: 图片的 base64 编码字符串（不含 data:image 前缀）
+        prompt: 给AI的指令，比如"请描述这张图片中的产品信息"
+        image_mime: 图片 MIME 类型（jpeg/png/gif/webp），默认 jpeg
+
+    返回：AI识别出的文字描述
+    """
+    # 从数据库读取 vision_ocr 场景配置（模型名、温度、思考开关、超时、tokens）
+    config = get_model_config("vision_ocr")
+    if not config:
+        raise Exception("图片识别场景配置不存在，请在管理中心检查")
+    if not config["is_enabled"]:
+        raise Exception("图片识别场景已被禁用，请在管理中心启用")
+
+    # 从数据库读取 MiniMax 服务商（API 地址、密钥）
+    provider = get_provider("minimax")
+    if not provider or not provider["api_key"]:
+        raise Exception("MiniMax API密钥未配置，请在管理中心配置")
+    if not provider["is_enabled"]:
+        raise Exception("MiniMax服务已被禁用，请在管理中心启用")
+
+    # 新接入官方推荐使用 max_completion_tokens（旧字段 max_tokens 仍兼容）
+    # 没有上限只有默认值，按场景配置的最大输出 token 直接用
+    max_output_tokens = int(config["max_tokens"]) if config["max_tokens"] else 4096
+    if max_output_tokens < 256:
+        max_output_tokens = 4096  # 兜底：图片识别至少要给 4k 才够
+
+    # 构造请求体（OpenAI 兼容格式 + MiniMax 扩展参数）
+    body = {
+        "model": config["model_name"] or "MiniMax-M3",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image_mime};base64,{image_base64}",
+                        # detail=high 让模型用更多视觉细节（官方说明：单图最多约 15k+ token）
+                        "detail": "high",
+                    },
+                },
+            ],
+        }],
+        "temperature": float(config["temperature"]) if config["temperature"] is not None else 1.0,
+        "top_p": 0.95,  # MiniMax-M3 官方默认值
+        "max_completion_tokens": max_output_tokens,
+        "stream": False,
+        # 关键：把思考内容分离到 reasoning_content 字段，避免污染正文
+        "reasoning_split": True,
+        # 思考模式：场景配置开启用 adaptive，关闭用 disabled
+        "thinking": {"type": "adaptive"} if config["thinking_enabled"] else {"type": "disabled"},
+    }
+
+    # 调用 MiniMax 接口（OpenAI 兼容 chat/completions）
+    response = requests.post(
+        f"{provider['base_url']}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {provider['api_key']}",
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=int(config["timeout_seconds"]) if config["timeout_seconds"] else 120,
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"MiniMax图片识别失败：{response.status_code} - {response.text}")
+
+    result = response.json()
+
+    # 小白讲解：打印 token 用量方便看费用（图片 token 也算在 prompt 里）
+    usage = result.get("usage", {})
+    if usage:
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion = usage.get("completion_tokens", 0)
+        print(f"[MiniMax图片用量] 输入(含图片):{prompt_tokens} 输出:{completion}")
+
+    # 优先返回正文；如果模型没返回正文但有思考内容，做个兜底
+    message = result["choices"][0]["message"]
+    content = message.get("content") or ""
+    if not content:
+        reasoning = message.get("reasoning_content", "")
+        if reasoning:
+            content = reasoning
+    return content
+
+
+def call_vision(image_base64, prompt, image_mime="image/jpeg"):
+    """
+    图片识别统一入口（带自动降级）。
+
+    小白讲解：默认走 MiniMax-M3 识别（质量更好、与文本场景统一）。
+    如果 MiniMax 调用失败（网络/余额/限流等），自动回退到智谱 GLM-4V，
+    保证业务流程不中断。
+
+    参数：
+        image_base64: 图片的 base64 编码字符串
+        prompt: 识别指令
+        image_mime: 图片 MIME 类型
+
+    返回：识别出的文字描述
+    """
+    # 主路径：MiniMax-M3
+    try:
+        return call_minimax_vision(image_base64, prompt, image_mime=image_mime)
+    except Exception as e:
+        err_text = str(e)
+        print(f"[图片识别] MiniMax 调用失败，回退到智谱：{err_text[:200]}")
+        # 兜底：智谱 GLM-4V（要求 jpeg，若不是则尝试转 jpeg 或继续传）
+        try:
+            return call_zhipu_vision(image_base64, prompt)
+        except Exception as e2:
+            # 两个都失败时把 MiniMax 的错误抛出去（更接近根因）
+            raise Exception(f"MiniMax图片识别失败：{err_text}；智谱兜底也失败：{e2}")
 
 
 def extract_json_from_text(text):
@@ -941,16 +1089,16 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
     """
     full_text = input_text or ""
 
-    # 第一步：如果有图片，先用智谱GLM-4V识别图片内容
+    # 第一步：如果有图片，先用 MiniMax-M3 识别图片内容（失败自动回退到智谱）
     if image_base64:
         if progress_callback:
-            progress_callback("ocr_image", "🖼️ 正在用智谱AI识别图片内容...", "running")
+            progress_callback("ocr_image", "🖼️ 正在用 AI 识别图片内容...", "running")
         image_prompt = (
             "请仔细识别这张图片中的所有信息。这可能是产品图片、规格书、采购需求文档等。"
             "请详细描述：产品名称、规格参数、材质、数量要求、认证要求、任何文字内容等。"
             "请用中文详细描述你看到的所有信息，不要遗漏。"
         )
-        image_description = call_zhipu_vision(image_base64, image_prompt)
+        image_description = call_vision(image_base64, image_prompt)
         full_text += f"\n\n图片识别内容：\n{image_description}"
 
     # 第二步：合并文档内容
@@ -987,8 +1135,8 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 
 【提取规则】
 从网页内容中照着找，网页写什么你就填什么：
-- product_name: 产品名称（含品牌+品类+关键材质/尺寸特征）
-- product_aliases: 行业别名（网页提到的其他叫法）
+- product_name: 产品名称（品类+关键材质/尺寸特征，不含品牌）
+- product_aliases: 行业别名（网页提到的其他叫法，不含品牌名）
 - core_functions: 核心功能（产品能干什么，从标题/描述提取）
 - material: 材质（从材质表提取，如"橡胶木""不锈钢""ABS塑料"）
 - spec_size: 规格尺寸（长宽高重等，从规格表提取）
@@ -999,6 +1147,20 @@ def parse_requirement(input_text, file_content=None, image_base64=None, previous
 - min_ship_qty: 最小发货量（用户没指定就空）
 - acceptable_lead_time: 生产交期（用户没指定就空）
 - other_requirements: 其他（包装/OEM/使用场景/配色/质保等）
+
+【品牌剔除规则 - 重要】
+用户贴的链接只是参考产品，链接里售卖的是别人的品牌，用户采购的是"同款产品"而非该品牌：
+- 网页中的品牌信息（Brand/品牌字段、标题开头的品牌词、品牌故事等）一律不提取
+- product_name、product_aliases、other_requirements 等所有输出字段都不得包含品牌名
+- 正确示例：网页"Vasagle 橡胶木三抽屉电视柜"应提取为"橡胶木三抽屉电视柜"（去掉品牌Vasagle）；
+  英文"Amazon Basics Waterproof Bluetooth Speaker"应提取为"防水蓝牙音箱"（去掉品牌Amazon Basics）
+
+【语言规则 - 重要】
+所有提取的字段值必须使用中文：
+- 如果网页/文档/图片内容是英文（如亚马逊英文页面），提取后必须翻译成中文再填写，不能照抄英文
+- 产品型号、认证缩写（如CE、FCC、RoHS、UL）、单位符号（如mm、kg、mAh）可以保留英文/原文，其余描述性文字一律用中文
+- 翻译示例：英文"Solid Rubber Wood TV Stand with 3 Drawers"应提取为"实木橡胶木电视柜（三抽屉）"；
+  "Waterproof Bluetooth Speaker"应提取为"防水蓝牙音箱"
 
 
 网页有数据但你没填 = 漏填。请对照网页内容逐项检查每个字段。
@@ -1035,7 +1197,7 @@ JSON格式（只返回JSON）：
 }}"""
 
     messages = [
-        {"role": "system", "content": "你是产品采购需求分析助手。从给定的内容中提取产品参数，网页里有数据的字段必须填写，不要漏。"},
+        {"role": "system", "content": "你是产品采购需求分析助手。从给定的内容中提取产品参数，网页里有数据的字段必须填写，不要漏。所有提取结果必须使用中文：英文内容（如亚马逊英文网页）要翻译成中文后再填写；仅产品型号、认证缩写（CE/FCC/RoHS等）和单位符号（mm/kg等）可保留原文。链接商品的品牌是他人的，用户只采购同款产品不买品牌：品牌名一律剔除，不得出现在任何输出字段中。"},
         {"role": "user", "content": extract_prompt},
     ]
 
@@ -1170,15 +1332,23 @@ def _generate_summary_and_keywords(parsed):
 请生成：
 
 1. requirement_summary：用一段话完整总结这个采购需求
+   【语言要求】必须使用中文撰写；如果已确认的需求信息里含英文（如英文产品名），要翻译成中文融入总结，
+   仅型号、认证缩写（CE/FCC等）可保留原文
+   【品牌剔除】需求信息里如出现品牌名（来自参考链接的他人品牌），总结中必须去掉；
+   用户采购的是同款产品，不是该品牌
 
 2. keywords：P0-P3分级关键词，固定7组，每组包含中文、英文关键词和15个搜索变体。
    【重要】所有关键词和变体都要适合B2B平台搜索（1688、中国制造网），必须遵守以下规则：
    - 严禁包含尺寸数值（如1800mm、5cm等），尺寸对平台搜索毫无帮助
    - 严禁包含数量要求（如100个、首批500等）
+   - 严禁包含品牌名（参考链接里的品牌是他人的，搜索同款产品不需要品牌词；
+     如需求信息里有品牌名，生成关键词时直接去掉）
    - 严禁把多个规格用斜杠/顿号拼成一长串（错误示例："茶色玻璃/亚克力三抽屉电视柜"）
    - 关键词必须是"品类名+核心特征"的简洁组合，能直接作为搜索词用
    - 越往下级别词越短，从P0到P3递减式简化
    - variants是15个与该关键词相关的搜索变体，角度要不同，用于1688多次搜索凑够50家供应商
+   - 【语言要求】cn关键词和variants变体必须全部使用中文（面向1688等国内B2B平台搜索），
+     只有en字段使用英文（供海外平台搜索用）；如果需求信息来自英文网页，cn和variants也要翻译成中文
    - variants变体类型包括：后缀变体（加"批发""定制""厂家""加工厂""直销"等）、
      材质变体、风格变体、用途变体、品类扩展变体等
    - variants里不要有重复的词，每个变体都要和原关键词相关

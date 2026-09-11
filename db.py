@@ -428,7 +428,7 @@ def init_db():
         provider_code   VARCHAR(50) NOT NULL UNIQUE,              -- 代码标识，如"deepseek"
         provider_type   VARCHAR(30) NOT NULL DEFAULT 'ai_model',  -- 类型：ai_model / search_platform / data_api
         base_url        VARCHAR(255) NOT NULL DEFAULT '',           -- API接口地址
-        api_key         VARCHAR(500) NOT NULL DEFAULT '',           -- API密钥
+        api_key         VARCHAR(2000) NOT NULL DEFAULT '',          -- API密钥（快查等长Key需要2000字符）
         is_enabled      INTEGER NOT NULL DEFAULT 1,         -- 是否启用
         created_at      TEXT NOT NULL,
         updated_at      TEXT NOT NULL
@@ -841,11 +841,22 @@ def _seed_initial_data(cursor, conn):
         print(f"[初始化] 已创建初始管理员账号：{INITIAL_ADMIN_USERNAME}")
 
     # ---------- 2. AI服务提供商预置（支持增量补录） ----------
+    # 小白讲解：老库的 ai_providers.api_key 是 VARCHAR(500)，装不下快查365的长Key（800+字符）。
+    # 这里幂等扩容到 VARCHAR(2000)，重复执行不会报错。
+    try:
+        cursor.execute("ALTER TABLE ai_providers MODIFY api_key VARCHAR(2000) NOT NULL DEFAULT ''")
+        conn.commit()
+    except Exception as _alter_err:
+        conn.rollback()  # 若列已是VARCHAR(2000)或语句不支持则忽略
+        print(f"[初始化] api_key扩容迁移跳过: {_alter_err}")
+
     # 从 config.py 读取现有配置值迁移到数据库
     from config import (MINIMAX_API_KEY, MINIMAX_BASE_URL,
                         ZHIPU_API_KEY, ZHIPU_BASE_URL,
                         TYC_MCP_URL, TYC_MCP_AUTH,
-                        ALI_1688_AK)
+                        KUAICHA_MCP_URL, KUAICHA_API_KEY,
+                        SHUIDI_DATA_URL, SHUIDI_DATA_KEY,
+                        TOPEASE_API_KEY, ALI_1688_AK)
     now = now_str()
     providers = [
         ("MiniMax", "minimax", "ai_model", MINIMAX_BASE_URL, MINIMAX_API_KEY),
@@ -853,8 +864,16 @@ def _seed_initial_data(cursor, conn):
         ("1688", "ali1688", "search_platform", "https://api.1688.com", ALI_1688_AK),
         ("中国制造网", "madeinchina", "search_platform", "https://mcp.chexb.com/sse", ""),
         ("海关贸易数据", "topease_customs", "search_platform", "https://mcp.topease.net/mcp",
-         "trdmcp_live_gh-CN9jbAnZrRd99lJR9MNSG8avtLdnXZKoY0NaE8c4"),
+         TOPEASE_API_KEY),
         ("天眼查", "tianyancha", "data_api", TYC_MCP_URL, TYC_MCP_AUTH),
+        # 快查365MCP（同花顺企业数据引擎，英文供应商优先/中文供应商降级）
+        # 小白讲解：快查支持英文公司名模糊搜索匹配中文企业，一次返回工商+联系方式。
+        # 客户端 kuaicha_client.py 统一读写这一个 provider 的 URL 和 Key。
+        ("快查365", "kuaicha_data", "data_api", KUAICHA_MCP_URL, KUAICHA_API_KEY),
+        # 水滴信用MCP（替代天眼查，只保留1个管理项）
+        # 小白讲解：水滴所有工具（工商/风险/资质等）都通过 data 端点调用，只需登记1条记录即可。
+        # 客户端 shuidi_client.py 内部统一用这一个 provider 的 URL 和 Key。
+        ("水滴信用", "shuidi_data", "data_api", SHUIDI_DATA_URL, SHUIDI_DATA_KEY),
         ("Jina Reader", "jina_reader", "data_api", "https://r.jina.ai", ""),
         ("Firecrawl", "firecrawl", "data_api", "https://api.firecrawl.dev/v1", ""),
     ]
@@ -868,11 +887,30 @@ def _seed_initial_data(cursor, conn):
                 VALUES (%s, %s, %s, %s, %s, 1, %s, %s)
             """, (name, code, ptype, url, key, now, now))
             print(f"[初始化] 新增服务商：{name}（{code}）")
+
+    # ---------- 2.4 水滴信用精简迁移：清理多余的服务商记录，只保留 shuidi_data ----------
+    # 小白讲解：早期版本为水滴6个端点各登记了一条服务商记录（shuidi_risk/supplier/qc/bid/sti）。
+    # 实测水滴所有工具都通过 data 端点调用，其余端点代码根本没用到，
+    # 且客户端已改为统一读写 shuidi_data。这里把多余的5条记录禁用，避免后台服务商管理里泡出多个"水滴信用"。
+    _shuidi_deprecated_codes = ("shuidi_risk", "shuidi_supplier", "shuidi_qc", "shuidi_bid", "shuidi_sti")
+    for _dep_code in _shuidi_deprecated_codes:
+        cursor.execute("SELECT id FROM ai_providers WHERE provider_code = %s", (_dep_code,))
+        if cursor.fetchone():
+            # 旧记录直接删除（这些端点代码已不再使用）
+            cursor.execute("DELETE FROM ai_providers WHERE provider_code = %s", (_dep_code,))
+            print(f"[初始化] 清理多余水滴服务商：{_dep_code}")
+
+    # 统一水滴服务商显示名（旧库可能叫"水滴信用-工商数据"）
+    cursor.execute("UPDATE ai_providers SET provider_name = '水滴信用' WHERE provider_code = 'shuidi_data'")
+
     conn.commit()
     print("[初始化] AI服务提供商检查完成")
 
     # ---------- 2.5 DeepSeek → MiniMax 迁移（老库自动切换，幂等可重复执行） ----------
     _migrate_deepseek_to_minimax(cursor, conn)
+
+    # ---------- 2.6 图片识别 → MiniMax 迁移（把智谱GLM-4V切到MiniMax-M3，幂等可重复执行） ----------
+    _migrate_vision_to_minimax(cursor, conn)
 
     # ---------- 3. AI模型场景配置预置（7个场景）----------
     cursor.execute("SELECT COUNT(*) as cnt FROM ai_model_configs")
@@ -887,6 +925,7 @@ def _seed_initial_data(cursor, conn):
         # 7个场景配置（scene_code / scene_name / provider / model / thinking / effort / tokens / temp / timeout）
         # 小白讲解：MiniMax-M3 思考模式无分级（只有开/关），effort统一留空；
         # 温度按官方推荐用1.0；过滤/翻译场景max_tokens给到8192（思考过程也消耗输出token，太小正文会为空）
+        # 图片识别也走 MiniMax-M3：与文本场景统一、质量更高、max_tokens 给 8192
         scenes = [
             ("req_parse", "需求解析", minimax_id, MINIMAX_MODEL, 1, "", MINIMAX_MAX_TOKENS, 1.0, MINIMAX_TIMEOUT, 1),
             ("keyword_gen", "关键词生成", minimax_id, MINIMAX_MODEL, 1, "", MINIMAX_MAX_TOKENS, 1.0, MINIMAX_TIMEOUT, 2),
@@ -894,7 +933,7 @@ def _seed_initial_data(cursor, conn):
             ("supplier_translate", "供应商过滤-翻译", minimax_id, MINIMAX_MODEL, 1, "", 8192, 1.0, MINIMAX_TIMEOUT, 4),
             ("supplier_filter", "供应商过滤-第一批", minimax_id, MINIMAX_MODEL, 1, "", 8192, 1.0, MINIMAX_TIMEOUT, 5),
             ("supplier_filter_v2", "供应商过滤-第二批", minimax_id, MINIMAX_MODEL, 1, "", 8192, 1.0, MINIMAX_TIMEOUT, 6),
-            ("vision_ocr", "图片识别", zhipu_id, ZHIPU_VISION_MODEL, 0, "", 1024, 0.2, 60, 7),
+            ("vision_ocr", "图片识别", minimax_id, MINIMAX_MODEL, 1, "", 8192, 1.0, 120, 7),
         ]
         for code, name, pid, model, think, effort, tokens, temp, timeout, order in scenes:
             cursor.execute("""
@@ -1066,6 +1105,80 @@ def _migrate_deepseek_to_minimax(cursor, conn):
     cursor.execute("UPDATE ai_providers SET is_enabled = 0, updated_at = %s WHERE id = %s", (now, deepseek_id))
     conn.commit()
     print(f"[迁移] DeepSeek→MiniMax 完成：{migrated} 个场景已切换到 MiniMax-M3，DeepSeek 服务商已禁用")
+
+    # 刷新内存缓存，防止运行中的进程继续用旧配置
+    try:
+        import model_config
+        model_config.refresh_configs()
+    except Exception:
+        pass
+
+
+def _migrate_vision_to_minimax(cursor, conn):
+    """
+    把图片识别场景（vision_ocr）从智谱GLM-4V自动切换到 MiniMax-M3（幂等可重复执行）
+
+    小白讲解：智谱 GLM-4V-Flash 接口限制 max_tokens 最大 1024，老数据库里若误改成 4096/8192
+    会直接报错。系统切换到 MiniMax-M3 之后：
+    - provider 改成 minimax
+    - model 改成 MiniMax-M3
+    - 思考开启（adaptive 等价开启）
+    - 温度 1.0（官方推荐）
+    - max_tokens 拉到 8192（思考过程也消耗输出 token，需要空间）
+    - 超时 120s（图片+大上下文更慢）
+    即使是新库或已迁移过，本函数也只调整"未到位"的字段，重复执行安全。
+    """
+    from config import MINIMAX_MODEL, MINIMAX_TIMEOUT
+
+    # 1) 取 MiniMax 服务商 id（前面 _seed_providers 已确保存在）
+    cursor.execute("SELECT id FROM ai_providers WHERE provider_code='minimax'")
+    row = cursor.fetchone()
+    if not row:
+        return  # 没 MiniMax 服务商直接跳过（极早期库兼容）
+    minimax_id = row["id"]
+
+    # 2) 找 vision_ocr 场景配置
+    cursor.execute("SELECT id, provider_id, max_tokens, model_name FROM ai_model_configs WHERE scene_code='vision_ocr'")
+    cfg = cursor.fetchone()
+    if not cfg:
+        return  # 全新数据库会走 seed 分支，这里不处理
+
+    # 3) 只对"未到位"的情况做更新（避免覆盖用户手动调好的参数）
+    target_model = MINIMAX_MODEL
+    target_tokens = max(int(cfg["max_tokens"] or 0), 8192)  # 至少 8192
+    target_temp = 1.0
+    target_thinking = 1
+    target_timeout = 120
+
+    need_update = (
+        cfg["provider_id"] != minimax_id
+        or cfg["model_name"] != target_model
+        or (cfg["max_tokens"] or 0) < 8192
+    )
+    if not need_update:
+        return  # 已迁移到位，跳过
+
+    now = now_str()
+    cursor.execute("""
+        UPDATE ai_model_configs
+        SET provider_id = %s, model_name = %s,
+            thinking_enabled = %s, thinking_effort = '',
+            max_tokens = %s, temperature = %s, timeout_seconds = %s,
+            updated_at = %s
+        WHERE id = %s
+    """, (minimax_id, target_model, target_thinking, target_tokens, target_temp, target_timeout, now, cfg["id"]))
+    conn.commit()
+    print(f"[迁移] 图片识别→MiniMax-M3 已完成：max_tokens={target_tokens}, temperature={target_temp}, thinking=adaptive, timeout=120s")
+
+    # 关键：迁移完成后立即刷新 model_config 内存缓存，
+    # 否则正在运行的 Flask 进程仍然用旧的（指向智谱的）配置，会继续报 1214。
+    # 放在 try 里防止 model_config 还没加载（极早期启动顺序问题）。
+    try:
+        import model_config
+        model_config.refresh_configs()
+        print("[迁移] 已刷新 AI 配置内存缓存（model_config）")
+    except Exception as e:
+        print(f"[迁移] 刷新内存缓存失败（不影响数据库，下次启动生效）：{e}")
 
 
 def _seed_screening_rules(cursor, conn):

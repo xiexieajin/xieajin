@@ -16,6 +16,7 @@
 """
 
 import json
+import os
 import uuid
 import re
 import time
@@ -33,7 +34,8 @@ from datetime import datetime
 # get_search_platforms用于读取启用的搜索平台列表（管理员可在管理中心启停平台）
 from model_config import get_provider, get_model_config, get_search_platforms
 # MiniMax 调用统一用 ai_helper 里的 call_llm，避免两个文件各写一份导致改漏
-from ai_helper import call_llm
+# extract_json_from_text 用于兜底解析 AI 返回的 JSON（兼容 ```json``` 代码块、纯JSON等多种格式）
+from ai_helper import call_llm, extract_json_from_text
 
 
 def _is_1688_ak_configured():
@@ -114,6 +116,25 @@ _MIC_CALL_INTERVAL = 5                      # 两次MCP search_products调用之
 _mic_serial_lock = threading.Lock()         # MIC关键词串行锁：同一时刻只有一个关键词在搜MIC
 
 
+# ==================== 天眼查 MCP 批次级限流控制 ====================
+# 小白讲解：之前天眼查429时，只是单个供应商的请求失败 → 直接剔除该供应商。
+# 但实际上429是临时性限流（说明天眼查MCP整体过载），
+# 同一批次的其他供应商也大概率会触发429，全部剔除会损失大量数据。
+# 改成"批次级暂停"：当本批次累计触发了3次429，就让所有线程暂停30秒，
+# 给天眼查MCP足够的冷却时间，30秒后自动继续。
+#
+# 关键设计：
+# 1. _tyc_429_count：本批次累计的429次数（跨所有线程）
+# 2. _tyc_batch_pause_until：批次暂停的截止时间戳（全局共享）
+# 3. 任何线程在调用天眼查前，都先检查"是否在暂停期"，在的话自动sleep等待
+# 4. 触发条件：累计429达到阈值（_TYC_429_THRESHOLD=3）时设置暂停时间
+_tyc_429_count = 0                              # 本批次累计429次数（全局）
+_tyc_batch_pause_until = 0.0                    # 批次暂停截止时间戳（全局）
+_tyc_batch_lock = threading.Lock()              # 保护计数器和暂停时间的线程锁
+_TYC_429_THRESHOLD = 3                          # 累计3次429触发批次暂停
+_TYC_BATCH_PAUSE_SECONDS = 30                   # 批次暂停30秒（给天眼查MCP冷却时间）
+
+
 # ==================== 海关贸易数据（topease）MCP服务 ====================
 # MCP Endpoint: https://mcp.topease.net/mcp (streamable-http)
 # 工具: search_customs_data
@@ -121,8 +142,8 @@ _mic_serial_lock = threading.Lock()         # MIC关键词串行锁：同一时�
 # 翻页: 每页10条（实测上限），翻50页凑500条
 # 聚合: 按exporterName合并，累加出口量，降序排序
 
-# topease API Key（优先从数据库读取，管理员可在管理中心修改；这里作为兜底默认值）
-_TOPEASE_API_KEY_DEFAULT = "trdmcp_live_gh-CN9jbAnZrRd99lJR9MNSG8avtLdnXZKoY0NaE8c4"
+# topease API Key（优先从数据库读取，管理员可在管理中心修改；此处为环境变量兜底默认值）
+_TOPEASE_API_KEY_DEFAULT = os.environ.get("TOPEASE_API_KEY", "")
 
 
 def _get_topease_api_key():
@@ -190,6 +211,58 @@ def _wait_mic_rate_limit():
             time.sleep(wait)
         # 更新上次调用时间为"现在"（即即将发起调用的时刻）
         _mic_last_call_time = time.time()
+
+
+def _check_tyc_batch_pause():
+    """
+    检查天眼查MCP是否在批次暂停期，如果是就等待
+
+    小白讲解：每次调用天眼查MCP之前都先调用这个函数。
+    - 拿到锁后看"暂停截止时间"是几点
+    - 如果还没到截止时间，就sleep等到截止时间
+    - 这样不管多少线程并发，所有线程都会在同一个时间点后继续请求天眼查
+    """
+    global _tyc_batch_pause_until
+    with _tyc_batch_lock:
+        now = time.time()
+        if now < _tyc_batch_pause_until:
+            wait = _tyc_batch_pause_until - now
+            print(f"天眼查MCP批次暂停中，等待{wait:.1f}秒后继续...")
+            time.sleep(wait)
+
+
+def _record_tyc_429():
+    """
+    记录一次天眼查429，并判断是否需要触发批次级暂停
+
+    小白讲解：每次天眼查返回429时调用这个函数。
+    - 累加全局计数器
+    - 如果累计达到阈值（3次），就设置"暂停截止时间"为"现在+30秒"
+    - 所有线程下次调用天眼查时都会自动等待到暂停结束
+    - 触发后重置计数器，避免一次限流持续叠加暂停时间
+    """
+    global _tyc_429_count, _tyc_batch_pause_until
+    with _tyc_batch_lock:
+        _tyc_429_count += 1
+        if _tyc_429_count >= _TYC_429_THRESHOLD:
+            # 触发批次级暂停：所有线程在 _TYC_BATCH_PAUSE_SECONDS 秒内都暂停调用天眼查
+            _tyc_batch_pause_until = time.time() + _TYC_BATCH_PAUSE_SECONDS
+            print(f"天眼查MCP本批次累计触发{_tyc_429_count}次429，"
+                  f"所有线程暂停{_TYC_BATCH_PAUSE_SECONDS}秒等待冷却...")
+            _tyc_429_count = 0   # 重置计数器，避免持续叠加
+
+
+def _reset_tyc_batch():
+    """
+    重置天眼查批次限流状态（在每个新搜索批次开始时调用）
+
+    小白讲解：每个搜索批次是一个独立的请求序列，不同批次之间不应该累计429次数。
+    在 batch 开始时把计数器和暂停时间都清零。
+    """
+    global _tyc_429_count, _tyc_batch_pause_until
+    with _tyc_batch_lock:
+        _tyc_429_count = 0
+        _tyc_batch_pause_until = 0.0
 
 
 class _MicMcpClient:
@@ -1628,6 +1701,11 @@ class TianyanchaClient:
             print("天眼查MCP地址未配置，跳过调用（请在管理中心配置tianyancha服务商的base_url）")
             return None
 
+        # 小白讲解：每次请求前先检查批次级暂停。
+        # 如果本批次累计触发了3次429，_tyc_batch_pause_until会被设置到"现在+30秒"，
+        # 所有线程调用天眼查前都会自动sleep等待到暂停结束，给天眼查MCP冷却时间。
+        _check_tyc_batch_pause()
+
         # 重试配置：最多3次，间隔递增（3/6/9秒）
         max_retries = 3
         for attempt in range(1, max_retries + 1):
@@ -1636,10 +1714,15 @@ class TianyanchaClient:
 
                 # 429频率限制：等待后重试
                 if resp.status_code == 429:
+                    # 记录本次429，累计达到阈值时触发批次级暂停
+                    _record_tyc_429()
                     if attempt < max_retries:
                         wait = attempt * 3
                         print(f"天眼查MCP频率限制(429)，第{attempt}/{max_retries}次重试，等待{wait}秒...")
                         time.sleep(wait)
+                        # 小白讲解：进入下一次重试前再检查一次批次暂停状态。
+                        # 如果本轮429触发了批次暂停（累计3次），这里会等到30秒结束再发请求。
+                        _check_tyc_batch_pause()
                         continue
                     else:
                         print(f"天眼查MCP频率限制(429)，已重试{max_retries}次仍失败")
@@ -2332,7 +2415,10 @@ def _filter_one_batch(batch, product_name):
             # 启用JSON Output模式，确保返回合法JSON
             # 小白讲解：supplier_filter_v2场景配置在数据库中，管理员可在管理中心调整思考强度等参数
             result_text = call_llm(messages, scene_code="supplier_filter_v2", temperature=0.2, json_mode=True)
-            result = json.loads(result_text)
+            # 小白讲解：AI返回的JSON可能被 ```json ``` 代码块包裹，或者前面有一段说明文字，
+            # 不能用 json.loads 直接解析（会抛 Expecting value: line 1 column 1）。
+            # 改用项目统一的 extract_json_from_text 兜底解析，与 parse_requirement / _generate_summary_and_keywords 保持一致
+            result = extract_json_from_text(result_text)
             batch_filtered = result.get("suppliers", [])
             if isinstance(batch_filtered, dict):
                 batch_filtered = [batch_filtered]
@@ -2354,6 +2440,11 @@ def _filter_one_batch(batch, product_name):
                     s["phone"] = orig.get("phone", "") or s.get("phone", "")
                     s["email"] = orig.get("email", "") or s.get("email", "")
                     s["contact_status"] = orig.get("contact_status", "未获取")
+                    # 小白讲解：把补全阶段的数据源匹配状态一并传回（修复这些字段在过滤环节丢失的问题）
+                    s["tyc_match_status"] = orig.get("tyc_match_status", "")
+                    s["tyc_company_id"] = orig.get("tyc_company_id", "")
+                    s["business_scope"] = orig.get("business_scope", "")
+                    s["website"] = orig.get("website", "")
                     # 天眼查工商简介存到临时字段，后续追加到 MiniMax 生成的 intro 后面（问题3的追加方案）
                     if orig.get("_tyc_business_intro"):
                         s["_tyc_business_intro"] = orig["_tyc_business_intro"]
@@ -2378,6 +2469,10 @@ def _filter_one_batch(batch, product_name):
                     s.setdefault("phone", "")
                     s.setdefault("email", "")
                     s.setdefault("contact_status", "未获取")
+                    s.setdefault("tyc_match_status", "")
+                    s.setdefault("tyc_company_id", "")
+                    s.setdefault("business_scope", "")
+                    s.setdefault("website", "")
                     s.setdefault("product_title", "")
                     s.setdefault("product_link", "")
                     s.setdefault("price", "")
@@ -2763,13 +2858,340 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
     if progress_callback:
         progress_callback(current_step, total_steps, f"正在用天眼查补全工商信息（共{len(companies)}家），{_elapsed()}...")
 
-    def _enrich_one_supplier(supplier, tyc_client):
-        """单个供应商的天眼查补全任务
+    # 小白讲解：在进入天眼查补全阶段前，重置批次级限流计数器。
+    # 避免上一次搜索的429计数遗留到本次搜索，导致一开就触发批次暂停。
+    _reset_tyc_batch()
 
-        不分来源平台，统一处理：
-        - 直接用公司名搜索天眼查（MIC英文名也直接搜）
-        - 找到 → 补全工商信息。MIC来源额外用天眼查中文名替换英文名
-        - 找不到 → 保留该公司，标记"工商数据未匹配"（不丢弃）
+    def _calc_contact_status(supplier):
+        """内部工具：计算联系方式状态（兑现"已获取电话和邮箱"等描述）"""
+        has_phone = bool(supplier.get("phone", "").strip())
+        has_email = bool(supplier.get("email", "").strip())
+        if has_phone and has_email:
+            supplier["contact_status"] = "已获取电话和邮箱"
+        elif has_phone:
+            supplier["contact_status"] = "已获取电话"
+        elif has_email:
+            supplier["contact_status"] = "已获取邮箱"
+        else:
+            supplier["contact_status"] = "未获取"
+
+    def _apply_establish_years(supplier, establish_date):
+        """内部工具：从成立日期计算经营年限并写入supplier"""
+        if not establish_date:
+            return
+        try:
+            year_match = re.search(r'(\d{4})', str(establish_date))
+            if year_match:
+                establish_year = int(year_match.group(1))
+                years = datetime.now().year - establish_year
+                if years >= 0:
+                    supplier["establish_years"] = str(years)
+        except (ValueError, AttributeError):
+            pass
+
+    def _enrich_one_supplier_with_shuidi(supplier, company_name, source_platform):
+        """内部工具：中文供应商用水滴补全工商信息（优先级链第一顺位）
+
+        小白讲解：直接用水滴 get_company_info，水滴内部已做
+        SSE解析/UTF-8/三重校验（status_code==1 + data非空 + searched_company严格匹配）。
+
+        返回：bool - True=水滴命中并已写入supplier；False=未命中/配额耗尽/异常，
+              由主流程 _enrich_one_supplier 降级到下一个服务商（快查→天眼查）。
+        """
+        try:
+            from shuidi_client import ShuidiClient, is_shuidi_quota_exhausted
+            shuidi = ShuidiClient()
+            info = shuidi.get_company_info(company_name)
+
+            if not info or not info.get("name"):
+                # 小白讲解：区分"配额耗尽"与"企业查询无结果"：
+                # - 配额耗尽 → 返回False，主流程自动降级到快查（后续水滴查询都是空转）
+                # - 正常未命中（status_code=2 查询无结果）→ 返回False，主流程继续降级
+                if is_shuidi_quota_exhausted():
+                    print(f"⚠️ 水滴配额已耗尽({company_name})，降级到下一个企业查询服务商...")
+                else:
+                    print(f"水滴未命中({company_name})，降级到下一个企业查询服务商...")
+                return False
+
+            print(f"水滴命中({company_name})")
+            supplier["registered_capital"] = info.get("registered_capital", "") or supplier.get("registered_capital", "")
+            supplier["operating_status"] = info.get("status", "")
+            supplier["legal_person"] = info.get("legal_person", "")
+            supplier["tyc_match_status"] = "shuidi_match"
+            supplier["tyc_company_id"] = info.get("credit_code", "")
+            supplier["_data_source"] = "shuidi"
+
+            tyc_phone = info.get("phone", "")
+            if tyc_phone:
+                supplier["phone"] = tyc_phone
+            tyc_email = info.get("email", "")
+            if tyc_email:
+                supplier["email"] = tyc_email
+            tyc_address = info.get("address", "")
+            if tyc_address and not supplier.get("factory_address"):
+                supplier["factory_address"] = tyc_address
+            tyc_scope = info.get("business_scope", "")
+            if tyc_scope:
+                supplier["business_scope"] = tyc_scope
+            tyc_intro = info.get("intro", "")
+            if tyc_intro:
+                supplier["_tyc_business_intro"] = tyc_intro
+
+            tyc_capital = info.get("registered_capital", "")
+            if tyc_capital and not re.match(r"^\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?$", tyc_capital):
+                supplier["registered_capital"] = tyc_capital
+
+            tyc_establish_date = info.get("establish_date", "")
+            if tyc_establish_date:
+                supplier["establish_date"] = tyc_establish_date
+                _apply_establish_years(supplier, tyc_establish_date)
+
+            # ==================== 补全联系方式（电话/邮箱）====================
+            # 小白讲解：水滴的 get_company_info 不返回电话/邮箱，需要单独调用
+            # get_company_contact 工具。实测它能拿到 phones/emails/websites。
+            tyc_phone = info.get("phone", "") or supplier.get("phone", "")
+            tyc_email = info.get("email", "") or supplier.get("email", "")
+            if not tyc_phone or not tyc_email:
+                try:
+                    contact = shuidi.get_company_contact(company_name)
+                    if contact:
+                        if not tyc_phone and contact.get("phone"):
+                            tyc_phone = contact["phone"]
+                            supplier["phone"] = tyc_phone
+                        if not tyc_email and contact.get("email"):
+                            tyc_email = contact["email"]
+                            supplier["email"] = tyc_email
+                        if contact.get("websites"):
+                            supplier["website"] = ";".join(contact["websites"])
+                except Exception as e:
+                    print(f"水滴联系方式查询失败({company_name}): {e}")
+
+            _calc_contact_status(supplier)
+            return True
+        except Exception as e:
+            print(f"水滴补全失败({company_name}): {e}")
+            return False
+
+    def _enrich_one_supplier_with_tyc(supplier, company_name, source_platform):
+        """内部工具：英文供应商用天眼查补全工商信息（优先级链兜底）
+
+        小白讲解：天眼查支持英文→中文公司名匹配（MIC/海关的英文供应商）。
+        流程：search_companies 模糊搜索 → 三阶段严格匹配（精确/英文名/相似度+字号）
+        → get_company_basic_profile 补全详情。
+
+        返回：bool - True=天眼查命中并已写入supplier；False=未命中/请求失败/异常，
+              由主流程 _enrich_one_supplier 处理（已是链上最后一个则标记未匹配）。
+        """
+        try:
+            tyc_client = TianyanchaClient()
+            tyc_client.initialize()
+
+            # 搜索公司（内部已带3次重试 + 批次级暂停）
+            companies = tyc_client.search_companies(company_name)
+            if companies is None:
+                # 内层重试3次都失败：触发30秒批次暂停后重试1次
+                print(f"天眼查请求失败({company_name})，触发30秒批次级暂停后重试...")
+                with _tyc_batch_lock:
+                    _tyc_batch_pause_until = time.time() + _TYC_BATCH_PAUSE_SECONDS
+                time.sleep(_TYC_BATCH_PAUSE_SECONDS)
+                companies = tyc_client.search_companies(company_name)
+            if companies is None:
+                print(f"天眼查批次冷却后仍失败({company_name})")
+                return False
+
+            matched_company = None
+            match_type = ""
+            # 1. 优先精确同名匹配
+            for company in companies:
+                if company.get("name", "").strip() == company_name:
+                    matched_company = company
+                    match_type = "exact_match"
+                    break
+            # 2. 英文名匹配（天眼查标注匹配类型为英文名匹配时采用）
+            if not matched_company:
+                for company in companies:
+                    if company.get("match_type", "") == "英文名匹配":
+                        matched_company = company
+                        match_type = "english_name_match"
+                        print(f"天眼查英文名匹配采用：'{company_name}' → '{company.get('name', '')}'")
+                        break
+            # 3. 相似度>=0.6 + 字号校验
+            if not matched_company and companies:
+                best_ratio = 0
+                best_company = None
+                for company in companies:
+                    cand_name = company.get("name", "").strip()
+                    if not cand_name:
+                        continue
+                    ratio = difflib.SequenceMatcher(None, company_name, cand_name).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_company = company
+                if best_company and best_ratio >= 0.6:
+                    cand_core = _extract_core_name(best_company.get("name", ""))
+                    orig_core = _extract_core_name(company_name)
+                    if cand_core and orig_core and (cand_core in orig_core or orig_core in cand_core):
+                        matched_company = best_company
+                        match_type = "partial_match"
+                    else:
+                        print(f"天眼查字号不匹配({company_name})，候选字号'{cand_core}'≠'{orig_core}'，拒绝采用")
+                if not matched_company:
+                    print(f"天眼查未匹配({company_name})，最高相似度{best_ratio:.0%}")
+
+            if not matched_company:
+                print(f"天眼查未匹配({company_name})")
+                return False
+
+            # 用天眼查返回的中文名替换英文名（MIC/海关来源）
+            if source_platform in ("Made-in-China", "海关数据"):
+                tyc_cn_name = matched_company.get("name", "").strip()
+                if tyc_cn_name and tyc_cn_name != company_name:
+                    print(f"天眼查匹配（{source_platform}英文→中文）：'{company_name}' → '{tyc_cn_name}'")
+                    supplier["name"] = tyc_cn_name
+
+            supplier["registered_capital"] = matched_company.get("registered_capital", "") or supplier.get("registered_capital", "")
+            supplier["operating_status"] = matched_company.get("status", "")
+            supplier["legal_person"] = matched_company.get("legal_person", "")
+            supplier["tyc_match_status"] = match_type
+            supplier["tyc_company_id"] = matched_company.get("credit_code", "")
+            supplier["_data_source"] = "tianyancha"
+
+            # 补全详情（联系方式/经营范围/成立日期）
+            try:
+                detail = tyc_client.get_company_basic_profile(matched_company["name"])
+                if detail:
+                    tyc_intro = detail.get("intro", "")
+                    if tyc_intro:
+                        supplier["_tyc_business_intro"] = tyc_intro
+                    if detail.get("phone"):
+                        supplier["phone"] = detail["phone"]
+                    if detail.get("email"):
+                        supplier["email"] = detail["email"]
+                    tyc_address = detail.get("address", "")
+                    if tyc_address and not supplier.get("factory_address"):
+                        supplier["factory_address"] = tyc_address
+                    if detail.get("business_scope"):
+                        supplier["business_scope"] = detail["business_scope"]
+                    tyc_capital = detail.get("registered_capital", "")
+                    if tyc_capital and not re.match(r"^\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?$", tyc_capital):
+                        supplier["registered_capital"] = tyc_capital
+                    tyc_establish_date = detail.get("establish_date", "")
+                    if tyc_establish_date:
+                        supplier["establish_date"] = tyc_establish_date
+                        _apply_establish_years(supplier, tyc_establish_date)
+            except Exception as e:
+                print(f"天眼查详情查询失败({company_name}): {e}")
+
+            _calc_contact_status(supplier)
+            return True
+        except Exception as e:
+            print(f"天眼查补全失败({company_name}): {e}")
+            return False
+
+    def _enrich_one_supplier_with_kuaicha(supplier, company_name, source_platform):
+        """内部工具：用快查365补全工商信息（英文供应商首选/中文供应商降级）
+
+        小白讲解：快查是同花顺企业数据引擎，支持英文名→中文企业匹配，
+        一次调用 get_company_info 直接返回工商信息 + 电话/邮箱/官网（比天眼查还省一次联系方式查询）。
+        匹配可信度由快查的"企业模糊搜索匹配"引擎保证（等价于天眼查 search_companies 的英文名匹配命中）。
+
+        返回：bool - True=快查命中并已写入supplier；False=未命中/校验不通过/异常，
+              由主流程 _enrich_one_supplier 降级到下一个服务商（中文链：天眼查）。
+        """
+        try:
+            from kuaicha_client import KuaichaClient
+            kuaicha = KuaichaClient()
+            if not kuaicha.is_available():
+                print(f"快查未启用或未配置({company_name})，降级到下一个企业查询服务商...")
+                return False
+            if not kuaicha.initialize():
+                print(f"快查初始化失败({company_name})，降级到下一个企业查询服务商...")
+                return False
+
+            info = kuaicha.get_company_info(company_name)
+            if not info or not info.get("name"):
+                print(f"快查未命中({company_name})，降级到下一个企业查询服务商...")
+                return False
+
+            print(f"快查命中({company_name}) → {info.get('name')}")
+            # 用快查返回的中文名替换英文名（MIC/海关来源的英文供应商名）
+            kuaicha_cn_name = info.get("name", "").strip()
+            if kuaicha_cn_name and kuaicha_cn_name != company_name:
+                print(f"快查匹配（英文→中文）：'{company_name}' → '{kuaicha_cn_name}'")
+                supplier["name"] = kuaicha_cn_name
+
+            supplier["registered_capital"] = info.get("registered_capital", "") or supplier.get("registered_capital", "")
+            supplier["operating_status"] = info.get("status", "")
+            supplier["legal_person"] = info.get("legal_person", "")
+            supplier["tyc_match_status"] = "kuaicha_match"
+            supplier["tyc_company_id"] = info.get("credit_code", "")
+            supplier["_data_source"] = "kuaicha"
+
+            # 快查一次返回电话/邮箱/官网（无需再调联系方式工具）
+            if info.get("phone"):
+                supplier["phone"] = info["phone"]
+            if info.get("email"):
+                supplier["email"] = info["email"]
+            if info.get("website"):
+                supplier["website"] = info["website"]
+            tyc_address = info.get("address", "")
+            if tyc_address and not supplier.get("factory_address"):
+                supplier["factory_address"] = tyc_address
+            if info.get("business_scope"):
+                supplier["business_scope"] = info["business_scope"]
+            if info.get("industry"):
+                supplier["_tyc_business_intro"] = f"所属行业：{info['industry']}"
+
+            tyc_capital = info.get("registered_capital", "")
+            if tyc_capital and not re.match(r"^\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?$", tyc_capital):
+                supplier["registered_capital"] = tyc_capital
+
+            tyc_establish_date = info.get("establish_date", "")
+            if tyc_establish_date:
+                supplier["establish_date"] = tyc_establish_date
+                _apply_establish_years(supplier, tyc_establish_date)
+
+            _calc_contact_status(supplier)
+            return True
+        except Exception as e:
+            print(f"快查补全失败({company_name}): {e}")
+            return False
+
+    # 优先级链短名 → 数据库服务商code 映射
+    # 小白讲解：链里用短名（shuidi/kuaicha/tianyancha）便于阅读，
+    # 数据库里服务商code是 shuidi_data/kuaicha_data/tianyancha，必须映射后才能查配置。
+    _ENRICH_PROVIDER_MAP = {
+        "shuidi": "shuidi_data",
+        "kuaicha": "kuaicha_data",
+        "tianyancha": "tianyancha",
+    }
+
+    def _enrich_provider_enabled(code):
+        """判断企业查询服务商是否启用且已配置（停用自动剔除）
+
+        小白讲解：管理员在后台把服务商 is_enabled 置 0（停用）或清空 Key 后，
+        该服务商不再参与企业信息查询优先级链。
+
+        参数：code 优先级链短名（shuidi / kuaicha / tianyancha）
+        返回：bool
+        """
+        db_code = _ENRICH_PROVIDER_MAP.get(code, code)
+        provider = get_provider(db_code) or {}
+        return bool(provider.get("is_enabled") and provider.get("base_url") and provider.get("api_key"))
+
+    def _enrich_one_supplier(supplier, client=None):
+        """单个供应商的工商补全任务 - 按优先级链查询（停用服务商自动剔除）
+
+        小白讲解：企业信息查询不再按"中文走水滴/英文走天眼查"固定分流，
+        而是按语言走优先级链，命中即停，未命中自动降级：
+        - 中文：水滴 → 快查365 → 天眼查
+        - 英文：快查365 → 天眼查
+        某服务商在后台停用（is_enabled=0）或未配置Key → 从链中剔除不参与。
+        全链都查不到才标记"工商数据未匹配"（剔除供应商）。
+
+        参数：
+            supplier: 供应商字典（会写入工商/联系方式等字段）
+            client: 兼容保留参数（历史调用方传入，不再使用）
         """
         if _cancelled():
             return
@@ -2778,155 +3200,61 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
         if not name:
             return
 
-        try:
-            # 用天眼查搜索公司（search_companies内部已带3次重试）
-            # 小白讲解：search_companies现在会自动重试3次（429/超时），
-            # 返回None表示请求彻底失败，返回空列表[]表示确实没找到。
-            companies = tyc_client.search_companies(name)
-            if companies is None:
-                # 请求失败（网络超时/频率限制），等2秒再试1次
-                print(f"天眼查请求失败({name})，2秒后重试...")
-                time.sleep(2)
-                companies = tyc_client.search_companies(name)
-            if companies is None:
-                # 两次都请求失败，跳过该企业（标记为未匹配，但不当作"确认不存在"）
-                print(f"天眼查两次请求均失败({name})，跳过该企业")
-                supplier["_tyc_not_found"] = True
-                return
-            matched_company = None
-            match_type = ""  # 记录天眼查匹配类型，供初筛阶段读库复用，避免重复调MCP
-            # 1. 优先精确同名匹配
-            for company in companies:
-                if company.get("name", "").strip() == name:
-                    matched_company = company
-                    match_type = "exact_match"
+        # ==================== 判断公司名语言 ====================
+        # 小白讲解：含拉丁字母视为"英文公司名"（外贸/海外供应商），
+        # 否则视为中文公司名（国内供应商）。
+        is_english_name = bool(re.search(r'[a-zA-Z]', name))
+
+        # ==================== 构建优先级链（停用剔除） ====================
+        # 中文：水滴→快查→天眼查；英文：快查→天眼查
+        chain_order = ["shuidi", "kuaicha", "tianyancha"] if not is_english_name else ["kuaicha", "tianyancha"]
+        # 剔除停用/未配置的服务商
+        active_chain = [code for code in chain_order if _enrich_provider_enabled(code)]
+        if not active_chain:
+            print(f"无可用企业查询服务商({name})，跳过工商补全")
+            supplier["_tyc_not_found"] = True
+            supplier["_data_source"] = "none"
+            supplier["contact_status"] = "未获取"
+            return
+
+        # ==================== 按优先级依次尝试 ====================
+        enriched = False
+        for code in active_chain:
+            try:
+                if code == "shuidi":
+                    ok = _enrich_one_supplier_with_shuidi(supplier, company_name=name, source_platform=source_platform)
+                elif code == "kuaicha":
+                    ok = _enrich_one_supplier_with_kuaicha(supplier, company_name=name, source_platform=source_platform)
+                else:
+                    ok = _enrich_one_supplier_with_tyc(supplier, company_name=name, source_platform=source_platform)
+                if ok:
+                    enriched = True
+                    print(f"『{code}』补全成功({name})，不再尝试其他服务商")
                     break
-            # 2. 精确同名失败：如果是英文公司名，且天眼查返回了"英文名匹配"标识，
-            #    说明天眼查已经用英文名匹配到了对应的中文名公司，直接采用，不再做相似度比较。
-            #    小白讲解：MIC（Made-in-China）来的供应商都是英文名，天眼查自己会做英文→中文的匹配，
-            #    并在"匹配类型"字段里标注"英文名匹配"。这种情况下中文名和英文名字符串完全不同，
-            #    用相似度比较必然失败，所以必须直接采用天眼查的匹配结果。
-            if not matched_company:
-                for company in companies:
-                    if company.get("match_type", "") == "英文名匹配":
-                        matched_company = company
-                        match_type = "english_name_match"
-                        print(f"天眼查英文名匹配采用：'{name}' → '{company.get('name', '')}'")
-                        break
-            # 3. 上面都没匹配上：做公司名相似度校验，相似度>=0.6 才采用
-            # 小白讲解：SequenceMatcher只看字符重叠，不认得公司"字号"才是唯一标识。
-            # "深圳市鼎盛科技有限公司"和"深圳市鼎盛电子科技有限公司"相似度~0.64，
-            # 但完全是两家公司！所以0.6匹配后必须加字号校验：
-            # 把地域前缀和组织形式后缀都去掉，比较剩余字号是否实质性相同。
-            if not matched_company and companies:
-                best_ratio = 0
-                best_company = None
-                for company in companies:
-                    cand_name = company.get("name", "").strip()
-                    if not cand_name:
-                        continue
-                    ratio = difflib.SequenceMatcher(None, name, cand_name).ratio()
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_company = company
-                if best_company and best_ratio >= 0.6:
-                    # 字号校验：剥离地域+组织形式后比较核心字号
-                    cand_core = _extract_core_name(best_company.get("name", ""))
-                    orig_core = _extract_core_name(name)
-                    if cand_core and orig_core and (cand_core in orig_core or orig_core in cand_core):
-                        matched_company = best_company
-                        match_type = "partial_match"
-                    else:
-                        print(f"天眼查字号不匹配({name})，候选字号'{cand_core}'≠'{orig_core}'，相似度{best_ratio:.0%}，拒绝采用")
-                if not matched_company:
-                    print(f"天眼查未匹配({name})，最高相似度{best_ratio:.0%}")
+            except Exception as e:
+                print(f"『{code}』补全异常({name}): {e}，降级到下一个服务商...")
 
-            if matched_company:
-                # MIC/海关数据来源：用天眼查返回的中文名替换英文名
-                if source_platform in ("Made-in-China", "海关数据"):
-                    tyc_cn_name = matched_company.get("name", "").strip()
-                    if tyc_cn_name and tyc_cn_name != name:
-                        print(f"天眼查匹配（{source_platform}英文→中文）：'{name}' → '{tyc_cn_name}'")
-                        supplier["name"] = tyc_cn_name
-
-                supplier["registered_capital"] = matched_company.get("registered_capital", "") or supplier.get("registered_capital", "")
-                supplier["operating_status"] = matched_company.get("status", "")
-                supplier["legal_person"] = matched_company.get("legal_person", "")
-                # 小白讲解：保存天眼查匹配状态和企业ID，初筛阶段直接读库判断是否匹配成功，
-                # 不用再调天眼查search_companies，省掉1次MCP请求
-                supplier["tyc_match_status"] = match_type
-                supplier["tyc_company_id"] = matched_company.get("credit_code", "")
-
-                try:
-                    detail = tyc_client.get_company_basic_profile(matched_company["name"])
-                    if detail:
-                        tyc_intro = detail.get("intro", "")
-                        if tyc_intro:
-                            # 小白讲解：工商简介先存到临时字段，等 MiniMax 生成 intro 后再追加（问题3追加方案）
-                            # 因为天眼查补全在前、MiniMax过滤在后，此时 intro 还没生成
-                            supplier["_tyc_business_intro"] = tyc_intro
-                        tyc_phone = detail.get("phone", "")
-                        if tyc_phone:
-                            supplier["phone"] = tyc_phone
-                        tyc_email = detail.get("email", "")
-                        if tyc_email:
-                            supplier["email"] = tyc_email
-                        tyc_address = detail.get("address", "")
-                        if tyc_address and not supplier.get("factory_address"):
-                            supplier["factory_address"] = tyc_address
-                        # 小白讲解：保存经营范围到供应商表，初筛规则判断制造商/出口经验时要用，
-                        # 这样初筛阶段不用再调天眼查get_company_basic_profile取经营范围
-                        tyc_scope = detail.get("business_scope", "")
-                        if tyc_scope:
-                            supplier["business_scope"] = tyc_scope
-                        tyc_capital = detail.get("registered_capital", "")
-                        if tyc_capital:
-                            # 校验注册资本不是日期格式（防止脏数据）
-                            if not re.match(r"^\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?$", tyc_capital):
-                                supplier["registered_capital"] = tyc_capital
-                        tyc_establish_date = detail.get("establish_date", "")
-                        if tyc_establish_date:
-                            # 保存原始成立日期（如"2015-03-12"），供详情页显示
-                            supplier["establish_date"] = tyc_establish_date
-                            try:
-                                year_match = re.search(r'(\d{4})', tyc_establish_date)
-                                if year_match:
-                                    establish_year = int(year_match.group(1))
-                                    current_year = datetime.now().year
-                                    years = current_year - establish_year
-                                    if years >= 0:
-                                        supplier["establish_years"] = str(years)
-                            except (ValueError, AttributeError):
-                                pass
-                except Exception as e:
-                    print(f"天眼查详情查询失败({name}): {e}")
-            else:
-                # 天眼查未匹配：标记剔除（天眼查是初筛唯一数据源，找不到的没必要保留）
-                supplier["_tyc_not_found"] = True
-
-            # 计算联系方式状态
-            has_phone = bool(supplier.get("phone", "").strip())
-            has_email = bool(supplier.get("email", "").strip())
-            if has_phone and has_email:
-                supplier["contact_status"] = "已获取电话和邮箱"
-            elif has_phone:
-                supplier["contact_status"] = "已获取电话"
-            elif has_email:
-                supplier["contact_status"] = "已获取邮箱"
-            else:
-                supplier["contact_status"] = "未获取"
-        except Exception as e:
-            print(f"天眼查补全失败({name}): {e}")
+        # ==================== 全链都未命中 → 标记未匹配 ====================
+        # 小白讲解：所有可用的服务商都查不到这家企业，说明工商数据确实获取不到，
+        # 按规则标记"工商数据未匹配"，供上层剔除（MIC来源）或初筛否决（无联系方式）。
+        if not enriched:
+            print(f"所有企业查询服务商均未命中({name})")
+            supplier["_tyc_not_found"] = True
+            supplier["_data_source"] = "none"
+            supplier["contact_status"] = "未获取"
 
     try:
-        # 每个线程用独立的天眼查client（避免线程安全问题）
+        # 并发补全供应商工商信息（使用水滴MCP）
         def _enrich_task(supplier):
-            tyc_client = TianyanchaClient()
-            tyc_client.initialize()
-            _enrich_one_supplier(supplier, tyc_client)
+            # 小白讲解：_enrich_one_supplier 内部自己创建 ShuidiClient 并调用水滴，
+            # 不需要外部传入 client（ShuidiClient 无状态，可每个任务独立创建）。
+            _enrich_one_supplier(supplier)
 
-        # 并发补全（最多5个线程，避免天眼查限流）
-        executor = ThreadPoolExecutor(max_workers=min(5, len(companies)))
+        # 并发补全（最多2个线程，避免水滴MCP限流）
+        # 小白讲解：水滴MCP有频率限制，之前批量测试显示连续调用几十次后会429。
+        # 用较低并发（2线程）+ 每个任务间小间隔，降低触发限流的概率。
+        SHUIDI_ENRICH_WORKERS = 2
+        executor = ThreadPoolExecutor(max_workers=min(SHUIDI_ENRICH_WORKERS, len(companies)))
         futures = {executor.submit(_enrich_task, s): s for s in companies}
         pending = set(futures)
         done_count = 0
@@ -2944,23 +3272,23 @@ def search_suppliers(keywords_json, product_name, progress_callback=None, hs_cod
                         future.result()
                         done_count += 1
                         if progress_callback and done_count % 3 == 0:
-                            progress_callback(current_step, total_steps, f"天眼查补全中... {done_count}/{len(companies)}，{_elapsed()}")
+                            progress_callback(current_step, total_steps, f"水滴补全中... {done_count}/{len(companies)}，{_elapsed()}")
                     except Exception as e:
-                        print(f"天眼查补全任务异常: {e}")
+                        print(f"水滴补全任务异常: {e}")
         finally:
             executor.shutdown(wait=not cancelled, cancel_futures=True)
     except Exception as e:
-        print(f"天眼查补全初始化失败: {e}")
+        print(f"水滴补全初始化失败: {e}")
 
     if _cancelled():
         return []
 
-    # 天眼查补全后剔除未匹配的供应商（找不到工商数据的不保留）
+    # 水滴补全后剔除未匹配的供应商（找不到工商数据的不保留）
     removed_count = 0
     companies = [c for c in companies if not c.pop("_tyc_not_found", False) or (removed_count := removed_count + 1) and False]
     if removed_count > 0 and progress_callback:
         progress_callback(current_step, total_steps,
-                          f"天眼查未匹配{removed_count}家已剔除，剩余{len(companies)}家")
+                          f"水滴未匹配{removed_count}家已剔除，剩余{len(companies)}家")
 
     # 第四步：用MiniMax基于完整工商数据做精细过滤
     # 小白讲解：此时 companies 已带工商信息（注册资本/经营状态/成立年限等），

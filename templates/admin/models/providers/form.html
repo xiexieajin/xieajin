@@ -100,6 +100,27 @@
                         专为AI设计的网页抓取服务，支持JS渲染页面，需注册获取免费API Key（500次/月）
                     {% endif %}
                 </p>
+                <!-- 控制台访问入口（换key等高频操作时快速跳转，未映射的服务商不显示） -->
+                {% set access_links = {
+                    'deepseek': 'https://platform.deepseek.com/usage',
+                    'zhipu': 'https://open.bigmodel.cn/apikey/platform',
+                    'minimax': 'https://platform.minimaxi.com/console/access',
+                    'ali1688': 'https://clawhub.1688.com/community/',
+                    'topease_customs': 'https://tradee.topease.net/tradee-mcp',
+                    'tianyancha': 'https://www.tianyancha.com/ai',
+                    'kuaicha_data': 'https://open.kuaicha365.com/user-center/',
+                    'shuidi_data': 'https://aiagent.shuidi.cn/'
+                } %}
+                {% if access_links.get(provider.provider_code) %}
+                <p class="small mb-2">
+                    <strong>控制台入口（换Key）：</strong>
+                    <br>
+                    <a href="{{ access_links[provider.provider_code] }}" target="_blank" rel="noopener"
+                       class="btn btn-outline-primary btn-sm mt-1">
+                        <i class="bi bi-box-arrow-up-right"></i> 打开管理控制台
+                    </a>
+                </p>
+                {% endif %}
                 <p class="small mb-0 text-muted">
                     修改保存后立即生效，无需重启服务器。
                 </p>

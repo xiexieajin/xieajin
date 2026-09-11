@@ -68,6 +68,47 @@ TYC_MCP_URL = os.environ.get("TYC_MCP_URL", "https://mcp.tianyancha.com/v1")
 TYC_MCP_AUTH = os.environ.get("TYC_MCP_AUTH", "")
 
 
+# ==================== 快查365 MCP 配置（企业信息查询，替代天眼查英文链路首选）====================
+# 小白讲解：快查是同花顺旗下企业数据引擎，支持用英文公司名模糊搜索匹配中文企业，
+# 一次调用即可返回工商信息+电话/邮箱/官网。优先用于英文供应商，中文供应商作水滴后的降级。
+# 鉴权用 open-authorization: Bearer <KEY>（兼容 Authorization）。
+# 首次启动时迁移到数据库 ai_providers 表（provider_code=kuaicha_data）
+KUAICHA_MCP_URL = os.environ.get("KUAICHA_MCP_URL", "https://bizveris.kuaicha365.com/mcp")
+KUAICHA_API_KEY = os.environ.get("KUAICHA_API_KEY", "")
+
+
+# ==================== 水滴信用 MCP 配置（用于供应商工商/风险信息补全，替代天眼查）====================
+# 小白讲解：水滴MCP有6个端点（data/risk/supplier/qc/bid/sti），不同端点查不同维度数据。
+# 鉴权方式：用"key"请求头（不是"Authorization"）。
+# 首次启动时迁移到数据库 ai_providers 表（provider_code=shuidi_data / shuidi_risk 等）
+SHUIDI_DATA_URL = os.environ.get("SHUIDI_DATA_URL", "https://data.shuidi.cn/mcp/")
+SHUIDI_DATA_KEY = os.environ.get("SHUIDI_DATA_KEY", "")
+
+
+# ==================== 初筛风险数据源配置 ====================
+# 小白讲解：初筛的风险维度（经营异常/严重违法/失信被执行人/司法案件）用哪个数据源。
+# - "water"：默认用水滴（省天眼查每天100次额度）。水滴能返回司法类风险（裁判文书/开庭/立案等），
+#   但"经营异常/严重违法/失信被执行人"这几个维度水滴无数据，会标注"水滴未提供，需人工复核"。
+# - "tianyancha"：用天眼查（能精确返回经营异常/严重违法/失信被执行人/司法案件，但消耗每日额度）。
+# 修改后需重启服务生效。后续想做成后台开关可在此扩展。
+SCREENING_RISK_SOURCE = os.environ.get("SCREENING_RISK_SOURCE", "water")
+SHUIDI_RISK_URL = os.environ.get("SHUIDI_RISK_URL", "https://risk.data.shuidi.cn/mcp/")
+SHUIDI_RISK_KEY = os.environ.get("SHUIDI_RISK_KEY", "")
+SHUIDI_SUPPLIER_URL = os.environ.get("SHUIDI_SUPPLIER_URL", "https://supplier.data.shuidi.cn/mcp/")
+SHUIDI_SUPPLIER_KEY = os.environ.get("SHUIDI_SUPPLIER_KEY", "")
+SHUIDI_QC_URL = os.environ.get("SHUIDI_QC_URL", "https://qc.data.shuidi.cn/mcp/")
+SHUIDI_QC_KEY = os.environ.get("SHUIDI_QC_KEY", "")
+SHUIDI_BID_URL = os.environ.get("SHUIDI_BID_URL", "https://bid.data.shuidi.cn/mcp/")
+SHUIDI_BID_KEY = os.environ.get("SHUIDI_BID_KEY", "")
+SHUIDI_STI_URL = os.environ.get("SHUIDI_STI_URL", "https://sti.data.shuidi.cn/mcp/")
+SHUIDI_STI_KEY = os.environ.get("SHUIDI_STI_KEY", "")
+
+
+# ==================== 海关贸易数据（topease）MCP 配置 ====================
+# 首次启动时迁移到数据库 ai_providers 表（provider_code=topease_customs）
+TOPEASE_API_KEY = os.environ.get("TOPEASE_API_KEY", "")
+
+
 # ==================== 1688 配置（用于供应商搜索 - 官方API方式）====================
 # 首次启动时迁移到数据库 ai_providers 表（provider_code=ali1688）
 ALI_1688_AK = os.environ.get("ALI_1688_AK", "")
